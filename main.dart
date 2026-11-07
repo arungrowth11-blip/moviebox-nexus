@@ -1,3 +1,4 @@
+// ignore_for_file: body_might_complete_normally
 // MovieBox Nexus OS v5.3 — FINAL BUILD-SAFE
 import 'dart:async';
 import 'dart:convert';
