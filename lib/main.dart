@@ -3116,3 +3116,38 @@ class _BrandTileState extends State<_BrandTile> {
     );
   }
 }
+class _RoundButton extends StatelessWidget {
+  final IconData icon;
+  final double size;
+  final bool isPrimary;
+  final VoidCallback onTap;
+
+  const _RoundButton({
+    required this.icon,
+    this.size = 48,
+    this.isPrimary = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(size / 2),
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: isPrimary ? _cyan : Colors.white12,
+          shape: BoxShape.circle,
+          border: Border.all(color: isPrimary ? _cyan : Colors.white30),
+        ),
+        child: Icon(
+          icon,
+          color: isPrimary ? Colors.black : Colors.white,
+          size: size * 0.5,
+        ),
+      ),
+    );
+  }
+}
