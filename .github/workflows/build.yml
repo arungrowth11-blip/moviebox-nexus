@@ -29,12 +29,14 @@ jobs:
           if [ ! -f pubspec.yaml ]; then
             flutter create --platforms=android --org com.moviebox.nexus --project-name moviebox_nexus .
           fi
+          # This line removes the default test folder to prevent 'MyApp' error
+          rm -rf test
 
       - name: Ensure main.dart is in lib/
         run: |
           mkdir -p lib
-          if [ ! -s lib/main.dart ] && [ -s main.dart ]; then
-            mv main.dart lib/main.dart
+          if [ -s main.dart ]; then
+            cp main.dart lib/main.dart
           fi
           if [ ! -s lib/main.dart ]; then
             echo "::error::lib/main.dart missing or empty"; exit 1
