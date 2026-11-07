@@ -1,6 +1,4 @@
-// MovieBox Nexus OS v5.2 — Final Build-Safe
-// Paste this file at repo ROOT as main.dart
-
+// MovieBox Nexus OS v5.3 — FINAL BUILD-SAFE
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -13,9 +11,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
-// ============================================================
-// CONSTANTS
-// ============================================================
 const _bg = Color(0xFF05060A);
 const _panel = Color(0xFF10131E);
 const _cyan = Color(0xFF00E5FF);
@@ -23,7 +18,6 @@ const _red = Color(0xFFE50914);
 const _purple = Color(0xFFB388FF);
 const _muted = Color(0xFF8E8E9A);
 const _textPri = Color(0xFFF5F5F7);
-
 const _cinemeta = 'https://v3-cinemeta.strem.io';
 const _streamingCatalogs =
     'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
@@ -31,14 +25,10 @@ const _appleIndiaRss =
     'https://rss.applemarketingtools.com/api/v2/in/movies/top-movies/30/movies.json';
 const _stremioAddonsApi = 'https://stremio-addons.net/api/v0/addons';
 
-// ============================================================
-// MODELS
-// ============================================================
 class Meta {
   final String id, name, type;
   final String poster, background, description, year, rating;
   final List<String> genres;
-
   Meta({
     required this.id,
     required this.name,
@@ -50,7 +40,6 @@ class Meta {
     this.rating = '',
     this.genres = const [],
   });
-
   factory Meta.fromJson(Map<String, dynamic> j) {
     final rawId = (j['id'] ?? '').toString();
     final rawYear = (j['releaseInfo'] ?? j['year'] ?? '').toString();
@@ -69,7 +58,6 @@ class Meta {
           : const [],
     );
   }
-
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
@@ -89,7 +77,6 @@ class StreamLink {
   final String title;
   final String addonName;
   final String badge;
-
   StreamLink({
     this.url,
     this.infoHash,
@@ -97,7 +84,6 @@ class StreamLink {
     this.addonName = '',
     this.badge = '',
   });
-
   int get score {
     final s = '$title ${url ?? ''}'.toLowerCase();
     var n = 0;
@@ -115,7 +101,6 @@ class StreamLink {
     if (infoHash != null) n += 5;
     return n;
   }
-
   bool get isDirect => url != null && url!.startsWith('http');
 }
 
@@ -124,7 +109,6 @@ class OttBrand {
   final String shortId;
   final Color color;
   final String fallbackGenre;
-
   const OttBrand({
     required this.name,
     required this.shortId,
@@ -150,7 +134,6 @@ class CatalogRowSpec {
   final String type;
   final Color accent;
   final bool showRanks;
-
   CatalogRowSpec({
     required this.title,
     required this.primaryUrl,
@@ -161,29 +144,23 @@ class CatalogRowSpec {
   });
 }
 
-// ============================================================
-// SELF-HEALING ADDON MANAGER
-// ============================================================
 class ManagedAddon {
   final String name;
   final String manifestUrl;
   final String baseUrl;
   final bool isBuiltIn;
-
   ManagedAddon({
     required this.name,
     required this.manifestUrl,
     required this.baseUrl,
     this.isBuiltIn = false,
   });
-
   Map<String, dynamic> toJson() => {
         'name': name,
         'manifestUrl': manifestUrl,
         'baseUrl': baseUrl,
         'isBuiltIn': isBuiltIn,
       };
-
   factory ManagedAddon.fromJson(Map<String, dynamic> j) => ManagedAddon(
         name: (j['name'] ?? 'Addon').toString(),
         manifestUrl: (j['manifestUrl'] ?? '').toString(),
@@ -235,13 +212,11 @@ class AddonManager {
       final j = jsonDecode(r.body);
       final addons = j is Map ? j['addons'] : null;
       if (addons is! List) return out;
-
       for (final a in addons) {
         if (a is! Map) continue;
         final name = (a['name'] ?? '').toString();
         final instances = a['instances'];
         if (instances is! List) continue;
-
         for (final inst in instances) {
           if (inst is! Map) continue;
           final manifestUrl =
@@ -285,31 +260,24 @@ class AddonManager {
         );
       }
     }
-
     final discovered = await discoverNewAddons();
     for (final a in discovered) {
       merged.putIfAbsent(a.manifestUrl, () => a);
     }
-
     final alive = <ManagedAddon>[];
     for (final a in merged.values) {
       if (await isAlive(a.manifestUrl)) {
         alive.add(a);
       }
     }
-
     await prefs.setStringList(
         'managed_addons', alive.map((a) => jsonEncode(a.toJson())).toList());
-
     return alive;
   }
 
   void close() => _client.close();
 }
 
-// ============================================================
-// CATALOG ENGINE
-// ============================================================
 class CatalogEngine {
   final http.Client _client = http.Client();
 
@@ -373,7 +341,6 @@ class CatalogEngine {
         }
       }
     } catch (_) {}
-
     try {
       final r = await _client
           .get(Uri.parse('$_streamingCatalogs/catalog/movie/jhs.json'))
@@ -389,7 +356,6 @@ class CatalogEngine {
         }
       }
     } catch (_) {}
-
     return fetchRow('$_cinemeta/catalog/movie/top.json', null);
   }
 
@@ -494,9 +460,6 @@ class CatalogEngine {
   void close() => _client.close();
 }
 
-// ============================================================
-// MAIN
-// ============================================================
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   PaintingBinding.instance.imageCache
@@ -535,9 +498,6 @@ class MovieBoxApp extends StatelessWidget {
   }
 }
 
-// ============================================================
-// ROOT SHELL
-// ============================================================
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
   @override
@@ -547,13 +507,11 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> {
   final engine = CatalogEngine();
   final addonManager = AddonManager();
-
   final watchlist = <String>{};
   final watchedEpisodes = <String>{};
   final resumeMs = <String, int>{};
   final resumeTitles = <String, String>{};
   List<ManagedAddon> managedAddons = [];
-
   HttpServer? _server;
   String remoteUrl = '';
   int tab = 0;
@@ -702,12 +660,12 @@ body{background:#05060A;color:#eef;font-family:system-ui,sans-serif;padding:22px
 h2{color:#00E5FF}input,button{box-sizing:border-box;width:100%;padding:14px;margin:8px 0;border-radius:10px;border:1px solid #34445c;background:#10131E;color:#fff;font-size:16px}
 button{background:#00E5FF;color:#000;font-weight:700;border:none}
 </style></head><body>
-<h2>📱 MovieBox TV Remote</h2>
+<h2>MovieBox TV Remote</h2>
 <p>Phone and TV must share Wi-Fi.</p>
 <form onsubmit="event.preventDefault();fetch('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('u').value})}).then(r=>r.text()).then(alert)">
-<input id="u" placeholder="https://…/video.mp4 or master.m3u8"><button>▶ Beam to TV</button></form>
+<input id="u" placeholder="https://.../video.mp4 or master.m3u8"><button>Beam to TV</button></form>
 <form onsubmit="event.preventDefault();fetch('/api/addon',{method:'POST',body:document.getElementById('a').value}).then(r=>r.text()).then(alert)">
-<input id="a" placeholder="https://…/manifest.json"><button>+ Install Addon</button></form>
+<input id="a" placeholder="https://.../manifest.json"><button>+ Install Addon</button></form>
 </body></html>''';
 
   Future<void> _installManualAddon(String url) async {
@@ -819,7 +777,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
           onShowDetails: _openDetails,
         );
       case 1:
-        return HubScreen();
+        return const HubScreen();
       case 2:
         return MoodScreen(engine: engine, onShowDetails: _openDetails);
       case 3:
@@ -906,7 +864,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
       context: context,
       builder: (_) => AlertDialog(
         backgroundColor: _panel,
-        title: const Text('📱 Scan to Remote',
+        title: const Text('Scan to Remote',
             style: TextStyle(color: _cyan, fontSize: 16)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -920,7 +878,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
               ),
             const SizedBox(height: 10),
             SelectableText(
-              remoteUrl.isEmpty ? 'Starting server…' : remoteUrl,
+              remoteUrl.isEmpty ? 'Starting server...' : remoteUrl,
               style: const TextStyle(color: _red, fontWeight: FontWeight.bold),
             ),
           ],
@@ -935,9 +893,6 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
     );
   }
 }
-// ============================================================
-// TOP BAR
-// ============================================================
 class _TopBar extends StatelessWidget {
   final int tab;
   final bool tui;
@@ -1035,9 +990,6 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-// ============================================================
-// HOME SCREEN
-// ============================================================
 class HomeScreen extends StatefulWidget {
   final CatalogEngine engine;
   final List<ManagedAddon> addons;
@@ -1075,7 +1027,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Timer? heroDebounce;
   int? activeBrandIndex;
   bool indiaLoading = true;
-
   int get year => DateTime.now().year;
 
   @override
@@ -1093,11 +1044,10 @@ class _HomeScreenState extends State<HomeScreen> {
   List<CatalogRowSpec> _buildSpecs() {
     final specs = <CatalogRowSpec>[];
     final y = year;
-
     for (final b in _brands) {
       if (activeBrandIndex != null && _brands[activeBrandIndex!] != b) continue;
       specs.add(CatalogRowSpec(
-        title: '🎬 ${b.name} • Movies',
+        title: '${b.name} Movies',
         primaryUrl: '$_streamingCatalogs/catalog/movie/${b.shortId}.json',
         fallbackUrl:
             '$_cinemeta/catalog/movie/top/genre=${b.fallbackGenre}.json',
@@ -1106,7 +1056,7 @@ class _HomeScreenState extends State<HomeScreen> {
         showRanks: true,
       ));
       specs.add(CatalogRowSpec(
-        title: '📺 ${b.name} • Series',
+        title: '${b.name} Series',
         primaryUrl: '$_streamingCatalogs/catalog/series/${b.shortId}.json',
         fallbackUrl: '$_cinemeta/catalog/series/top.json',
         type: 'series',
@@ -1114,41 +1064,40 @@ class _HomeScreenState extends State<HomeScreen> {
         showRanks: true,
       ));
     }
-
     if (activeBrandIndex == null) {
       specs.addAll([
         CatalogRowSpec(
-          title: '🆕 $y New Releases',
+          title: '$y New Releases',
           primaryUrl: '$_cinemeta/catalog/movie/top.json',
           fallbackUrl: '$_cinemeta/catalog/movie/imdbRating.json',
         ),
         CatalogRowSpec(
-          title: '🏆 ${y - 1} Blockbusters',
+          title: '${y - 1} Blockbusters',
           primaryUrl: '$_cinemeta/catalog/movie/imdbRating.json',
           fallbackUrl: '$_cinemeta/catalog/movie/top.json',
         ),
         CatalogRowSpec(
-          title: '👻 Horror & Supernatural',
+          title: 'Horror & Supernatural',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Horror.json',
         ),
         CatalogRowSpec(
-          title: '🎨 Animation & Anime',
+          title: 'Animation & Anime',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Animation.json',
         ),
         CatalogRowSpec(
-          title: '🚀 Sci-Fi & Cyberpunk',
+          title: 'Sci-Fi & Cyberpunk',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Sci-Fi.json',
         ),
         CatalogRowSpec(
-          title: '🕵️ Crime & Thrillers',
+          title: 'Crime & Thrillers',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Thriller.json',
         ),
         CatalogRowSpec(
-          title: '💥 High-Octane Action',
+          title: 'High-Octane Action',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Action.json',
         ),
         CatalogRowSpec(
-          title: '🏛️ IMDb Hall of Fame',
+          title: 'IMDb Hall of Fame',
           primaryUrl: '$_cinemeta/catalog/movie/imdbRating.json',
         ),
       ]);
@@ -1173,7 +1122,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final items = await widget.engine.fetchIndiaTrending();
     if (!mounted) return;
     setState(() {
-      rows['🇮🇳 Top 10 in India Today'] = items;
+      rows['Top 10 in India Today'] = items;
       indiaLoading = false;
       if (hero == null && items.isNotEmpty) hero = items.first;
     });
@@ -1183,9 +1132,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadRow(CatalogRowSpec spec) async {
     if (rows.containsKey(spec.title)) return;
     setState(() => loadingRows.add(spec.title));
-    final items = await widget.engine.fetchRow(
-        spec.primaryUrl, spec.fallbackUrl,
-        type: spec.type);
+    final items = await widget.engine
+        .fetchRow(spec.primaryUrl, spec.fallbackUrl, type: spec.type);
     if (!mounted) return;
     setState(() {
       rows[spec.title] = items;
@@ -1216,8 +1164,8 @@ class _HomeScreenState extends State<HomeScreen> {
             SliverToBoxAdapter(child: _buildContinueWatching()),
           SliverToBoxAdapter(
             child: _buildPosterRow(
-              title: '🇮🇳 Top 10 in India Today',
-              items: rows['🇮🇳 Top 10 in India Today'] ?? [],
+              title: 'Top 10 in India Today',
+              items: rows['Top 10 in India Today'] ?? [],
               accent: const Color(0xFFFF9933),
               showRanks: true,
               loading: indiaLoading,
@@ -1268,7 +1216,7 @@ class _HomeScreenState extends State<HomeScreen> {
               gradient: LinearGradient(
                 begin: Alignment.centerRight,
                 end: Alignment.centerLeft,
-                colors: [_bg.withOpacity(.05), _bg.withOpacity(.98)],
+                colors: [_bg.withValues(alpha: 0.05), _bg.withValues(alpha: 0.98)],
               ),
             ),
           ),
@@ -1283,7 +1231,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   runSpacing: 4,
                   children: [
                     _pill(m.type.toUpperCase(), _red),
-                    if (m.rating.isNotEmpty) _pill('★ ${m.rating}', Colors.amber),
+                    if (m.rating.isNotEmpty) _pill('IMDb ${m.rating}', Colors.amber),
                     if (m.year.isNotEmpty) _pill(m.year, _muted),
                     for (final g in m.genres.take(3)) _pill(g, _purple),
                   ],
@@ -1313,17 +1261,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   runSpacing: 6,
                   children: [
                     _FButton(
-                      label: '⚡ Smart Auto-Play',
+                      label: 'Smart Auto-Play',
                       primary: true,
                       onTap: () => _smartPlay(m),
                     ),
                     _FButton(
-                      label: '🎬 Trailer',
+                      label: 'Trailer',
                       icon: Icons.ondemand_video,
                       onTap: () => _openTrailer(m),
                     ),
                     _FButton(
-                      label: isFav ? '✓ Watchlist' : '+ Watchlist',
+                      label: isFav ? 'Watchlist' : '+ Watchlist',
                       icon: isFav ? Icons.check : Icons.add,
                       onTap: () => widget.onToggleWatchlist(m.id),
                     ),
@@ -1345,8 +1293,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _pill(String t, Color c) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         decoration: BoxDecoration(
-          color: c.withOpacity(.18),
-          border: Border.all(color: c.withOpacity(.5)),
+          color: c.withValues(alpha: 0.18),
+          border: Border.all(color: c.withValues(alpha: 0.5)),
           borderRadius: BorderRadius.circular(4),
         ),
         child: Text(t,
@@ -1362,7 +1310,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Row(
             children: [
-              const Text('🌐 OTT BRAND STUDIO DOCK',
+              const Text('OTT BRAND STUDIO DOCK',
                   style: TextStyle(
                       color: _cyan,
                       fontSize: 12,
@@ -1371,7 +1319,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const Spacer(),
               if (activeBrandIndex != null)
                 _FButton(
-                  label: '✕ Show All',
+                  label: 'Show All',
                   compact: true,
                   onTap: () {
                     setState(() => activeBrandIndex = null);
@@ -1419,7 +1367,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 20),
-            child: Text('⏱ Continue Watching',
+            child: Text('Continue Watching',
                 style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
@@ -1544,7 +1492,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (streams.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('No streams found — install more addons')));
+          content: Text('No streams found - install more addons')));
       return;
     }
     final best = streams.first;
@@ -1573,9 +1521,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// ============================================================
-// HUB SCREEN
-// ============================================================
 class HubScreen extends StatelessWidget {
   const HubScreen({super.key});
 
@@ -1589,21 +1534,8 @@ class HubScreen extends StatelessWidget {
         crossAxisSpacing: 12,
         mainAxisSpacing: 12,
       ),
-      itemCount: _brands.length + 1,
+      itemCount: _brands.length,
       itemBuilder: (_, i) {
-        if (i == _brands.length) {
-          return _Card(
-            onTap: () {},
-            child: const Center(
-              child: Text('🎭 GENRE VAULTS\n(Open Mood Tab)',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      color: _purple,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14)),
-            ),
-          );
-        }
         final b = _brands[i];
         return _Card(
           onTap: () {},
@@ -1621,7 +1553,7 @@ class HubScreen extends StatelessWidget {
                         fontSize: 16,
                         letterSpacing: 1.1)),
                 const SizedBox(height: 4),
-                Text('${b.fallbackGenre} · Top 10 · Originals',
+                Text('${b.fallbackGenre} - Top 10 - Originals',
                     style: const TextStyle(color: _muted, fontSize: 11)),
               ],
             ),
@@ -1632,9 +1564,6 @@ class HubScreen extends StatelessWidget {
   }
 }
 
-// ============================================================
-// MOOD SCREEN
-// ============================================================
 class MoodScreen extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
@@ -1646,20 +1575,12 @@ class MoodScreen extends StatefulWidget {
 
 class _MoodScreenState extends State<MoodScreen> {
   static const List<List<String>> _moods = [
-    [
-      '🧠 Mind-Bending Time Travel',
-      'Sci-Fi',
-      'Paradoxes, space odysseys, alternate realities'
-    ],
-    [
-      '👻 Late Night Supernatural Horror',
-      'Horror',
-      'Hauntings, occult, survival horror'
-    ],
-    ['🎨 Animated & Anime Worlds', 'Animation', 'Top anime, Pixar, visual wonders'],
-    ['🕵️ Dark Crime Thrillers', 'Thriller', 'Psychological, detective, high stakes'],
-    ['💥 Adrenaline Action', 'Action', 'Martial arts, espionage, explosive'],
-    ['😂 Feel-Good Comedy', 'Comedy', 'Rom-coms, family, weekend fun'],
+    ['Mind-Bending Time Travel', 'Sci-Fi', 'Paradoxes, space odysseys'],
+    ['Late Night Supernatural Horror', 'Horror', 'Hauntings, occult'],
+    ['Animated & Anime Worlds', 'Animation', 'Top anime, Pixar'],
+    ['Dark Crime Thrillers', 'Thriller', 'Psychological, detective'],
+    ['Adrenaline Action', 'Action', 'Martial arts, espionage'],
+    ['Feel-Good Comedy', 'Comedy', 'Rom-coms, family'],
   ];
 
   List<Meta> _results = [];
@@ -1689,7 +1610,7 @@ class _MoodScreenState extends State<MoodScreen> {
       children: [
         const Padding(
           padding: EdgeInsets.all(16),
-          child: Text('✨ AI MOOD & VIBE DISCOVERY',
+          child: Text('AI MOOD & VIBE DISCOVERY',
               style: TextStyle(
                   fontSize: 18, fontWeight: FontWeight.w900, color: _cyan)),
         ),
@@ -1775,10 +1696,6 @@ class _MoodScreenState extends State<MoodScreen> {
     );
   }
 }
-
-// ============================================================
-// LIVE TV SCREEN
-// ============================================================
 class LiveTvScreen extends StatefulWidget {
   final void Function(String title, String url) onPlay;
   const LiveTvScreen({super.key, required this.onPlay});
@@ -1788,32 +1705,31 @@ class LiveTvScreen extends StatefulWidget {
 
 class _LiveTvScreenState extends State<LiveTvScreen> {
   final _ctrl = TextEditingController();
-
   final List<List<String>> _channels = [
     [
       'Mux HLS Test',
       'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-      'HLS • 1080p test feed'
+      'HLS 1080p test'
     ],
     [
       'Apple BipBop',
       'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8',
-      'HLS • Multi-bitrate test'
+      'HLS multi-bitrate'
     ],
     [
       'Big Buck Bunny',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-      'Direct MP4 • Open source film'
+      'Direct MP4'
     ],
     [
       'Sintel',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-      'Direct MP4 • Open animation'
+      'Direct MP4'
     ],
     [
       'Tears of Steel',
       'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-      'Direct MP4 • Sci-Fi short'
+      'Direct MP4'
     ],
   ];
 
@@ -1828,12 +1744,12 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('📡 Live TV & Direct Stream Hub',
+        const Text('Live TV & Direct Stream Hub',
             style: TextStyle(
                 fontSize: 20, fontWeight: FontWeight.w900, color: _cyan)),
         const SizedBox(height: 4),
         const Text(
-            'Paste any .mp4 / .m3u8 URL, or tap a public test channel below.',
+            'Paste any .mp4 / .m3u8 URL or tap a public test channel below.',
             style: TextStyle(color: _muted, fontSize: 12)),
         const SizedBox(height: 14),
         Row(
@@ -1843,7 +1759,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                 controller: _ctrl,
                 style: const TextStyle(color: _textPri),
                 decoration: InputDecoration(
-                  hintText: 'https://…/video.mp4 or master.m3u8',
+                  hintText: 'https://.../video.mp4',
                   hintStyle: const TextStyle(color: _muted),
                   filled: true,
                   fillColor: _panel,
@@ -1879,9 +1795,9 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                           color: _textPri, fontWeight: FontWeight.bold)),
                   subtitle: Text(c[2],
                       style: const TextStyle(color: _cyan, fontSize: 11)),
-                  trailing: const Text('▶',
+                  trailing: const Text('PLAY',
                       style: TextStyle(
-                          color: Colors.greenAccent, fontSize: 18)),
+                          color: Colors.greenAccent, fontSize: 14)),
                 ),
               ),
             )),
@@ -1890,9 +1806,6 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   }
 }
 
-// ============================================================
-// ADDON PAGE
-// ============================================================
 class _AddonPage extends StatelessWidget {
   final List<ManagedAddon> addons;
   final Future<void> Function(ManagedAddon) onRemove;
@@ -1911,7 +1824,7 @@ class _AddonPage extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        const Text('🔌 Addon Manager (Auto-Healing)',
+        const Text('Addon Manager (Auto-Healing)',
             style: TextStyle(
                 fontSize: 20, fontWeight: FontWeight.w900, color: _cyan)),
         const SizedBox(height: 4),
@@ -1928,7 +1841,7 @@ class _AddonPage extends StatelessWidget {
                 onTap: onInstall),
             const SizedBox(width: 8),
             _FButton(
-                label: '🔄 Sync Now',
+                label: 'Sync Now',
                 icon: Icons.refresh,
                 onTap: onRefresh),
           ],
@@ -1958,9 +1871,6 @@ class _AddonPage extends StatelessWidget {
   }
 }
 
-// ============================================================
-// DETAILS SHEET
-// ============================================================
 class DetailsSheet extends StatefulWidget {
   final Meta meta;
   final CatalogEngine engine;
@@ -2031,7 +1941,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
         setState(() {
           _targetId = id;
           _targetLabel =
-              'S${firstEp['season']}E${firstEp['episode']} · ${firstEp['name'] ?? ''}';
+              'S${firstEp['season']}E${firstEp['episode']} - ${firstEp['name'] ?? ''}';
         });
         _loadStreams(id);
       }
@@ -2076,7 +1986,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                         color: _textPri)),
               ),
               _FButton(
-                label: isFav ? '✓' : '+ WL',
+                label: isFav ? 'Saved' : '+ WL',
                 compact: true,
                 onTap: () => widget.onToggleWatchlist(widget.meta.id),
               ),
@@ -2131,7 +2041,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                           setState(() {
                             _targetId = epId;
                             _targetLabel =
-                                'S${ep['season']}E${ep['episode']} · ${ep['name'] ?? ''}';
+                                'S${ep['season']}E${ep['episode']} - ${ep['name'] ?? ''}';
                           });
                           _loadStreams(epId);
                         },
@@ -2150,9 +2060,10 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                           fontSize: 11)),
                                   const Spacer(),
                                   if (watched)
-                                    const Text('✓',
+                                    const Text('WATCHED',
                                         style: TextStyle(
                                             color: Colors.greenAccent,
+                                            fontSize: 9,
                                             fontWeight: FontWeight.bold)),
                                 ],
                               ),
@@ -2187,7 +2098,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: _FButton(
-                label: '⚡ Smart Auto-Play (${_streams.first.badge})',
+                label: 'Smart Auto-Play (${_streams.first.badge})',
                 primary: true,
                 onTap: () => _playStream(_streams.first),
               ),
@@ -2199,14 +2110,13 @@ class _DetailsSheetState extends State<DetailsSheet> {
           if (_loadingStreams)
             const Padding(
               padding: EdgeInsets.all(20),
-              child: Text('Resolving streams…',
+              child: Text('Resolving streams...',
                   style: TextStyle(color: _cyan, fontSize: 12)),
             )
           else if (_streams.isEmpty)
             const Padding(
               padding: EdgeInsets.all(16),
-              child: Text(
-                  'No streams found. Try Sync in Addons tab.',
+              child: Text('No streams found. Try Sync in Addons tab.',
                   style: TextStyle(color: _muted, fontSize: 12)),
             )
           else
@@ -2225,7 +2135,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: _cyan.withOpacity(.15),
+                                  color: _cyan.withValues(alpha: 0.15),
                                   border: Border.all(color: _cyan),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
@@ -2243,7 +2153,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                       fontWeight: FontWeight.bold)),
                               const Spacer(),
                               if (s.isDirect)
-                                const Text('[PLAY ▶]',
+                                const Text('[PLAY]',
                                     style: TextStyle(
                                         color: Colors.greenAccent,
                                         fontSize: 11,
@@ -2256,7 +2166,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                     widget.onPlay(widget.meta.name, torr,
                                         _targetId);
                                   },
-                                  child: const Text('[TORRSERVE ▶]',
+                                  child: const Text('[TORRSERVE]',
                                       style: TextStyle(
                                           color: Colors.amberAccent,
                                           fontSize: 11,
@@ -2285,7 +2195,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
   void _playStream(StreamLink s) {
     if (s.isDirect) {
       widget.onPlay(
-          '${widget.meta.name} · $_targetLabel', s.url!, _targetId);
+          '${widget.meta.name} - $_targetLabel', s.url!, _targetId);
     } else if (s.infoHash != null) {
       final torr =
           'http://127.0.0.1:8090/stream?link=${s.infoHash}&index=1&play';
@@ -2294,9 +2204,6 @@ class _DetailsSheetState extends State<DetailsSheet> {
   }
 }
 
-// ============================================================
-// PLAYER SCREEN
-// ============================================================
 class PlayerScreen extends StatefulWidget {
   final String title;
   final String url;
@@ -2448,7 +2355,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             color: Colors.amber, size: 44),
                         const SizedBox(height: 12),
                         const Text(
-                            'Playback failed. This stream may use an unsupported codec (MKV/AC3/HEVC).',
+                            'Playback failed. Stream may use unsupported codec.',
                             textAlign: TextAlign.center,
                             style: TextStyle(color: Colors.white)),
                         const SizedBox(height: 16),
@@ -2479,7 +2386,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                         end: Alignment.bottomCenter,
                         colors: [
                           Colors.transparent,
-                          Colors.black.withOpacity(.92),
+                          Colors.black.withValues(alpha: 0.92),
                         ],
                       ),
                     ),
@@ -2552,9 +2459,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 }
 
-// ============================================================
-// SEARCH MODAL
-// ============================================================
 class SearchModal extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
@@ -2616,7 +2520,7 @@ class _SearchModalState extends State<SearchModal> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('🔍 Universal Search',
+              const Text('Universal Search',
                   style: TextStyle(
                       color: _cyan,
                       fontWeight: FontWeight.bold,
@@ -2626,7 +2530,7 @@ class _SearchModalState extends State<SearchModal> {
                 controller: _ctrl,
                 style: const TextStyle(color: _textPri),
                 decoration: InputDecoration(
-                  hintText: 'Type or use D-pad keyboard below',
+                  hintText: 'Type or use keyboard below',
                   hintStyle: const TextStyle(color: _muted),
                   filled: true,
                   fillColor: _bg,
@@ -2667,8 +2571,8 @@ class _SearchModalState extends State<SearchModal> {
                       style: OutlinedButton.styleFrom(
                           padding: EdgeInsets.zero),
                       child: const Text('SPC',
-                          style:
-                              TextStyle(fontSize: 10, color: _textPri)),
+                          style: TextStyle(
+                              fontSize: 10, color: _textPri)),
                     ),
                   ),
                   SizedBox(
@@ -2678,9 +2582,9 @@ class _SearchModalState extends State<SearchModal> {
                       onPressed: _backspace,
                       style: OutlinedButton.styleFrom(
                           padding: EdgeInsets.zero),
-                      child: const Text('⌫',
-                          style:
-                              TextStyle(fontSize: 12, color: _textPri)),
+                      child: const Text('DEL',
+                          style: TextStyle(
+                              fontSize: 10, color: _textPri)),
                     ),
                   ),
                 ],
@@ -2718,7 +2622,7 @@ class _SearchModalState extends State<SearchModal> {
                               title: Text(_results[i].name,
                                   style: const TextStyle(color: _textPri)),
                               subtitle: Text(
-                                  '${_results[i].type} · ${_results[i].year}',
+                                  '${_results[i].type} - ${_results[i].year}',
                                   style: const TextStyle(
                                       color: _muted, fontSize: 11)),
                               onTap: () {
@@ -2736,9 +2640,6 @@ class _SearchModalState extends State<SearchModal> {
   }
 }
 
-// ============================================================
-// ADDON STORE MODAL
-// ============================================================
 class _AddonStoreModal extends StatefulWidget {
   final List<ManagedAddon> addons;
   final Future<void> Function(ManagedAddon) onInstall;
@@ -2782,7 +2683,7 @@ class _AddonStoreModalState extends State<_AddonStoreModal> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('🔌 Addon Store',
+              const Text('Addon Store',
                   style: TextStyle(
                       color: _cyan,
                       fontWeight: FontWeight.bold,
@@ -2795,7 +2696,7 @@ class _AddonStoreModalState extends State<_AddonStoreModal> {
               Row(
                 children: [
                   _FButton(
-                    label: '🔄 Sync Now',
+                    label: 'Sync Now',
                     primary: true,
                     onTap: () {
                       widget.onSync();
@@ -2854,7 +2755,7 @@ class _AddonStoreModalState extends State<_AddonStoreModal> {
                 controller: _urlCtrl,
                 style: const TextStyle(color: _textPri, fontSize: 12),
                 decoration: const InputDecoration(
-                  hintText: 'https://…/manifest.json',
+                  hintText: 'https://.../manifest.json',
                   isDense: true,
                   border: OutlineInputBorder(),
                 ),
@@ -2900,9 +2801,6 @@ class _AddonStoreModalState extends State<_AddonStoreModal> {
   }
 }
 
-// ============================================================
-// TUI BODY
-// ============================================================
 class _TuiBody extends StatelessWidget {
   final int tab;
   final int addonCount;
@@ -2928,13 +2826,13 @@ class _TuiBody extends StatelessWidget {
             fontSize: 13),
         child: ListView(
           children: [
-            const Text('■ MOVIEBOX-TUI v0.1.27 → v5.2'),
-            const Text('══════════════════════════════════════'),
+            const Text('MOVIEBOX-TUI v0.1.27 -> v5.3'),
+            const Text('===================================='),
             Text('YEAR      : ${DateTime.now().year}'),
             Text('ADDONS    : $addonCount installed'),
             Text('WATCHLIST : $watchlistCount titles'),
             Text('TAB       : $tab'),
-            const Text('══════════════════════════════════════'),
+            const Text('===================================='),
             const Text('> SYSTEM ONLINE'),
             const Text('> RESOLVER: TORRSERVE + TORRENTIO'),
             const Text('> ADDONS: SELF-HEALING ACTIVE'),
@@ -2953,9 +2851,6 @@ class _TuiBody extends StatelessWidget {
   }
 }
 
-// ============================================================
-// SHARED WIDGETS
-// ============================================================
 class _FButton extends StatefulWidget {
   final String label;
   final IconData? icon;
@@ -2985,9 +2880,9 @@ class _FButtonState extends State<_FButton> {
     final bg = _focused
         ? _red
         : widget.primary
-            ? _red.withOpacity(.2)
+            ? _red.withValues(alpha: 0.2)
             : widget.active
-                ? _cyan.withOpacity(.15)
+                ? _cyan.withValues(alpha: 0.15)
                 : _panel;
     final fg = _focused
         ? Colors.white
@@ -3019,7 +2914,7 @@ class _FButtonState extends State<_FButton> {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: border, width: _focused ? 2 : 1),
           boxShadow: _focused
-              ? [BoxShadow(color: _cyan.withOpacity(.55), blurRadius: 14)]
+              ? [BoxShadow(color: _cyan.withValues(alpha: 0.55), blurRadius: 14)]
               : [],
         ),
         child: Row(
@@ -3080,7 +2975,7 @@ class _CardState extends State<_Card> {
           border: Border.all(
               color: border, width: _focused || widget.selected ? 2 : 1),
           boxShadow: _focused
-              ? [BoxShadow(color: _cyan.withOpacity(.45), blurRadius: 14)]
+              ? [BoxShadow(color: _cyan.withValues(alpha: 0.45), blurRadius: 14)]
               : [],
         ),
         child: widget.child,
@@ -3138,7 +3033,7 @@ class _PosterCardState extends State<PosterCard> {
                 width: _focused ? 2.5 : 1,
               ),
               boxShadow: _focused
-                  ? [BoxShadow(color: _cyan.withOpacity(.5), blurRadius: 18)]
+                  ? [BoxShadow(color: _cyan.withValues(alpha: 0.5), blurRadius: 18)]
                   : [],
             ),
             child: Column(
@@ -3200,7 +3095,7 @@ class _PosterCardState extends State<PosterCard> {
                               style: const TextStyle(
                                   color: _muted, fontSize: 9)),
                           if (widget.meta.rating.isNotEmpty)
-                            Text('★ ${widget.meta.rating}',
+                            Text('IMDb ${widget.meta.rating}',
                                 style: const TextStyle(
                                     color: Colors.amber,
                                     fontSize: 9,
@@ -3261,7 +3156,7 @@ class _BrandTileState extends State<_BrandTile> {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
-              widget.brand.color.withOpacity(active ? .38 : .15),
+              widget.brand.color.withValues(alpha: active ? 0.38 : 0.15),
               _panel,
             ],
             begin: Alignment.topLeft,
@@ -3274,7 +3169,7 @@ class _BrandTileState extends State<_BrandTile> {
           boxShadow: _focused
               ? [
                   BoxShadow(
-                      color: widget.brand.color.withOpacity(.5),
+                      color: widget.brand.color.withValues(alpha: 0.5),
                       blurRadius: 16)
                 ]
               : [],
