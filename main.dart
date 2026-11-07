@@ -1,5 +1,5 @@
 // MovieBox Nexus OS v5.1 — Self-Healing Addon Engine
-// Paste this file at repo ROOT as main.dart (workflow auto-moves to lib/)
+// Paste this file at repo ROOT as main.dart
 
 import 'dart:async';
 import 'dart:convert';
@@ -27,8 +27,6 @@ const _textPri = Color(0xFFF5F5F7);
 const _cinemeta = 'https://v3-cinemeta.strem.io';
 const _streamingCatalogs =
     'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
-const _torrentio = 'https://torrentio.strem.fun';
-const _mediafusion = 'https://mediafusion.elfhosted.com';
 const _appleIndiaRss =
     'https://rss.applemarketingtools.com/api/v2/in/movies/top-movies/30/movies.json';
 const _stremioAddonsApi = 'https://stremio-addons.net/api/v0/addons';
@@ -122,7 +120,8 @@ class StreamLink {
 }
 
 class OttBrand {
-  final String name, shortId;
+  final String name;
+  final String shortId;
   final Color color;
   final String fallbackGenre;
 
@@ -196,21 +195,20 @@ class ManagedAddon {
 class AddonManager {
   final http.Client _client = http.Client();
 
-  // Seed addons from Feb 2026 community repo (stremioaddonmanager.org)
-  static const List<(String, String)> _seedAddons = [
-    ('Torrentio', 'https://torrentio.strem.fun/manifest.json'),
-    ('Torrentio Lite', 'https://torrentio.strem.fun/lite/manifest.json'),
-    ('Comet', 'https://comet.feels.legal/manifest.json'),
-    ('MediaFusion', 'https://mediafusion.elfhosted.com/manifest.json'),
-    ('Cinemeta', 'https://v3-cinemeta.strem.io/manifest.json'),
-    ('Streaming Catalogs',
-        'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json'),
-    ('ThePirateBay+', 'https://thepiratebay-plus.strem.fun/manifest.json'),
-    ('Public Domain Movies',
-        'https://publicdomainmovies.strem.io/manifest.json'),
-    ('USA TV', 'https://848b3516657c-usatv.baby-beamup.club/manifest.json'),
-    ('FTV Channels', 'https://ftv-stremio.surge.sh/manifest.json'),
-  ];
+  // Seed addons as Map<name, manifestUrl> — safe, no records
+  static const Map<String, String> _seedAddons = {
+    'Torrentio': 'https://torrentio.strem.fun/manifest.json',
+    'Torrentio Lite': 'https://torrentio.strem.fun/lite/manifest.json',
+    'Comet': 'https://comet.feels.legal/manifest.json',
+    'MediaFusion': 'https://mediafusion.elfhosted.com/manifest.json',
+    'Cinemeta': 'https://v3-cinemeta.strem.io/manifest.json',
+    'Streaming Catalogs':
+        'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
+    'ThePirateBay+': 'https://thepiratebay-plus.strem.fun/manifest.json',
+    'Public Domain Movies': 'https://publicdomainmovies.strem.io/manifest.json',
+    'USA TV': 'https://848b3516657c-usatv.baby-beamup.club/manifest.json',
+    'FTV Channels': 'https://ftv-stremio.surge.sh/manifest.json',
+  };
 
   Future<bool> isAlive(String manifestUrl) async {
     if (manifestUrl.isEmpty) return false;
@@ -278,12 +276,12 @@ class AddonManager {
     for (final a in current) {
       merged[a.manifestUrl] = a;
     }
-    for (final s in _seedAddons) {
-      if (!merged.containsKey(s.$2)) {
-        merged[s.$2] = ManagedAddon(
-          name: s.$1,
-          manifestUrl: s.$2,
-          baseUrl: s.$2.replaceAll('/manifest.json', ''),
+    for (final entry in _seedAddons.entries) {
+      if (!merged.containsKey(entry.value)) {
+        merged[entry.value] = ManagedAddon(
+          name: entry.key,
+          manifestUrl: entry.value,
+          baseUrl: entry.value.replaceAll('/manifest.json', ''),
           isBuiltIn: true,
         );
       }
@@ -629,6 +627,7 @@ class _RootShellState extends State<RootShell> {
     );
     if (!mounted) return;
     setState(() => managedAddons = synced);
+    return;
   }
 
   Future<void> _startRemote() async {
@@ -813,18 +812,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
           onShowDetails: _openDetails,
         );
       case 1:
-        return HubScreen(
-          engine: engine,
-          addons: managedAddons,
-          watchlist: watchlist,
-          watchedEpisodes: watchedEpisodes,
-          resumeMs: resumeMs,
-          resumeTitles: resumeTitles,
-          onToggleWatchlist: _toggleWatchlist,
-          onMarkWatched: _markWatched,
-          onPlay: _pushPlayer,
-          onShowDetails: _openDetails,
-        );
+        return HubScreen();
       case 2:
         return MoodScreen(engine: engine, onShowDetails: _openDetails);
       case 3:
@@ -865,9 +853,9 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
         watchedEpisodes: watchedEpisodes,
         onToggleWatchlist: _toggleWatchlist,
         onMarkWatched: _markWatched,
-        onPlay: (title, url, key, {next}) {
+        onPlay: (title, url, key, {VoidCallback? onNext}) {
           Navigator.of(context).pop();
-          _pushPlayer(title, url, key, onNext: next);
+          _pushPlayer(title, url, key, onNext: onNext);
         },
       ),
     );
@@ -968,7 +956,13 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tabs = ['Home', 'OTT Hubs', 'Mood', 'Live TV', 'Addons ($addonCount)'];
+    final tabs = [
+      'Home',
+      'OTT Hubs',
+      'Mood',
+      'Live TV',
+      'Addons ($addonCount)'
+    ];
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: const BoxDecoration(
@@ -1415,7 +1409,9 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: EdgeInsets.symmetric(horizontal: 20),
             child: Text('⏱ Continue Watching',
                 style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w800, color: _textPri)),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                    color: _textPri)),
           ),
           const SizedBox(height: 6),
           SizedBox(
@@ -1567,31 +1563,6 @@ class _HomeScreenState extends State<HomeScreen> {
 // HUB SCREEN
 // ============================================================
 class HubScreen extends StatelessWidget {
-  final CatalogEngine engine;
-  final List<ManagedAddon> addons;
-  final Set<String> watchlist;
-  final Set<String> watchedEpisodes;
-  final Map<String, int> resumeMs;
-  final Map<String, String> resumeTitles;
-  final Future<void> Function(String) onToggleWatchlist;
-  final Future<void> Function(String) onMarkWatched;
-  final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
-  final void Function(Meta) onShowDetails;
-
-  const HubScreen({
-    super.key,
-    required this.engine,
-    required this.addons,
-    required this.watchlist,
-    required this.watchedEpisodes,
-    required this.resumeMs,
-    required this.resumeTitles,
-    required this.onToggleWatchlist,
-    required this.onMarkWatched,
-    required this.onPlay,
-    required this.onShowDetails,
-  });
-
   @override
   Widget build(BuildContext context) {
     return GridView.builder(
@@ -1651,19 +1622,20 @@ class HubScreen extends StatelessWidget {
 class MoodScreen extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
-  const MoodScreen({super.key, required this.engine, required this.onShowDetails});
+  const MoodScreen(
+      {super.key, required this.engine, required this.onShowDetails});
   @override
   State<MoodScreen> createState() => _MoodScreenState();
 }
 
 class _MoodScreenState extends State<MoodScreen> {
-  static const _moods = <(String, String, String)>[
-    ('🧠 Mind-Bending Time Travel', 'Sci-Fi', 'Paradoxes, space odysseys, alternate realities'),
-    ('👻 Late Night Supernatural Horror', 'Horror', 'Hauntings, occult, survival horror'),
-    ('🎨 Animated & Anime Worlds', 'Animation', 'Top anime, Pixar, visual wonders'),
-    ('🕵️ Dark Crime Thrillers', 'Thriller', 'Psychological, detective, high stakes'),
-    ('💥 Adrenaline Action', 'Action', 'Martial arts, espionage, explosive'),
-    ('😂 Feel-Good Comedy', 'Comedy', 'Rom-coms, family, weekend fun'),
+  static const List<List<String>> _moods = [
+    ['🧠 Mind-Bending Time Travel', 'Sci-Fi', 'Paradoxes, space odysseys, alternate realities'],
+    ['👻 Late Night Supernatural Horror', 'Horror', 'Hauntings, occult, survival horror'],
+    ['🎨 Animated & Anime Worlds', 'Animation', 'Top anime, Pixar, visual wonders'],
+    ['🕵️ Dark Crime Thrillers', 'Thriller', 'Psychological, detective, high stakes'],
+    ['💥 Adrenaline Action', 'Action', 'Martial arts, espionage, explosive'],
+    ['😂 Feel-Good Comedy', 'Comedy', 'Rom-coms, family, weekend fun'],
   ];
 
   List<Meta> _results = [];
@@ -1709,14 +1681,14 @@ class _MoodScreenState extends State<MoodScreen> {
                 child: SizedBox(
                   width: 250,
                   child: _Card(
-                    onTap: () => _load(m.$2, m.$1),
+                    onTap: () => _load(m[1], m[0]),
                     child: Padding(
                       padding: const EdgeInsets.all(14),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Text(m.$1,
+                          Text(m[0],
                               style: const TextStyle(
                                   color: _red,
                                   fontWeight: FontWeight.bold,
@@ -1724,7 +1696,7 @@ class _MoodScreenState extends State<MoodScreen> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis),
                           const SizedBox(height: 6),
-                          Text(m.$3,
+                          Text(m[2],
                               style: const TextStyle(
                                   color: _muted, fontSize: 11),
                               maxLines: 2,
@@ -1792,21 +1764,12 @@ class LiveTvScreen extends StatefulWidget {
 class _LiveTvScreenState extends State<LiveTvScreen> {
   final _ctrl = TextEditingController();
 
-  final _channels = <(String, String, String)>[
-    ('Mux HLS Test', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
-        'HLS • 1080p test feed'),
-    ('Apple BipBop',
-        'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8',
-        'HLS • Multi-bitrate test'),
-    ('Big Buck Bunny',
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
-        'Direct MP4 • Open source film'),
-    ('Sintel',
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
-        'Direct MP4 • Open animation'),
-    ('Tears of Steel',
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
-        'Direct MP4 • Sci-Fi short'),
+  final List<List<String>> _channels = [
+    ['Mux HLS Test', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'HLS • 1080p test feed'],
+    ['Apple BipBop', 'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8', 'HLS • Multi-bitrate test'],
+    ['Big Buck Bunny', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', 'Direct MP4 • Open source film'],
+    ['Sintel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4', 'Direct MP4 • Open animation'],
+    ['Tears of Steel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4', 'Direct MP4 • Sci-Fi short'],
   ];
 
   @override
@@ -1863,16 +1826,18 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         ..._channels.map((c) => Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: _Card(
-                onTap: () => widget.onPlay(c.$1, c.$2),
+                onTap: () => widget.onPlay(c[0], c[1]),
                 child: ListTile(
                   leading: const Icon(Icons.live_tv, color: _red),
-                  title: Text(c.$1,
+                  title: Text(c[0],
                       style: const TextStyle(
                           color: _textPri, fontWeight: FontWeight.bold)),
-                  subtitle:
-                      Text(c.$3, style: const TextStyle(color: _cyan, fontSize: 11)),
+                  subtitle: Text(c[2],
+                      style:
+                          const TextStyle(color: _cyan, fontSize: 11)),
                   trailing: const Text('▶',
-                      style: TextStyle(color: Colors.greenAccent, fontSize: 18)),
+                      style: TextStyle(
+                          color: Colors.greenAccent, fontSize: 18)),
                 ),
               ),
             )),
@@ -1979,7 +1944,6 @@ class DetailsSheet extends StatefulWidget {
 }
 
 class _DetailsSheetState extends State<DetailsSheet> {
-  List<Map<String, dynamic>> _episodes = [];
   Map<int, List<Map<String, dynamic>>> _grouped = {};
   int? _season;
   String _targetId = '';
@@ -2011,7 +1975,6 @@ class _DetailsSheetState extends State<DetailsSheet> {
     }
     if (!mounted) return;
     setState(() {
-      _episodes = eps;
       _grouped = g;
       _season = g.keys.isEmpty ? null : (g.keys.toList()..sort()).first;
       _loadingMeta = false;
@@ -2036,8 +1999,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _loadingStreams = true;
       _streams = [];
     });
-    final streams =
-        await widget.engine.resolveStreams(widget.meta.type, id, widget.addons);
+    final streams = await widget.engine
+        .resolveStreams(widget.meta.type, id, widget.addons);
     if (!mounted) return;
     setState(() {
       _streams = streams;
@@ -2170,8 +2133,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
             const Padding(
               padding: EdgeInsets.all(16),
               child: Center(
-                child: CircularProgressIndicator(
-                    color: _cyan, strokeWidth: 2),
+                child:
+                    CircularProgressIndicator(color: _cyan, strokeWidth: 2),
               ),
             ),
           if (_streams.isNotEmpty)
@@ -2546,7 +2509,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 class SearchModal extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
-  const SearchModal({super.key, required this.engine, required this.onShowDetails});
+  const SearchModal(
+      {super.key, required this.engine, required this.onShowDetails});
   @override
   State<SearchModal> createState() => _SearchModalState();
 }
@@ -2575,16 +2539,14 @@ class _SearchModalState extends State<SearchModal> {
 
   void _append(String s) {
     _ctrl.text += s;
-    _ctrl.selection =
-        TextSelection.collapsed(offset: _ctrl.text.length);
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
     setState(() {});
   }
 
   void _backspace() {
     if (_ctrl.text.isEmpty) return;
     _ctrl.text = _ctrl.text.substring(0, _ctrl.text.length - 1);
-    _ctrl.selection =
-        TextSelection.collapsed(offset: _ctrl.text.length);
+    _ctrl.selection = TextSelection.collapsed(offset: _ctrl.text.length);
     setState(() {});
   }
 
@@ -2725,7 +2687,7 @@ class _SearchModalState extends State<SearchModal> {
 }
 
 // ============================================================
-// ADDON STORE MODAL (manual)
+// ADDON STORE MODAL
 // ============================================================
 class _AddonStoreModal extends StatefulWidget {
   final List<ManagedAddon> addons;
