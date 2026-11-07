@@ -700,10 +700,10 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
         title: title,
         url: url,
         initialMs: startMs,
-        onSave: (ms) {
+        onSave: (ms) async {
           resumeMs[key] = ms;
           resumeTitles[key] = title;
-          _saveState();
+          await _saveState();
         },
         onNext: onNext,
       ),
