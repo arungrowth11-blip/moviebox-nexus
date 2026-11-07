@@ -1,4 +1,4 @@
-// MovieBox Nexus OS v5.1 — Self-Healing Addon Engine
+// MovieBox Nexus OS v5.2 — Final Build-Safe
 // Paste this file at repo ROOT as main.dart
 
 import 'dart:async';
@@ -195,7 +195,6 @@ class ManagedAddon {
 class AddonManager {
   final http.Client _client = http.Client();
 
-  // Seed addons as Map<name, manifestUrl> — safe, no records
   static const Map<String, String> _seedAddons = {
     'Torrentio': 'https://torrentio.strem.fun/manifest.json',
     'Torrentio Lite': 'https://torrentio.strem.fun/lite/manifest.json',
@@ -345,9 +344,10 @@ class CatalogEngine {
           .timeout(const Duration(seconds: 8));
       if (r.statusCode == 200) {
         final j = jsonDecode(r.body);
-        final results = j is Map ? j['feed']?['results'] : null;
-        if (results is List && results.isNotEmpty) {
-          final futures = results.take(12).map((e) async {
+        final dynamic feed = j is Map ? j['feed'] : null;
+        final dynamic resultsRaw = feed is Map ? feed['results'] : null;
+        if (resultsRaw is List && resultsRaw.isNotEmpty) {
+          final futures = resultsRaw.take(12).map((e) async {
             if (e is! Map) return null;
             final name = (e['name'] ?? '').toString();
             if (name.isEmpty) return null;
@@ -358,7 +358,7 @@ class CatalogEngine {
                   .timeout(const Duration(seconds: 6));
               if (sr.statusCode == 200) {
                 final sj = jsonDecode(sr.body);
-                final sm = sj is Map ? sj['metas'] : null;
+                final dynamic sm = sj is Map ? sj['metas'] : null;
                 if (sm is List && sm.isNotEmpty) {
                   return Meta.fromJson(
                       Map<String, dynamic>.from(sm.first as Map));
@@ -609,6 +609,7 @@ class _RootShellState extends State<RootShell> {
             .toList();
       }
     });
+    return;
   }
 
   Future<void> _saveState() async {
@@ -617,6 +618,7 @@ class _RootShellState extends State<RootShell> {
     await p.setStringList('watched_eps', watchedEpisodes.toList());
     await p.setString('resume_ms', jsonEncode(resumeMs));
     await p.setString('resume_titles', jsonEncode(resumeTitles));
+    return;
   }
 
   Future<void> _syncAddons() async {
@@ -651,6 +653,7 @@ class _RootShellState extends State<RootShell> {
       if (mounted) setState(() {});
       _server!.listen(_handleRemote);
     } catch (_) {}
+    return;
   }
 
   Future<void> _handleRemote(HttpRequest req) async {
@@ -688,6 +691,7 @@ class _RootShellState extends State<RootShell> {
       req.response.write('$e');
     }
     await req.response.close();
+    return;
   }
 
   String _remoteHtml() => '''
@@ -727,6 +731,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
           managedAddons.map((a) => jsonEncode(a.toJson())).toList());
       if (mounted) setState(() {});
     }
+    return;
   }
 
   void _pushPlayer(String title, String url, String key, {VoidCallback? onNext}) {
@@ -755,11 +760,13 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
       }
     });
     await _saveState();
+    return;
   }
 
   Future<void> _markWatched(String episodeId) async {
     setState(() => watchedEpisodes.add(episodeId));
     await _saveState();
+    return;
   }
 
   @override
@@ -827,6 +834,7 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
             final p = await SharedPreferences.getInstance();
             await p.setStringList('managed_addons',
                 managedAddons.map((x) => jsonEncode(x.toJson())).toList());
+            return;
           },
           onInstall: () => _openAddons(),
           onRefresh: _syncAddons,
@@ -879,12 +887,14 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
           await p.setStringList('managed_addons',
               managedAddons.map((x) => jsonEncode(x.toJson())).toList());
           if (mounted) setState(() {});
+          return;
         },
         onRemove: (a) async {
           setState(() => managedAddons.remove(a));
           final p = await SharedPreferences.getInstance();
           await p.setStringList('managed_addons',
               managedAddons.map((x) => jsonEncode(x.toJson())).toList());
+          return;
         },
         onSync: _syncAddons,
       ),
@@ -925,7 +935,6 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
     );
   }
 }
-
 // ============================================================
 // TOP BAR
 // ============================================================
@@ -1156,6 +1165,7 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final spec in _buildSpecs()) {
       _loadRow(spec);
     }
+    return;
   }
 
   Future<void> _loadIndia() async {
@@ -1167,6 +1177,7 @@ class _HomeScreenState extends State<HomeScreen> {
       indiaLoading = false;
       if (hero == null && items.isNotEmpty) hero = items.first;
     });
+    return;
   }
 
   Future<void> _loadRow(CatalogRowSpec spec) async {
@@ -1181,6 +1192,7 @@ class _HomeScreenState extends State<HomeScreen> {
       loadingRows.remove(spec.title);
       if (hero == null && items.isNotEmpty) hero = items.first;
     });
+    return;
   }
 
   void _onFocusMeta(Meta m) {
@@ -1543,12 +1555,14 @@ class _HomeScreenState extends State<HomeScreen> {
           'http://127.0.0.1:8090/stream?link=${best.infoHash}&index=1&play';
       widget.onPlay('${m.name} (TorrServer)', torr, m.id);
     }
+    return;
   }
 
   Future<void> _openTrailer(Meta m) async {
     final q = Uri.encodeComponent('${m.name} ${m.year} official trailer');
     await launchUrl(Uri.parse('https://www.youtube.com/results?search_query=$q'),
         mode: LaunchMode.externalApplication);
+    return;
   }
 
   String _fmt(int ms) {
@@ -1563,6 +1577,8 @@ class _HomeScreenState extends State<HomeScreen> {
 // HUB SCREEN
 // ============================================================
 class HubScreen extends StatelessWidget {
+  const HubScreen({super.key});
+
   @override
   Widget build(BuildContext context) {
     return GridView.builder(
@@ -1630,8 +1646,16 @@ class MoodScreen extends StatefulWidget {
 
 class _MoodScreenState extends State<MoodScreen> {
   static const List<List<String>> _moods = [
-    ['🧠 Mind-Bending Time Travel', 'Sci-Fi', 'Paradoxes, space odysseys, alternate realities'],
-    ['👻 Late Night Supernatural Horror', 'Horror', 'Hauntings, occult, survival horror'],
+    [
+      '🧠 Mind-Bending Time Travel',
+      'Sci-Fi',
+      'Paradoxes, space odysseys, alternate realities'
+    ],
+    [
+      '👻 Late Night Supernatural Horror',
+      'Horror',
+      'Hauntings, occult, survival horror'
+    ],
     ['🎨 Animated & Anime Worlds', 'Animation', 'Top anime, Pixar, visual wonders'],
     ['🕵️ Dark Crime Thrillers', 'Thriller', 'Psychological, detective, high stakes'],
     ['💥 Adrenaline Action', 'Action', 'Martial arts, espionage, explosive'],
@@ -1656,6 +1680,7 @@ class _MoodScreenState extends State<MoodScreen> {
       _results = items;
       _loading = false;
     });
+    return;
   }
 
   @override
@@ -1765,11 +1790,31 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   final _ctrl = TextEditingController();
 
   final List<List<String>> _channels = [
-    ['Mux HLS Test', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'HLS • 1080p test feed'],
-    ['Apple BipBop', 'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8', 'HLS • Multi-bitrate test'],
-    ['Big Buck Bunny', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', 'Direct MP4 • Open source film'],
-    ['Sintel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4', 'Direct MP4 • Open animation'],
-    ['Tears of Steel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4', 'Direct MP4 • Sci-Fi short'],
+    [
+      'Mux HLS Test',
+      'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+      'HLS • 1080p test feed'
+    ],
+    [
+      'Apple BipBop',
+      'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8',
+      'HLS • Multi-bitrate test'
+    ],
+    [
+      'Big Buck Bunny',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      'Direct MP4 • Open source film'
+    ],
+    [
+      'Sintel',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+      'Direct MP4 • Open animation'
+    ],
+    [
+      'Tears of Steel',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+      'Direct MP4 • Sci-Fi short'
+    ],
   ];
 
   @override
@@ -1833,8 +1878,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                       style: const TextStyle(
                           color: _textPri, fontWeight: FontWeight.bold)),
                   subtitle: Text(c[2],
-                      style:
-                          const TextStyle(color: _cyan, fontSize: 11)),
+                      style: const TextStyle(color: _cyan, fontSize: 11)),
                   trailing: const Text('▶',
                       style: TextStyle(
                           color: Colors.greenAccent, fontSize: 18)),
@@ -1992,6 +2036,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
         _loadStreams(id);
       }
     }
+    return;
   }
 
   Future<void> _loadStreams(String id) async {
@@ -2006,6 +2051,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _streams = streams;
       _loadingStreams = false;
     });
+    return;
   }
 
   @override
@@ -2303,6 +2349,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     } catch (_) {
       if (mounted) setState(() => _error = true);
     }
+    return;
   }
 
   Future<void> _savePos() async {
@@ -2312,6 +2359,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if ((ms - _lastSaved).abs() < 4000) return;
     _lastSaved = ms;
     await widget.onSave(ms);
+    return;
   }
 
   @override
@@ -2366,6 +2414,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Future<void> _external() async {
     await launchUrl(Uri.parse(widget.url),
         mode: LaunchMode.externalApplication);
+    return;
   }
 
   @override
@@ -2535,6 +2584,7 @@ class _SearchModalState extends State<SearchModal> {
       _results = items;
       _searching = false;
     });
+    return;
   }
 
   void _append(String s) {
@@ -2878,7 +2928,7 @@ class _TuiBody extends StatelessWidget {
             fontSize: 13),
         child: ListView(
           children: [
-            const Text('■ MOVIEBOX-TUI v0.1.27 → v5.1'),
+            const Text('■ MOVIEBOX-TUI v0.1.27 → v5.2'),
             const Text('══════════════════════════════════════'),
             Text('YEAR      : ${DateTime.now().year}'),
             Text('ADDONS    : $addonCount installed'),
