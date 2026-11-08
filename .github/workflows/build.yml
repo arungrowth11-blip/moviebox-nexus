@@ -361,22 +361,22 @@ jobs:
           proguard.parent.mkdir(parents=True, exist_ok=True)
           existing_rules = proguard.read_text(encoding='utf-8') if proguard.exists() else ''
           required_rules = (
-              '\\n# Keep constructors used reflectively by AndroidX WorkManager/Room.\\n'
-              '-keep class * extends androidx.room.RoomDatabase { <init>(); }\\n'
-              '-keep class * extends androidx.work.InputMerger { <init>(); }\\n'
+              '\n# Keep constructors used reflectively by AndroidX WorkManager/Room.\n'
+              '-keep class * extends androidx.room.RoomDatabase { <init>(); }\n'
+              '-keep class * extends androidx.work.InputMerger { <init>(); }\n'
           )
           if 'extends androidx.room.RoomDatabase { <init>(); }' not in existing_rules:
               proguard.write_text(existing_rules.rstrip() + required_rules, encoding='utf-8')
 
           # Ensure the generated Flutter release build actually consumes the rules.
           release_proguard = (
-              '\\n\\nandroid {\\n'
-              '    buildTypes {\\n'
-              '        release {\\n'
-              '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\\n'
-              '        }\\n'
-              '    }\\n'
-              '}\\n'
+              '\n\nandroid {\n'
+              '    buildTypes {\n'
+              '        release {\n'
+              '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\n'
+              '        }\n'
+              '    }\n'
+              '}\n'
           )
           if '"proguard-rules.pro"' not in gradle_text:
               with gradle_app.open('a', encoding='utf-8') as gradle_file:
