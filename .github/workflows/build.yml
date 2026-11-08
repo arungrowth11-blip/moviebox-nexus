@@ -45,26 +45,44 @@ jobs:
           cleanup() { rm -rf "$backup_dir"; }
           trap cleanup EXIT
 
-          # Preserve all Dart app/test source and the project dependency manifest.
+          # Preserve app source and the dependency manifest while checking whether
+          # the committed Android project is a complete Flutter scaffold.
           cp -a lib "$backup_dir/lib"
           if [ -d test ]; then cp -a test "$backup_dir/test"; fi
           cp pubspec.yaml "$backup_dir/pubspec.yaml"
 
-          # Retain the custom Android TV banner, but discard the incomplete or
-          # conflicting Android scaffold that caused Flutter create to fail.
           if [ -s android/app/src/main/res/drawable/tv_banner.png ]; then
             mkdir -p "$backup_dir/tv_banner"
             cp android/app/src/main/res/drawable/tv_banner.png "$backup_dir/tv_banner/tv_banner.png"
           fi
-          rm -rf android
 
-          flutter create \
-            --platforms=android \
-            --org com.moviebox.nexus \
-            --project-name moviebox_nexus \
-            .
+          scaffold_complete=1
+          for required_file in \
+            android/gradlew \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            android/settings.gradle.kts \
+            android/build.gradle.kts \
+            android/app/build.gradle.kts \
+            android/app/src/main/AndroidManifest.xml; do
+            if [ ! -s "$required_file" ]; then
+              scaffold_complete=0
+              break
+            fi
+          done
 
-          # Restore the user's app source and dependency manifest after scaffolding.
+          if [ "$scaffold_complete" -ne 1 ]; then
+            echo "Android scaffold is incomplete; regenerating only the Android platform folder."
+            rm -rf android
+            flutter create \
+              --platforms=android \
+              --org com.moviebox.nexus \
+              --project-name moviebox_nexus \
+              .
+          else
+            echo "Complete Android scaffold detected; preserving existing Gradle and manifest files."
+          fi
+
+          # Restore app source/manifest in case flutter create touched them.
           rm -rf lib
           cp -a "$backup_dir/lib" lib
           if [ -d "$backup_dir/test" ]; then
@@ -327,13 +345,13 @@ jobs:
           pick_first = 'pickFirsts += "lib/**/libc++_shared.so"'
           if pick_first not in gradle_text:
               gradle_text += (
-                  '\\n\\nandroid {\\n'
-                  '    packaging {\\n'
-                  '        jniLibs {\\n'
-                  f'            {pick_first}\\n'
-                  '        }\\n'
-                  '    }\\n'
-                  '}\\n'
+                  '\n\nandroid {\n'
+                  '    packaging {\n'
+                  '        jniLibs {\n'
+                  f'            {pick_first}\n'
+                  '        }\n'
+                  '    }\n'
+                  '}\n'
               )
               gradle_app.write_text(gradle_text, encoding='utf-8')
 

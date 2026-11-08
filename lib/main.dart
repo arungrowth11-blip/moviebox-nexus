@@ -668,7 +668,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     String url,
     String key, {
     VoidCallback? onNext,
-    Map<String, String> headers = const <String, String>{},
+    Map<String, String>? headers,
   }) {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => PlayerScreen(
@@ -681,7 +681,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           await _save();
         },
         onNext: onNext,
-        headers: headers,
+        headers: headers ?? const <String, String>{},
       ),
     ));
   }
@@ -2427,42 +2427,6 @@ class _TuiBody extends StatelessWidget {
               onTap: onExit,
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _RoundButton extends StatelessWidget {
-  final IconData icon;
-  final double size;
-  final bool isPrimary;
-  final VoidCallback onTap;
-
-  const _RoundButton({
-    required this.icon,
-    this.size = 48,
-    this.isPrimary = false,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(size / 2),
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: isPrimary ? _cyan : Colors.white12,
-          shape: BoxShape.circle,
-          border: Border.all(color: isPrimary ? _cyan : Colors.white30),
-        ),
-        child: Icon(
-          icon,
-          color: isPrimary ? Colors.black : Colors.white,
-          size: size * 0.5,
         ),
       ),
     );
