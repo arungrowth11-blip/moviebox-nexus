@@ -418,19 +418,20 @@ jobs:
           test -s native/android/EmbeddedTorrentEngine.kt
           python3 - <<'PY'
           from pathlib import Path
+          import os
           import re
 
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
           dependency = 'jlibtorrent-android:2.0.15.3@aar'
           if dependency not in app_text:
-              app_text += (
-                  '\\n\\ndependencies {\\n'
-                  '    implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")\\n'
-                  '}\\n'
-              )
+              app_text += """
+          dependencies {
+              implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")
+          }
+          """
 
-          min_sdk_pattern = r'minSdk\\s*=\\s*flutter\\.minSdkVersion'
+          min_sdk_pattern = r'minSdk\s*=\s*flutter\.minSdkVersion'
           if re.search(min_sdk_pattern, app_text):
               app_text = re.sub(
                   min_sdk_pattern,
@@ -447,10 +448,7 @@ jobs:
           if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
               raise SystemExit('Android minSdk was not raised to the jlibtorrent requirement.')
 
-          # The repository is injected in the shared Gradle init script, not by
-          # assuming that Flutter's generated settings.gradle.kts contains a
-          # dependencyResolutionManagement block.
-          init_script = Path(__import__('os').environ['RUNNER_TEMP']) / 'moviebox-maven-mirrors.init.gradle'
+          init_script = Path(os.environ['RUNNER_TEMP']) / 'moviebox-maven-mirrors.init.gradle'
           init_text = init_script.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in init_text:
               raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
