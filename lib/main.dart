@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
@@ -969,7 +970,7 @@ class _HomeScreenState extends State<HomeScreen> {
       onRefresh: _loadAll,
       color: _cyan,
       child: CustomScrollView(
-        scrollCacheExtent: 800,
+        scrollCacheExtent: const ScrollCacheExtent.pixels(800.0),
         slivers: [
           if (hero != null) 
             SliverToBoxAdapter(child: _buildHero(hero!)),
