@@ -1,17 +1,19 @@
 name: moviebox_nexus
 description: MovieBox Nexus OS Android TV and mobile media catalog application.
-publish_to: 'none'
+publish_to: none
 version: 1.0.0+1
 environment:
-  sdk: '>=3.6.0 <4.0.0'
+  sdk: '>=3.11.0 <4.0.0'
+  flutter: '>=3.41.0'
 dependencies:
   flutter:
     sdk: flutter
   http: 1.2.2
   shared_preferences: 2.3.2
-  url_launcher: 6.3.1
-  video_player: 2.9.2
   qr_flutter: 4.1.0
+  better_player_plus: 1.4.1
+  flutter_vlc_player: 7.4.4
+  url_launcher: 6.3.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
