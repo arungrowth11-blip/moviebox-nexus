@@ -83,7 +83,7 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Create Gradle init script for plugin portals and all project repositories
+      - name: Create Gradle init script for plugin portals and settings repositories
         shell: bash
         run: |
           set -euo pipefail
@@ -128,29 +128,10 @@ jobs:
               println "[MovieBox CI] Plugin Portal + Maven mirrors configured before settings evaluation: ${settings.settingsDir}"
           }
 
-          // Cover ordinary project dependencies and buildscript classpaths in
-          // every build, including Flutter's included Gradle build logic.
-          gradle.beforeProject { project ->
-              // Flutter's own included Gradle build has project-level Maven
-              // dependencies. Add mirrors there without violating the main
-              // Android build's FAIL_ON_PROJECT_REPOS policy.
-              def rootDirPath = project.rootProject.projectDir.toString().replace('\\', '/')
-              if (rootDirPath.contains('/flutter/packages/flutter_tools/gradle')) {
-                  addMovieBoxMirrors.call(
-                      project.repositories,
-                      "FlutterProject${project.path.replace(':', '_')}"
-                  )
-                  addGoogleRepository.call(project.repositories)
-                  println "[MovieBox CI] Flutter included-project mirrors configured: ${project.path}"
-              }
-
-              // Buildscript repositories are separate from normal project repositories.
-              addMovieBoxMirrors.call(
-                  project.buildscript.repositories,
-                  "Buildscript${project.path.replace(':', '_')}"
-              )
-              addGoogleRepository.call(project.buildscript.repositories)
-          }
+          // Do not mutate project repositories here. The Android and Flutter
+          // included builds use PREFER_SETTINGS, so project-level repositories
+          // would cause a repository-mode conflict. beforeSettings above applies
+          // the mirrors to each build's dependencyResolutionManagement instead.
           GRADLE_INIT
 
           test -s "$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle"
@@ -237,7 +218,7 @@ jobs:
             echo "ERROR: Maven mirror init script is missing: $INIT_SCRIPT" >&2
             exit 1
           }
-          # Force Gradle to re-check repository metadata after the repository order changes.
+          # Pass settings-level repository configuration into the main and included builds.
           exec gradle --init-script "$INIT_SCRIPT" "$@"
           GRADLE_SH
           chmod +x android/gradlew
