@@ -1,96 +1,202 @@
 name: Build MovieBox Nexus OS APK
+
 on:
   push:
     branches: [main, master]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   android-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
+
       - name: Set up Flutter stable
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Ensure Flutter Android scaffold and preserve source
+
+      - name: Recreate a clean Android scaffold and restore app source
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f lib/main.dart ] && [ -f main.dart ]; then
+
+          if [ ! -s lib/main.dart ] && [ -s main.dart ]; then
             mkdir -p lib
             cp main.dart lib/main.dart
           fi
-          # An android/ directory containing only assets is NOT a Flutter scaffold.
-          if [ ! -f pubspec.yaml ] || [ ! -f android/app/src/main/AndroidManifest.xml ] || [ ! -f android/settings.gradle.kts ] && [ ! -f android/settings.gradle ]; then
-            backup_dir="$(mktemp -d)"
-            if [ -f lib/main.dart ]; then cp lib/main.dart "$backup_dir/main.dart"; fi
-            if [ -f pubspec.yaml ]; then cp pubspec.yaml "$backup_dir/pubspec.yaml"; fi
-            flutter create --platforms=android --org com.moviebox.nexus --project-name moviebox_nexus .
-            if [ -f "$backup_dir/main.dart" ]; then cp "$backup_dir/main.dart" lib/main.dart; fi
-            if [ -f "$backup_dir/pubspec.yaml" ]; then cp "$backup_dir/pubspec.yaml" pubspec.yaml; fi
-            rm -rf "$backup_dir"
+          test -s lib/main.dart || { echo 'ERROR: lib/main.dart is missing'; exit 1; }
+          test -s pubspec.yaml || { echo 'ERROR: pubspec.yaml is missing'; exit 1; }
+
+          backup_dir="$(mktemp -d)"
+          cleanup() { rm -rf "$backup_dir"; }
+          trap cleanup EXIT
+
+          # Preserve all Dart app/test source and the project dependency manifest.
+          cp -a lib "$backup_dir/lib"
+          if [ -d test ]; then cp -a test "$backup_dir/test"; fi
+          cp pubspec.yaml "$backup_dir/pubspec.yaml"
+
+          # Retain the custom Android TV banner, but discard the incomplete or
+          # conflicting Android scaffold that caused Flutter create to fail.
+          if [ -s android/app/src/main/res/drawable/tv_banner.png ]; then
+            mkdir -p "$backup_dir/tv_banner"
+            cp android/app/src/main/res/drawable/tv_banner.png "$backup_dir/tv_banner/tv_banner.png"
           fi
-          test -f android/app/src/main/AndroidManifest.xml
+          rm -rf android
+
+          flutter create \
+            --platforms=android \
+            --org com.moviebox.nexus \
+            --project-name moviebox_nexus \
+            .
+
+          # Restore the user's app source and dependency manifest after scaffolding.
+          rm -rf lib
+          cp -a "$backup_dir/lib" lib
+          if [ -d "$backup_dir/test" ]; then
+            rm -rf test
+            cp -a "$backup_dir/test" test
+          fi
+          cp "$backup_dir/pubspec.yaml" pubspec.yaml
+
+          if [ -s "$backup_dir/tv_banner/tv_banner.png" ]; then
+            mkdir -p android/app/src/main/res/drawable
+            cp "$backup_dir/tv_banner/tv_banner.png" android/app/src/main/res/drawable/tv_banner.png
+          fi
+
           test -s lib/main.dart
+          test -s android/app/src/main/AndroidManifest.xml
+          test -s android/gradlew
+          test -s android/gradle/wrapper/gradle-wrapper.properties
+
       - name: Patch Android TV and network manifest
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import struct
           import xml.etree.ElementTree as ET
-          path = Path('android/app/src/main/AndroidManifest.xml')
-          if not path.exists(): raise SystemExit(f'Missing {path}')
-          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
-          A = '{http://schemas.android.com/apk/res/android}'
-          tree = ET.parse(path)
+          import zlib
+
+          resource_dir = Path('android/app/src/main/res/drawable')
+          resource_dir.mkdir(parents=True, exist_ok=True)
+          banner = resource_dir / 'tv_banner.png'
+          if not banner.exists():
+              width, height = 320, 180
+              rows = []
+              for y in range(height):
+                  row = bytearray([0])
+                  for x in range(width):
+                      row.extend((10, 14 + y // 20, 30 + x // 24))
+                  rows.append(bytes(row))
+
+              def png_chunk(kind: bytes, payload: bytes) -> bytes:
+                  return (struct.pack('>I', len(payload)) + kind + payload +
+                          struct.pack('>I', zlib.crc32(kind + payload) & 0xffffffff))
+
+              png = (b'\x89PNG\r\n\x1a\n' +
+                     png_chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)) +
+                     png_chunk(b'IDAT', zlib.compress(b''.join(rows))) +
+                     png_chunk(b'IEND', b''))
+              banner.write_bytes(png)
+
+          manifest = Path('android/app/src/main/AndroidManifest.xml')
+          if not manifest.is_file():
+              raise SystemExit(f'Missing Android manifest: {manifest}')
+
+          android_ns = 'http://schemas.android.com/apk/res/android'
+          ET.register_namespace('android', android_ns)
+          A = '{' + android_ns + '}'
+          tree = ET.parse(manifest)
           root = tree.getroot()
-          for permission in ('android.permission.INTERNET', 'android.permission.ACCESS_NETWORK_STATE', 'android.permission.WAKE_LOCK'):
-              if not any(x.get(A+'name') == permission for x in root.findall('uses-permission')):
-                  ET.SubElement(root, 'uses-permission', {A+'name': permission})
-          features = {x.get(A+'name'): x for x in root.findall('uses-feature')}
-          for name, required in (('android.software.leanback', 'false'), ('android.hardware.touchscreen', 'false')):
-              node = features.get(name)
-              if node is None: node = ET.SubElement(root, 'uses-feature', {A+'name': name})
-              node.set(A+'required', required)
-          app = root.find('application')
-          if app is None: raise SystemExit('Missing application element')
-          app.set(A+'label', 'MovieBox Nexus OS')
-          app.set(A+'usesCleartextTraffic', 'true')  # User-configured IPTV streams may be HTTP.
-          app.set(A+'banner', '@drawable/tv_banner')
-          for activity in app.findall('activity'):
-              for intent in activity.findall('intent-filter'):
-                  actions = {x.get(A+'name') for x in intent.findall('action')}
-                  if 'android.intent.action.MAIN' in actions:
-                      cats = {x.get(A+'name') for x in intent.findall('category')}
-                      for category in ('android.intent.category.LAUNCHER', 'android.intent.category.LEANBACK_LAUNCHER'):
-                          if category not in cats: ET.SubElement(intent, 'category', {A+'name': category})
-          tree.write(path, encoding='utf-8', xml_declaration=True)
+
+          permissions = {
+              node.get(A + 'name') for node in root.findall('uses-permission')
+          }
+          for permission in (
+              'android.permission.INTERNET',
+              'android.permission.ACCESS_NETWORK_STATE',
+              'android.permission.WAKE_LOCK',
+          ):
+              if permission not in permissions:
+                  ET.SubElement(root, 'uses-permission', {A + 'name': permission})
+
+          features = {node.get(A + 'name'): node for node in root.findall('uses-feature')}
+          for feature, required in (
+              ('android.software.leanback', 'false'),
+              ('android.hardware.touchscreen', 'false'),
+          ):
+              node = features.get(feature)
+              if node is None:
+                  node = ET.SubElement(root, 'uses-feature', {A + 'name': feature})
+              node.set(A + 'required', required)
+
+          application = root.find('application')
+          if application is None:
+              raise SystemExit('AndroidManifest.xml has no <application> element')
+          application.set(A + 'label', 'MovieBox Nexus OS')
+          application.set(A + 'usesCleartextTraffic', 'true')
+          application.set(A + 'banner', '@drawable/tv_banner')
+
+          for activity in application.findall('activity'):
+              for intent_filter in activity.findall('intent-filter'):
+                  actions = {
+                      node.get(A + 'name') for node in intent_filter.findall('action')
+                  }
+                  if 'android.intent.action.MAIN' not in actions:
+                      continue
+                  categories = {
+                      node.get(A + 'name') for node in intent_filter.findall('category')
+                  }
+                  for category in (
+                      'android.intent.category.LAUNCHER',
+                      'android.intent.category.LEANBACK_LAUNCHER',
+                  ):
+                      if category not in categories:
+                          ET.SubElement(intent_filter, 'category', {A + 'name': category})
+
+          tree.write(manifest, encoding='utf-8', xml_declaration=True)
+          print('Android manifest patched successfully')
           PY
+
       - name: Resolve dependencies
         run: flutter pub get
-      - name: Format check
+
+      - name: Format Dart source
         run: dart format lib test
+
       - name: Static analysis
         run: flutter analyze --no-pub
+
       - name: Run tests
         run: flutter test --no-pub
+
       - name: Build release APK
         run: flutter build apk --release
+
       - name: Stage APK
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
           cp build/app/outputs/flutter-apk/app-release.apk dist/MovieBox-Nexus-OS.apk
+          test -s dist/MovieBox-Nexus-OS.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
