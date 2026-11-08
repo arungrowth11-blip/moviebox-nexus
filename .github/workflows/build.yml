@@ -368,20 +368,20 @@ jobs:
           -keep class * extends androidx.work.InputMerger { <init>(); }
           '''
           if 'androidx.work.impl.WorkDatabase_Impl' not in existing_rules:
-              proguard.write_text(existing_rules.rstrip() + '\\n' + required_rules.lstrip(), encoding='utf-8')
+              proguard.write_text(existing_rules.rstrip() + '\n' + required_rules.lstrip(), encoding='utf-8')
 
           # Attach the custom rules to the RELEASE variant; merely creating the file
           # does not make Gradle/R8 consume it.
           if '"proguard-rules.pro"' not in gradle_text:
               gradle_app.write_text(
                   gradle_text.rstrip() +
-                  '\\n\\nandroid {\\n'
-                  '    buildTypes {\\n'
-                  '        release {\\n'
-                  '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\\n'
-                  '        }\\n'
-                  '    }\\n'
-                  '}\\n',
+                  '\n\nandroid {\n'
+                  '    buildTypes {\n'
+                  '        release {\n'
+                  '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\n'
+                  '        }\n'
+                  '    }\n'
+                  '}\n',
                   encoding='utf-8',
               )
 
