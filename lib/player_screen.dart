@@ -221,7 +221,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     _vlcInitStarted = true;
     final media3Value = _media3?.videoPlayerController?.value;
-    if (media3Value != null && media3Value.isInitialized) {
+    if (media3Value != null && media3Value.initialized) {
       _pendingPositionMs = media3Value.position.inMilliseconds;
     }
 
@@ -328,7 +328,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       position = controller.value.position.inMilliseconds;
     } else {
       final value = _media3?.videoPlayerController?.value;
-      if (value == null || !value.isInitialized) return;
+      if (value == null || !value.initialized) return;
       position = value.position.inMilliseconds;
     }
 
@@ -528,10 +528,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         key == LogicalKeyboardKey.arrowRight) {
       final controller = _media3;
       final value = controller?.videoPlayerController?.value;
-      if (controller != null && value != null && value.isInitialized && !_isLive) {
+      if (controller != null && value != null && value.initialized && !_isLive) {
         final delta = key == LogicalKeyboardKey.arrowLeft ? -10 : 10;
         final target = value.position + Duration(seconds: delta);
         final duration = value.duration;
+        if (duration == null) return KeyEventResult.handled;
         final clamped = target < Duration.zero
             ? Duration.zero
             : (target > duration ? duration : target);
@@ -555,7 +556,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     return KeyEventResult.ignored;
   }
 
-  String _timeText(Duration value) {
+  String _timeText(Duration? value) {
+    if (value == null) return '--:--';
     final hours = value.inHours;
     final minutes = value.inMinutes.remainder(60).toString().padLeft(2, '0');
     final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');

@@ -668,7 +668,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     String url,
     String key, {
     VoidCallback? onNext,
-    Map<String, String> headers = const <String, String>{},
+    Map<String, String>? headers,
   }) {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => PlayerScreen(
@@ -681,7 +681,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           await _save();
         },
         onNext: onNext,
-        headers: headers,
+        headers: headers ?? const <String, String>{},
       ),
     ));
   }
