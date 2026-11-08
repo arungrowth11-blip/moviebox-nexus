@@ -8,7 +8,6 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  libtorrent_flutter: ^2.0.0
   http: ^1.6.0
   path_provider: ^2.1.5
   shared_preferences: 2.3.2

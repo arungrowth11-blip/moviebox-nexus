@@ -527,91 +527,48 @@ class CatalogRowSpec {
   });
 }
 
-/// Embedded libtorrent engine. Stremio infoHash values are converted to a
-/// magnet internally, then exposed to the existing player through the native
-/// loopback HTTP byte-range server. No external TorrServer setup is needed.
+/// Embedded torrent bridge backed by FrostWire jlibtorrent on Android.
+/// The native side exposes a loopback HTTP byte-range stream to the in-app player.
 class EmbeddedTorrentService {
   EmbeddedTorrentService._();
   static final EmbeddedTorrentService instance = EmbeddedTorrentService._();
+  static const MethodChannel _channel = MethodChannel('moviebox_nexus/torrent');
 
   bool _initialized = false;
-  int? _activeTorrentId;
 
   Future<void> initialize() async {
     if (_initialized) return;
-    await LibtorrentFlutter.init(fetchTrackers: true);
+    await _channel.invokeMethod<void>('initialize');
     _initialized = true;
   }
 
   Future<String> startPlayback(String infoHash, {String title = ''}) async {
-    if (!_initialized) {
-      throw StateError('Built-in torrent engine is not available on this device.');
-    }
     final hash = infoHash.trim();
     if (!RegExp(r'^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$').hasMatch(hash)) {
       throw FormatException('Invalid torrent infoHash.');
     }
-
-    final engine = LibtorrentFlutter.instance;
-    final previousId = _activeTorrentId;
-    if (previousId != null) {
-      try { engine.disposeTorrent(previousId); } catch (_) {}
-      _activeTorrentId = null;
+    final url = await _channel.invokeMethod<String>(
+      'startPlayback',
+      <String, Object>{
+        'infoHash': hash,
+        'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
+      },
+    );
+    final uri = Uri.tryParse(url ?? '');
+    if (uri == null ||
+        uri.scheme != 'http' ||
+        uri.host != '127.0.0.1' ||
+        uri.port <= 0) {
+      throw StateError('Built-in torrent engine returned an invalid loopback URL.');
     }
-
-    final displayName = title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim();
-    final magnet = 'magnet:?xt=urn:btih:$hash&dn=${Uri.encodeQueryComponent(displayName)}';
-    final torrentId = engine.addMagnet(magnet);
-    _activeTorrentId = torrentId;
-
-    try {
-      // Wait for DHT/tracker metadata before selecting a playable video file.
-      final deadline = DateTime.now().add(const Duration(minutes: 2));
-      while (DateTime.now().isBefore(deadline)) {
-        final torrent = engine.torrents[torrentId];
-        if (torrent != null && torrent.hasMetadata) break;
-        await Future<void>.delayed(const Duration(milliseconds: 500));
-      }
-
-      final torrent = engine.torrents[torrentId];
-      if (torrent == null || !torrent.hasMetadata) {
-        throw TimeoutException(
-          'Torrent metadata not found. This source may have no active peers.',
-          const Duration(minutes: 2),
-        );
-      }
-
-      final files = engine.getFiles(torrentId)
-          .where((file) => file.isStreamable)
-          .toList()
-        ..sort((a, b) => b.size.compareTo(a.size));
-      if (files.isEmpty) {
-        throw StateError('Torrent has no supported video file.');
-      }
-
-      final stream = engine.startStream(
-        torrentId,
-        fileIndex: files.first.index,
-        maxCacheBytes: 384 * 1024 * 1024,
-      );
-      final uri = Uri.tryParse(stream.url);
-      if (uri == null || uri.scheme != 'http' || uri.host != '127.0.0.1') {
-        throw StateError('Built-in torrent engine returned an invalid stream URL.');
-      }
-      return stream.url;
-    } catch (_) {
-      try { engine.disposeTorrent(torrentId); } catch (_) {}
-      if (_activeTorrentId == torrentId) _activeTorrentId = null;
-      rethrow;
-    }
+    return uri.toString();
   }
 
   void dispose() {
-    final id = _activeTorrentId;
-    if (id != null) {
-      try { LibtorrentFlutter.instance.disposeTorrent(id); } catch (_) {}
-      _activeTorrentId = null;
-    }
+    _initialized = false;
+    unawaited(_channel.invokeMethod<void>('stopPlayback').catchError((Object error) {
+      debugPrint('MovieBox torrent stop failed: $error');
+    }));
   }
 }
 
