@@ -411,54 +411,56 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub
 
-      - name: Diagnose libtorrent release assets and package downloader
+      - name: Verify matching libtorrent release assets before native build
         shell: bash
         run: |
-          set -u
-          echo "=== Resolved libtorrent_flutter package ==="
-          find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -type d -name 'libtorrent_flutter-*' -print
-          package_dir="$(find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -type d -name 'libtorrent_flutter-*' | sort | tail -n 1)"
-          if [ -n "$package_dir" ] && [ -f "$package_dir/android/build.gradle" ]; then
-            echo "--- Android downloader implementation (relevant lines) ---"
-            grep -n -E -C 3 'releases/download|android-native-lib|download|prebuilt|catch|exception' "$package_dir/android/build.gradle" | head -n 180 || true
-            echo "--- prebuilt directory after dependency resolution ---"
-            find "$package_dir/prebuilt/android" -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
-          else
-            echo "Could not locate the resolved package Android Gradle script."
+          set -euo pipefail
+          package_version="$(awk '$1 == "libtorrent_flutter:" {print $2}' pubspec.yaml)"
+          if [ -z "$package_version" ]; then
+            echo "::error::Could not determine the pinned libtorrent_flutter version."
+            exit 1
           fi
+          release_tag="v${package_version}"
+          echo "Checking release ${release_tag} for libtorrent_flutter ${package_version}"
 
-          echo "=== GitHub release API metadata ==="
           api_file="$(mktemp)"
+          trap 'rm -f "$api_file"' EXIT
           api_status="$(curl --location --silent --show-error --connect-timeout 20 --max-time 60 \
             --output "$api_file" --write-out '%{http_code}' \
             -H 'Accept: application/vnd.github+json' \
-            'https://api.github.com/repos/ayman708-UX/libtorrent_flutter/releases/tags/v1.8.5' || true)"
-          echo "GitHub API HTTP status: ${api_status:-curl-error}"
-          if [ "$api_status" = "200" ]; then
-            python3 - "$api_file" <<'PY'
-          import json, sys
-          data = json.load(open(sys.argv[1], encoding='utf-8'))
-          print("release tag:", data.get("tag_name"))
-          for asset in data.get("assets", []):
-              print("asset:", asset.get("name"), "size:", asset.get("size"), "url:", asset.get("browser_download_url"))
-          PY
-          else
+            "https://api.github.com/repos/ayman708-UX/libtorrent_flutter/releases/tags/${release_tag}" || true)"
+          echo "GitHub API status for ${release_tag}: ${api_status:-curl-error}"
+          if [ "$api_status" != "200" ]; then
+            echo "::error::No reachable GitHub Release metadata for ${release_tag}; refusing to fall back to an incomplete C++ source build."
             head -c 1000 "$api_file" || true
-            echo
+            exit 1
           fi
-          rm -f "$api_file"
 
-          echo "=== Android prebuilt URL HEAD checks (follow redirects) ==="
+          python3 - "$api_file" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          print("Release:", data.get("tag_name"))
+          assets = {item.get("name"): item for item in data.get("assets", [])}
+          for abi in ("arm64-v8a", "armeabi-v7a", "x86_64"):
+              name = f"android-native-lib-{abi}.zip"
+              item = assets.get(name)
+              if not item:
+                  raise SystemExit(f"Missing required release asset: {name}")
+              print(f"Asset OK: {name} ({item.get('size')} bytes)")
+          PY
+
           for abi in arm64-v8a armeabi-v7a x86_64; do
-            url="https://github.com/ayman708-UX/libtorrent_flutter/releases/download/v1.8.5/android-native-lib-${abi}.zip"
-            echo "Checking ${url}"
-            curl --head --location --silent --show-error \
+            url="https://github.com/ayman708-UX/libtorrent_flutter/releases/download/${release_tag}/android-native-lib-${abi}.zip"
+            status="$(curl --head --location --silent --show-error \
               --connect-timeout 20 --max-time 90 \
-              --output /dev/null \
-              --write-out 'HTTP %{http_code} | final=%{url_effective} | type=%{content_type} | bytes=%{size_download}\n' \
-              "$url" || echo "HEAD request failed for ${abi} (curl exit $?)"
+              --output /dev/null --write-out '%{http_code}' "$url" || true)"
+            echo "${abi}: HTTP ${status:-curl-error} — ${url}"
+            if [ "$status" != "200" ]; then
+              echo "::error::Required native asset is not downloadable for ${abi}; stopping before CMake fallback."
+              exit 1
+            fi
           done
-
+          echo "All matching native release assets are reachable."
       - name: Build release APK (retry transient network failures)
         shell: bash
         run: |

@@ -8,9 +8,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Trial pin: test the newest upstream GitHub Release with published Android binaries.
-  # Do not promote this older build until 16 KB page-size and ARM64 stability are addressed.
-  libtorrent_flutter: 1.8.5
+  # 1.8.5 is documented as metadata-only; test the matching 1.8.4 native release assets.
+  libtorrent_flutter: 1.8.4
   http: ^1.6.0
   path_provider: ^2.1.5
   shared_preferences: 2.3.2
