@@ -1627,7 +1627,9 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     final filtered = _channels.where((c) {
       final q = _query.toLowerCase();
       return q.isEmpty || (c['name'] ?? '').toLowerCase().contains(q) ||
-          (c['group'] ?? '').toLowerCase().contains(q);
+          (c['group'] ?? '').toLowerCase().contains(q) ||
+          (c['country'] ?? '').toLowerCase().contains(q) ||
+          (c['language'] ?? '').toLowerCase().contains(q);
     }).toList();
     return Column(
       children: [
