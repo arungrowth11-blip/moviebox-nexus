@@ -560,7 +560,7 @@ class EmbeddedTorrentService {
     }
 
     final displayName = title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim();
-    final magnet = 'magnet:?xt=urn:btih:$hash&dn=\${Uri.encodeQueryComponent(displayName)}';
+    final magnet = 'magnet:?xt=urn:btih:$hash&dn=${Uri.encodeQueryComponent(displayName)}';
     final torrentId = engine.addMagnet(magnet);
     _activeTorrentId = torrentId;
 
@@ -924,6 +924,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
   @override
   void dispose() {
     _server?.close(force: true);
+    EmbeddedTorrentService.instance.dispose();
     engine.close();
     addonManager.close();
     super.dispose();
@@ -2632,12 +2633,12 @@ class _DetailsSheetState extends State<DetailsSheet> {
     try {
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
-        title: '\${widget.meta.name} - $_targetLabel',
+        title: '${widget.meta.name} - $_targetLabel',
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
       widget.onPlay(
-        '\${widget.meta.name} - $_targetLabel',
+        '${widget.meta.name} - $_targetLabel',
         url,
         _targetId,
       );
