@@ -411,6 +411,54 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub
 
+      - name: Diagnose libtorrent release assets and package downloader
+        shell: bash
+        run: |
+          set -u
+          echo "=== Resolved libtorrent_flutter package ==="
+          find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -type d -name 'libtorrent_flutter-*' -print
+          package_dir="$(find "$HOME/.pub-cache/hosted/pub.dev" -maxdepth 1 -type d -name 'libtorrent_flutter-*' | sort | tail -n 1)"
+          if [ -n "$package_dir" ] && [ -f "$package_dir/android/build.gradle" ]; then
+            echo "--- Android downloader implementation (relevant lines) ---"
+            grep -n -E -C 3 'releases/download|android-native-lib|download|prebuilt|catch|exception' "$package_dir/android/build.gradle" | head -n 180 || true
+            echo "--- prebuilt directory after dependency resolution ---"
+            find "$package_dir/prebuilt/android" -maxdepth 3 -type f -printf '%P %s bytes\n' 2>/dev/null | sort || true
+          else
+            echo "Could not locate the resolved package Android Gradle script."
+          fi
+
+          echo "=== GitHub release API metadata ==="
+          api_file="$(mktemp)"
+          api_status="$(curl --location --silent --show-error --connect-timeout 20 --max-time 60 \
+            --output "$api_file" --write-out '%{http_code}' \
+            -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/ayman708-UX/libtorrent_flutter/releases/tags/v1.8.5' || true)"
+          echo "GitHub API HTTP status: ${api_status:-curl-error}"
+          if [ "$api_status" = "200" ]; then
+            python3 - "$api_file" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding='utf-8'))
+          print("release tag:", data.get("tag_name"))
+          for asset in data.get("assets", []):
+              print("asset:", asset.get("name"), "size:", asset.get("size"), "url:", asset.get("browser_download_url"))
+          PY
+          else
+            head -c 1000 "$api_file" || true
+            echo
+          fi
+          rm -f "$api_file"
+
+          echo "=== Android prebuilt URL HEAD checks (follow redirects) ==="
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            url="https://github.com/ayman708-UX/libtorrent_flutter/releases/download/v1.8.5/android-native-lib-${abi}.zip"
+            echo "Checking ${url}"
+            curl --head --location --silent --show-error \
+              --connect-timeout 20 --max-time 90 \
+              --output /dev/null \
+              --write-out 'HTTP %{http_code} | final=%{url_effective} | type=%{content_type} | bytes=%{size_download}\n' \
+              "$url" || echo "HEAD request failed for ${abi} (curl exit $?)"
+          done
+
       - name: Build release APK (retry transient network failures)
         shell: bash
         run: |
