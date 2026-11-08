@@ -83,7 +83,7 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Create Gradle init script for all builds and included build logic
+      - name: Create Gradle init script for plugin portals and all project repositories
         shell: bash
         run: |
           set -euo pipefail
@@ -104,25 +104,52 @@ jobs:
               }
           }
 
-          // Runs before settings.gradle(.kts) in the main build and included builds.
+          def addGoogleRepository = { repositoryHandler ->
+              repositoryHandler.google()
+          }
+
+          // Gradle plugin marker artifacts are often hosted on the Plugin Portal,
+          // not Maven Central. Keep mirrors first, but retain these official repos.
           gradle.beforeSettings { settings ->
               addMovieBoxMirrors.call(
                   settings.pluginManagement.repositories,
                   'Plugin'
               )
+              addGoogleRepository.call(settings.pluginManagement.repositories)
+              settings.pluginManagement.repositories.gradlePluginPortal()
+
               addMovieBoxMirrors.call(
                   settings.dependencyResolutionManagement.repositories,
                   'Dependency'
               )
-              println "[MovieBox CI] Maven mirrors injected before settings evaluation: ${settings.settingsDir}"
+              addGoogleRepository.call(
+                  settings.dependencyResolutionManagement.repositories
+              )
+              println "[MovieBox CI] Plugin Portal + Maven mirrors configured before settings evaluation: ${settings.settingsDir}"
           }
 
-          // Also cover buildscript classpaths in projects/build logic.
+          // Cover ordinary project dependencies and buildscript classpaths in
+          // every build, including Flutter's included Gradle build logic.
           gradle.beforeProject { project ->
+              // Flutter's own included Gradle build has project-level Maven
+              // dependencies. Add mirrors there without violating the main
+              // Android build's FAIL_ON_PROJECT_REPOS policy.
+              def rootDirPath = project.rootProject.projectDir.toString().replace('\\', '/')
+              if (rootDirPath.contains('/flutter/packages/flutter_tools/gradle')) {
+                  addMovieBoxMirrors.call(
+                      project.repositories,
+                      "FlutterProject${project.path.replace(':', '_')}"
+                  )
+                  addGoogleRepository.call(project.repositories)
+                  println "[MovieBox CI] Flutter included-project mirrors configured: ${project.path}"
+              }
+
+              // Buildscript repositories are separate from normal project repositories.
               addMovieBoxMirrors.call(
                   project.buildscript.repositories,
                   "Buildscript${project.path.replace(':', '_')}"
               )
+              addGoogleRepository.call(project.buildscript.repositories)
           }
           GRADLE_INIT
 
@@ -211,7 +238,7 @@ jobs:
             exit 1
           }
           # Force Gradle to re-check repository metadata after the repository order changes.
-          exec gradle --init-script "$INIT_SCRIPT" --refresh-dependencies "$@"
+          exec gradle --init-script "$INIT_SCRIPT" "$@"
           GRADLE_SH
           chmod +x android/gradlew
 
