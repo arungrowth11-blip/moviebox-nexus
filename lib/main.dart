@@ -148,6 +148,36 @@ class StreamLink {
   }
 }
 
+class OttBrand {
+  final String name;
+  final String shortId;
+  final String fallbackGenre;
+  final Color color;
+  final bool hasCatalog;
+
+  const OttBrand({
+    required this.name,
+    required this.shortId,
+    required this.color,
+    required this.fallbackGenre,
+    this.hasCatalog = false,
+  });
+}
+
+// Home-screen shortcuts are limited to catalogs declared by the default
+// Streaming Catalogs instance. OTT Hubs discovers any additional configured
+// provider catalogs dynamically from each addon's manifest.
+const List<OttBrand> _brands = [
+  OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller', hasCatalog: true),
+  OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action', hasCatalog: true),
+  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure', hasCatalog: true),
+  OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama', hasCatalog: true),
+  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi', hasCatalog: true),
+  OttBrand(name: 'SONYLIV', shortId: 'sonyliv', color: Color(0xFF0057B7), fallbackGenre: 'Comedy'),
+  OttBrand(name: 'ZEE5', shortId: 'zee', color: Color(0xFF8230C6), fallbackGenre: 'Mystery'),
+  OttBrand(name: 'JIOHOTSTAR', shortId: 'jhs', color: Color(0xFFE5005C), fallbackGenre: 'Action'),
+];
+
 class ManagedAddon {
   final String name;
   final String manifestUrl;
