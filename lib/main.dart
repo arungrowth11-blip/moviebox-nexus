@@ -969,7 +969,7 @@ class _HomeScreenState extends State<HomeScreen> {
       onRefresh: _loadAll,
       color: _cyan,
       child: CustomScrollView(
-        cacheExtent: 800,
+        scrollCacheExtent: 800,
         slivers: [
           if (hero != null) 
             SliverToBoxAdapter(child: _buildHero(hero!)),
