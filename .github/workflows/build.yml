@@ -149,7 +149,12 @@ jobs:
               addGoogleRepository.call(
                   settings.dependencyResolutionManagement.repositories
               )
-              println "[MovieBox CI] Plugin Portal + Maven mirrors configured before settings evaluation: ${settings.settingsDir}"
+              settings.dependencyResolutionManagement.repositories.maven {
+                  name = 'FrostWireJlibtorrent'
+                  url = new URI('https://dl.frostwire.com/maven')
+                  content { includeGroup('com.frostwire') }
+              }
+              println "[MovieBox CI] Plugin Portal + Maven mirrors + FrostWire repository configured before settings evaluation: ${settings.settingsDir}"
           }
 
           // Do not mutate project repositories here. The Android and Flutter
@@ -415,45 +420,40 @@ jobs:
           from pathlib import Path
           import re
 
-          settings = Path('android/settings.gradle.kts')
-          settings_text = settings.read_text(encoding='utf-8')
-          match = re.search(r'(dependencyResolutionManagement\s*\{[\s\S]*?repositories\s*\{)', settings_text)
-          if not match:
-              raise SystemExit('Could not locate dependencyResolutionManagement.repositories in settings.gradle.kts')
-
-          repository_block = (
-              '\n        maven {\n'
-              '            url = uri("https://dl.frostwire.com/maven")\n'
-              '            content { includeGroup("com.frostwire") }\n'
-              '        }'
-          )
-          if 'https://dl.frostwire.com/maven' not in settings_text:
-              settings_text = settings_text[:match.end()] + repository_block + settings_text[match.end():]
-              settings.write_text(settings_text, encoding='utf-8')
-
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
-          if 'jlibtorrent-android:2.0.15.3@aar' not in app_text:
+          dependency = 'jlibtorrent-android:2.0.15.3@aar'
+          if dependency not in app_text:
               app_text += (
-                  '\n\ndependencies {\n'
-                  '    implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")\n'
-                  '}\n'
+                  '\\n\\ndependencies {\\n'
+                  '    implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")\\n'
+                  '}\\n'
               )
-          app_text = re.sub(
-              r'minSdk\s*=\s*flutter\.minSdkVersion',
-              'minSdk = maxOf(26, flutter.minSdkVersion)',
-              app_text,
-          )
-          app_gradle.write_text(app_text, encoding='utf-8')
 
-          final_settings = settings.read_text(encoding='utf-8')
+          min_sdk_pattern = r'minSdk\\s*=\\s*flutter\\.minSdkVersion'
+          if re.search(min_sdk_pattern, app_text):
+              app_text = re.sub(
+                  min_sdk_pattern,
+                  'minSdk = maxOf(26, flutter.minSdkVersion)',
+                  app_text,
+              )
+          elif 'minSdk = maxOf(26, flutter.minSdkVersion)' not in app_text:
+              raise SystemExit('Could not locate Flutter minSdk declaration to raise it to 26.')
+
+          app_gradle.write_text(app_text, encoding='utf-8')
           final_app = app_gradle.read_text(encoding='utf-8')
-          if 'https://dl.frostwire.com/maven' not in final_settings:
-              raise SystemExit('FrostWire Maven repository was not configured.')
-          if 'jlibtorrent-android:2.0.15.3@aar' not in final_app:
+          if dependency not in final_app:
               raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
           if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
               raise SystemExit('Android minSdk was not raised to the jlibtorrent requirement.')
+
+          # The repository is injected in the shared Gradle init script, not by
+          # assuming that Flutter's generated settings.gradle.kts contains a
+          # dependencyResolutionManagement block.
+          init_script = Path(__import__('os').environ['RUNNER_TEMP']) / 'moviebox-maven-mirrors.init.gradle'
+          init_text = init_script.read_text(encoding='utf-8')
+          if 'https://dl.frostwire.com/maven' not in init_text:
+              raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
           print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 (all ABIs, minSdk 26).')
           PY
 
