@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -31,6 +32,8 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
   var name = '';
   var logo = '';
   var group = '';
+  var country = '';
+  var language = '';
   final lines = body.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
   for (final raw in lines) {
     final line = raw.trim();
@@ -42,24 +45,36 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
           : '';
       logo = RegExp(r'tvg-logo="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       group = RegExp(r'group-title="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      country = RegExp(r'tvg-country="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      language = RegExp(r'tvg-language="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       continue;
     }
     if (line.startsWith('#')) continue;
     final uri = Uri.tryParse(line);
-    if (uri == null || !uri.hasScheme || !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
+    if (uri == null || !uri.hasScheme ||
+        !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
       continue;
     }
-    if (name.isNotEmpty) {
+    final lowerGroup = group.toLowerCase();
+    final lowerName = name.toLowerCase();
+    final restricted = lowerGroup.contains('xxx') ||
+        lowerGroup.contains('adult') || lowerName.contains('xxx') ||
+        lowerName.contains('18+') || lowerName.contains('adult only');
+    if (name.isNotEmpty && !restricted) {
       channels.add({
         'name': name,
         'url': uri.toString(),
         'logo': logo,
         'group': group.isEmpty ? 'Other' : group,
+        'country': country,
+        'language': language,
       });
     }
     name = '';
     logo = '';
     group = '';
+    country = '';
+    language = '';
   }
   return channels;
 }
@@ -441,29 +456,53 @@ class CatalogEngine {
 
   void close() => _client.close();
 
-  Future<List<Map<String, String>>> fetchIptv() async {
+  /// App-owned M3U cache; refreshes the worldwide upstream playlist every 12h.
+  /// India and Hindi playlists are fallbacks if the global feed is unreachable.
+  Future<List<Map<String, String>>> fetchIptv({bool forceRefresh = false}) async {
+    final support = await getApplicationSupportDirectory();
+    final cacheFile = File('${support.path}/live_tv.m3u');
+    String? cachedBody;
+    try {
+      if (await cacheFile.exists()) {
+        cachedBody = await cacheFile.readAsString();
+        final cacheTime = await cacheFile.lastModified();
+        if (!forceRefresh && cachedBody.isNotEmpty &&
+            DateTime.now().difference(cacheTime) < const Duration(hours: 12)) {
+          return _uniqueLiveChannels(parseM3uPlaylist(cachedBody));
+        }
+      }
+    } catch (_) {}
     const sources = [
+      'https://iptv-org.github.io/iptv/index.m3u',
       'https://iptv-org.github.io/iptv/countries/in.m3u',
-      'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in.m3u',
       'https://iptv-org.github.io/iptv/languages/hin.m3u',
     ];
-    final unique = <String, Map<String, String>>{};
     for (final source in sources) {
       try {
-        final response = await _client.get(
-          Uri.parse(source),
-          headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': '*/*'},
-        ).timeout(const Duration(seconds: 12));
+        final response = await _client.get(Uri.parse(source),
+          headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': '*/*'})
+          .timeout(const Duration(seconds: 35));
         if (response.statusCode != 200 || response.body.isEmpty) continue;
-        for (final channel in parseM3uPlaylist(response.body)) {
-          final url = channel['url'] ?? '';
-          if (url.isNotEmpty) unique.putIfAbsent(url, () => channel);
-          if (unique.length >= 700) break;
-        }
-        if (unique.length >= 100) break;
-      } catch (_) {
-        // Try the next public playlist mirror; never fail the whole Live TV tab.
-      }
+        final parsed = parseM3uPlaylist(response.body);
+        if (parsed.isEmpty) continue;
+        try {
+          await cacheFile.parent.create(recursive: true);
+          await cacheFile.writeAsString(response.body, flush: true);
+        } catch (_) {}
+        return _uniqueLiveChannels(parsed);
+      } catch (_) {}
+    }
+    if (cachedBody != null && cachedBody.isNotEmpty) {
+      return _uniqueLiveChannels(parseM3uPlaylist(cachedBody));
+    }
+    return <Map<String, String>>[];
+  }
+
+  List<Map<String, String>> _uniqueLiveChannels(List<Map<String, String>> channels) {
+    final unique = <String, Map<String, String>>{};
+    for (final channel in channels) {
+      final url = channel['url'] ?? '';
+      if (url.isNotEmpty) unique.putIfAbsent(url, () => channel);
     }
     return unique.values.toList();
   }
@@ -1552,28 +1591,33 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   String _query = '';
   String? _error;
   final _search = TextEditingController();
+  Timer? _autoRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _autoRefreshTimer = Timer.periodic(const Duration(hours: 12), (_) {
+      if (mounted && !_loading) _load(forceRefresh: true);
+    });
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _search.dispose();
     super.dispose();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool forceRefresh = false}) async {
     if (mounted) setState(() { _loading = true; _error = null; });
-    final channels = await widget.engine.fetchIptv();
+    final channels = await widget.engine.fetchIptv(forceRefresh: forceRefresh);
     if (!mounted) return;
     setState(() {
       _channels = channels;
       _loading = false;
       _error = channels.isEmpty
-          ? 'Public India playlists could not be loaded. Check internet and tap Retry.'
+          ? 'Worldwide public playlist is unavailable. Showing the last saved playlist when possible.'
           : null;
     });
   }
@@ -1583,7 +1627,9 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     final filtered = _channels.where((c) {
       final q = _query.toLowerCase();
       return q.isEmpty || (c['name'] ?? '').toLowerCase().contains(q) ||
-          (c['group'] ?? '').toLowerCase().contains(q);
+          (c['group'] ?? '').toLowerCase().contains(q) ||
+          (c['country'] ?? '').toLowerCase().contains(q) ||
+          (c['language'] ?? '').toLowerCase().contains(q);
     }).toList();
     return Column(
       children: [
@@ -1595,7 +1641,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
               onChanged: (v) => setState(() => _query = v.trim()),
               style: const TextStyle(color: _textPri),
               decoration: InputDecoration(
-                hintText: 'Search Indian live channels...',
+                hintText: 'Search live channels worldwide...',
                 prefixIcon: const Icon(Icons.search, color: _cyan),
                 suffixIcon: _query.isEmpty ? null : IconButton(
                   onPressed: () { _search.clear(); setState(() => _query = ''); },
@@ -1606,7 +1652,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
               ),
             )),
             const SizedBox(width: 8),
-            IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh, color: _cyan), tooltip: 'Refresh channels'),
+            IconButton(onPressed: _loading ? null : () => _load(forceRefresh: true), icon: const Icon(Icons.refresh, color: _cyan), tooltip: 'Refresh channels'),
           ]),
         ),
         if (_channels.isNotEmpty)
@@ -1614,7 +1660,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text('${filtered.length} of ${_channels.length} channels • Public playlist sources',
+              child: Text('${filtered.length} of ${_channels.length} channels • Worldwide public playlist • auto-updates every 12h',
                   style: const TextStyle(color: _muted, fontSize: 12)),
             ),
           ),
@@ -1636,7 +1682,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                       ]),
                     ))
                   : RefreshIndicator(
-                      onRefresh: _load,
+                      onRefresh: () => _load(forceRefresh: true),
                       color: _cyan,
                       child: ListView.builder(
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
@@ -1652,7 +1698,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                                       errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: _red))
                                   : const Icon(Icons.live_tv, color: _red),
                               title: Text(c['name'] ?? 'Channel', style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold)),
-                              subtitle: Text(c['group'] ?? 'Other', style: const TextStyle(color: _cyan, fontSize: 11)),
+                              subtitle: Text([c['group'] ?? 'Other', if ((c['country'] ?? '').isNotEmpty) c['country']!, if ((c['language'] ?? '').isNotEmpty) c['language']!].join(' • '), style: const TextStyle(color: _cyan, fontSize: 11)),
                               trailing: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
                               onTap: () => widget.onPlay(c['name'] ?? 'Live TV', c['url'] ?? '', c['url'] ?? ''),
                             )),
