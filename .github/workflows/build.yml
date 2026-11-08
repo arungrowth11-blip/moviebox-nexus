@@ -50,6 +50,7 @@ jobs:
           cp -a lib "$backup_dir/lib"
           if [ -d test ]; then cp -a test "$backup_dir/test"; fi
           cp pubspec.yaml "$backup_dir/pubspec.yaml"
+          if [ -d native/android ]; then cp -a native/android "$backup_dir/native-android"; fi
 
           if [ -s android/app/src/main/res/drawable/tv_banner.png ]; then
             mkdir -p "$backup_dir/tv_banner"
@@ -90,6 +91,11 @@ jobs:
             cp -a "$backup_dir/test" test
           fi
           cp "$backup_dir/pubspec.yaml" pubspec.yaml
+          if [ -d "$backup_dir/native-android" ]; then
+            mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
+            cp "$backup_dir/native-android/MainActivity.kt" android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+            cp "$backup_dir/native-android/EmbeddedTorrentEngine.kt" android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+          fi
 
           if [ -s "$backup_dir/tv_banner/tv_banner.png" ]; then
             mkdir -p android/app/src/main/res/drawable
@@ -397,6 +403,58 @@ jobs:
           print('Applied WorkManager/Room R8 constructor keep rules:')
           print(final_rules)
           print('Release Gradle config references proguard-rules.pro')
+          PY
+
+      - name: Configure FrostWire embedded torrent engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s native/android/MainActivity.kt
+          test -s native/android/EmbeddedTorrentEngine.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          settings = Path('android/settings.gradle.kts')
+          settings_text = settings.read_text(encoding='utf-8')
+          match = re.search(r'(dependencyResolutionManagement\s*\{[\s\S]*?repositories\s*\{)', settings_text)
+          if not match:
+              raise SystemExit('Could not locate dependencyResolutionManagement.repositories in settings.gradle.kts')
+
+          repository_block = (
+              '\n        maven {\n'
+              '            url = uri("https://dl.frostwire.com/maven")\n'
+              '            content { includeGroup("com.frostwire") }\n'
+              '        }'
+          )
+          if 'https://dl.frostwire.com/maven' not in settings_text:
+              settings_text = settings_text[:match.end()] + repository_block + settings_text[match.end():]
+              settings.write_text(settings_text, encoding='utf-8')
+
+          app_gradle = Path('android/app/build.gradle.kts')
+          app_text = app_gradle.read_text(encoding='utf-8')
+          if 'jlibtorrent-android:2.0.15.3@aar' not in app_text:
+              app_text += (
+                  '\n\ndependencies {\n'
+                  '    implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")\n'
+                  '}\n'
+              )
+          app_text = re.sub(
+              r'minSdk\s*=\s*flutter\.minSdkVersion',
+              'minSdk = maxOf(26, flutter.minSdkVersion)',
+              app_text,
+          )
+          app_gradle.write_text(app_text, encoding='utf-8')
+
+          final_settings = settings.read_text(encoding='utf-8')
+          final_app = app_gradle.read_text(encoding='utf-8')
+          if 'https://dl.frostwire.com/maven' not in final_settings:
+              raise SystemExit('FrostWire Maven repository was not configured.')
+          if 'jlibtorrent-android:2.0.15.3@aar' not in final_app:
+              raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
+          if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
+              raise SystemExit('Android minSdk was not raised to the jlibtorrent requirement.')
+          print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 (all ABIs, minSdk 26).')
           PY
 
       - name: Resolve dependencies
