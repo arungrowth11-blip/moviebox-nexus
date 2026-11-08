@@ -83,6 +83,36 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
+      - name: Configure Maven Central mirrors for Kotlin artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          mirrors = (
+              'maven { url = uri("https://maven-central-asia.storage-download.googleapis.com/maven2/") }\n'
+              '            maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }\n'
+          )
+
+          files = sorted(Path("android").rglob("*.gradle.kts"))
+          patched = 0
+          for path in files:
+              source = path.read_text(encoding="utf-8")
+              if "mavenCentral()" not in source:
+                  continue
+              source = source.replace("mavenCentral()", mirrors + "            mavenCentral()")
+              path.write_text(source, encoding="utf-8")
+              print(f"Added Maven mirror fallback to {path}")
+              patched += 1
+
+          if patched < 2:
+              raise SystemExit(
+                  f"Expected to patch plugin and project Gradle repositories; patched {patched} file(s)."
+              )
+          print(f"Configured Maven Central mirrors in {patched} Gradle Kotlin DSL file(s).")
+          PY
+
       - name: Cache verified Gradle 9.3.1 distribution
         id: gradle-dist-cache
         uses: actions/cache@v4
@@ -286,7 +316,7 @@ jobs:
             if [ "$build_status" -eq 0 ]; then
               exit 0
             fi
-            if ! grep -Eqi 'HTTP response code: (408|429|5[0-9][0-9])|timed out|UnknownHostException|Temporary failure in name resolution|Connection reset|connection timed out' "$log_file"; then
+            if ! grep -Eqi 'HTTP response code: (408|429|5[0-9][0-9])|Received status code[[:space:]:]+(408|429|5[0-9][0-9])|Gateway Time[- ]out|timed out|UnknownHostException|Temporary failure in name resolution|Connection reset|connection timed out|Could not GET .*github\.com/JetBrains/' "$log_file"; then
               echo 'Build failed for a non-transient reason; not retrying.'
               exit "$build_status"
             fi
