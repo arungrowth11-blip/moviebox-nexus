@@ -11,7 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:video_player/video_player.dart';
+import 'player_screen.dart';
 
 const _bg = Color(0xFF0A0B10);
 const _panel = Color(0xFF141724);
@@ -22,6 +22,47 @@ const _textPri = Color(0xFFFFFFFF);
 
 const _cinemeta = 'https://v3-cinemeta.strem.io';
 const _streamingCatalogs = 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
+
+
+/// Parses common M3U playlists, tolerating CRLF, BOM, blank lines and
+/// EXTVLCOPT/EXTGRP directives between EXTINF and the stream URL.
+List<Map<String, String>> parseM3uPlaylist(String body) {
+  final channels = <Map<String, String>>[];
+  var name = '';
+  var logo = '';
+  var group = '';
+  final lines = body.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
+  for (final raw in lines) {
+    final line = raw.trim();
+    if (line.isEmpty) continue;
+    if (line.startsWith('#EXTINF:')) {
+      final comma = line.lastIndexOf(',');
+      name = comma >= 0 && comma + 1 < line.length
+          ? line.substring(comma + 1).trim()
+          : '';
+      logo = RegExp(r'tvg-logo="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      group = RegExp(r'group-title="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      continue;
+    }
+    if (line.startsWith('#')) continue;
+    final uri = Uri.tryParse(line);
+    if (uri == null || !uri.hasScheme || !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
+      continue;
+    }
+    if (name.isNotEmpty) {
+      channels.add({
+        'name': name,
+        'url': uri.toString(),
+        'logo': logo,
+        'group': group.isEmpty ? 'Other' : group,
+      });
+    }
+    name = '';
+    logo = '';
+    group = '';
+  }
+  return channels;
+}
 
 class Meta {
   final String id;
@@ -72,6 +113,7 @@ class StreamLink {
   final String title;
   final String addonName;
   final String badge;
+  final Map<String, String> headers;
 
   StreamLink({
     this.url,
@@ -79,6 +121,7 @@ class StreamLink {
     this.title = '',
     this.addonName = '',
     this.badge = '',
+    this.headers = const <String, String>{},
   });
 
   bool get isDirect => url != null && url!.startsWith('http');
@@ -110,21 +153,25 @@ class OttBrand {
   final String shortId;
   final String fallbackGenre;
   final Color color;
+  final bool hasCatalog;
 
   const OttBrand({
     required this.name,
     required this.shortId,
     required this.color,
     required this.fallbackGenre,
+    this.hasCatalog = false,
   });
 }
 
 const List<OttBrand> _brands = [
-  OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller'),
-  OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action'),
-  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure'),
-  OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama'),
-  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi'),
+  // These five catalog IDs are declared by the configured Streaming Catalogs manifest.
+  OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller', hasCatalog: true),
+  OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action', hasCatalog: true),
+  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure', hasCatalog: true),
+  OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama', hasCatalog: true),
+  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi', hasCatalog: true),
+  // These providers remain visible, but are never populated with another OTT's generic data.
   OttBrand(name: 'SONYLIV', shortId: 'sony', color: Color(0xFF0057B7), fallbackGenre: 'Comedy'),
   OttBrand(name: 'ZEE5', shortId: 'zee5', color: Color(0xFF8230C6), fallbackGenre: 'Mystery'),
   OttBrand(name: 'JIOCINEMA', shortId: 'jio', color: Color(0xFFE5005C), fallbackGenre: 'Action'),
@@ -252,61 +299,107 @@ class CatalogEngine {
   }
 
   Future<List<StreamLink>> resolveStreams(String type, String id, List<ManagedAddon> addons) async {
-    final out = <StreamLink>[];
-    for (final addon in addons) {
-      if (addon.name.toLowerCase().contains('cinemeta')) continue;
+    final eligible = addons.where((addon) {
+      final name = addon.name.toLowerCase();
+      return !name.contains('cinemeta') && !name.contains('streaming catalogs');
+    }).toList();
+
+    final results = await Future.wait(eligible.map((addon) async {
       try {
-        final r = await _client.get(Uri.parse('${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json')).timeout(const Duration(seconds: 8));
-        if (r.statusCode == 200) {
-          final streams = (jsonDecode(r.body) as Map)['streams'];
-          if (streams is List) {
-            for (final s in streams.whereType<Map>()) {
-              final url = (s['url'] ?? '').toString();
-              final hash = (s['infoHash'] ?? '').toString();
-              if (url.isEmpty && hash.isEmpty) continue;
-              
-              out.add(StreamLink(
-                url: url.startsWith('http') ? url : null,
-                infoHash: hash.isNotEmpty ? hash : null,
-                title: (s['title'] ?? s['description'] ?? s['name'] ?? 'Stream').toString().replaceAll('\n', ' ').trim(),
-                addonName: addon.name,
-                badge: (url.contains('2160') || url.contains('4k')) ? '4K UHD' : url.contains('1080') ? '1080p FHD' : url.contains('.m3u8') ? 'HLS' : 'DIRECT',
-              ));
+        final endpoint = '${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json';
+        final response = await _client.get(Uri.parse(endpoint)).timeout(const Duration(seconds: 6));
+        if (response.statusCode != 200) return <StreamLink>[];
+        final decoded = jsonDecode(response.body);
+        final rawStreams = decoded is Map ? decoded['streams'] : null;
+        if (rawStreams is! List) return <StreamLink>[];
+        return rawStreams.whereType<Map>().map((raw) {
+          final item = Map<String, dynamic>.from(raw);
+          final rawUrl = (item['url'] ?? '').toString().trim();
+          final rawHash = (item['infoHash'] ?? '').toString().trim();
+          final uri = Uri.tryParse(rawUrl);
+          final directUrl = uri != null && uri.hasScheme &&
+                  {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty
+              ? uri.toString()
+              : null;
+          if (directUrl == null && rawHash.isEmpty) return null;
+          final title = (item['title'] ?? item['description'] ?? item['name'] ?? 'Stream')
+              .toString().replaceAll('\n', ' ').trim();
+          final behaviorHints = item['behaviorHints'];
+          final proxyHeaders = behaviorHints is Map ? behaviorHints['proxyHeaders'] : null;
+          final requestHeaders = proxyHeaders is Map ? proxyHeaders['request'] : null;
+          final rawHeaders = requestHeaders is Map
+              ? requestHeaders
+              : (item['headers'] is Map ? item['headers'] : const <String, dynamic>{});
+          final streamHeaders = <String, String>{};
+          if (rawHeaders is Map) {
+            for (final entry in rawHeaders.entries) {
+              final key = entry.key.toString().trim();
+              final value = entry.value.toString().trim();
+              if (key.isNotEmpty && value.isNotEmpty) {
+                streamHeaders[key] = value;
+              }
             }
           }
-        }
-      } catch (_) {}
+          final probe = '$title ${directUrl ?? ''}'.toLowerCase();
+          final badge = probe.contains('2160') || probe.contains('4k')
+              ? '4K UHD'
+              : probe.contains('1080')
+                  ? '1080p FHD'
+                  : probe.contains('.m3u8') || probe.contains('hls')
+                      ? 'HLS'
+                      : directUrl != null ? 'DIRECT' : 'TORRENT';
+          return StreamLink(
+            url: directUrl,
+            infoHash: rawHash.isEmpty ? null : rawHash,
+            title: title,
+            addonName: addon.name,
+            badge: badge,
+            headers: streamHeaders,
+          );
+        }).whereType<StreamLink>().toList();
+      } catch (_) {
+        return <StreamLink>[];
+      }
+    }));
+
+    final unique = <String, StreamLink>{};
+    for (final list in results) {
+      for (final stream in list) {
+        final key = stream.url ?? stream.infoHash ?? '${stream.addonName}:${stream.title}';
+        unique.putIfAbsent(key, () => stream);
+      }
     }
-    out.sort((a, b) => b.score.compareTo(a.score));
+    final out = unique.values.toList()..sort((a, b) => b.score.compareTo(a.score));
     return out;
   }
 
   void close() => _client.close();
 
   Future<List<Map<String, String>>> fetchIptv() async {
-    try {
-      final r = await http.get(Uri.parse('https://iptv-org.github.io/iptv/countries/in.m3u')).timeout(const Duration(seconds: 10));
-      if (r.statusCode == 200) {
-        final lines = r.body.split('\n');
-        final List<Map<String, String>> chans = [];
-        String name = '', logo = '', group = '';
-        
-        for (var line in lines) {
-          if (line.startsWith('#EXTINF:')) {
-            final n = RegExp(r',(.+)$').firstMatch(line); if (n != null) name = n.group(1)!.trim();
-            final l = RegExp(r'tvg-logo="([^"]+)"').firstMatch(line); if (l != null) logo = l.group(1)!;
-            final g = RegExp(r'group-title="([^"]+)"').firstMatch(line); if (g != null) group = g.group(1)!;
-          } else if (line.startsWith('http')) {
-            if (name.isNotEmpty) {
-              chans.add({'name': name, 'url': line.trim(), 'logo': logo, 'group': group});
-            }
-            name = ''; logo = ''; group = '';
-          }
+    const sources = [
+      'https://iptv-org.github.io/iptv/countries/in.m3u',
+      'https://raw.githubusercontent.com/iptv-org/iptv/master/streams/in.m3u',
+      'https://iptv-org.github.io/iptv/languages/hin.m3u',
+    ];
+    final unique = <String, Map<String, String>>{};
+    for (final source in sources) {
+      try {
+        final response = await _client.get(
+          Uri.parse(source),
+          headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': '*/*'},
+        ).timeout(const Duration(seconds: 12));
+        if (response.statusCode != 200 || response.body.isEmpty) continue;
+        for (final channel in parseM3uPlaylist(response.body)) {
+          final url = channel['url'] ?? '';
+          if (url.isNotEmpty) unique.putIfAbsent(url, () => channel);
+          if (unique.length >= 700) break;
         }
-        return chans;
+        if (unique.length >= 100) break;
+      } catch (_) {
+        // Try the next public playlist mirror; never fail the whole Live TV tab.
       }
-    } catch (_) {}
-    return [];
+    }
+    return unique.values.toList();
   }
 }
 
@@ -570,7 +663,13 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     } catch (_) {}
   }
 
-  void _pushPlayer(String title, String url, String key, {VoidCallback? onNext}) {
+  void _pushPlayer(
+    String title,
+    String url,
+    String key, {
+    VoidCallback? onNext,
+    Map<String, String> headers = const <String, String>{},
+  }) {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => PlayerScreen(
         title: title,
@@ -582,6 +681,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           await _save();
         },
         onNext: onNext,
+        headers: headers,
       ),
     ));
   }
@@ -608,9 +708,15 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           setState(() => watchedEpisodes.add(id));
           await _save();
         },
-        onPlay: (title, url, key, {onNext}) {
+        onPlay: (title, url, key, {onNext, headers}) {
           Navigator.pop(context);
-          _pushPlayer(title, url, key, onNext: onNext);
+          _pushPlayer(
+            title,
+            url,
+            key,
+            onNext: onNext,
+            headers: headers ?? const <String, String>{},
+          );
         },
       ),
     );
@@ -749,7 +855,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       case 4:
         return LiveTvScreen(engine: engine, onPlay: _pushPlayer);
       case 5:
-        return HubScreen(onDetails: _openDetails);
+        return HubScreen(engine: engine, onDetails: _openDetails);
       case 6:
         return _AddonPage(addons: managedAddons, onAdd: _addAddon, onRemove: _removeAddon);
       default:
@@ -764,7 +870,13 @@ class HomeScreen extends StatefulWidget {
   final Set<String> watchlist;
   final Map<String, int> resumeMs;
   final Map<String, String> resumeTitles;
-  final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
+  final void Function(
+    String,
+    String,
+    String, {
+    VoidCallback? onNext,
+    Map<String, String>? headers,
+  }) onPlay;
   final void Function(Meta) onDetails;
   final bool onlyTheaters;
   final bool onlyAnime;
@@ -851,12 +963,13 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     for (final b in _brands) {
+      if (!b.hasCatalog) continue;
       if (activeBrandIndex != null && _brands[activeBrandIndex!] != b) continue;
       
       specs.add(CatalogRowSpec(
         title: '${b.name} Movies',
         primaryUrl: '$_streamingCatalogs/catalog/movie/${b.shortId}.json',
-        fallbackUrl: '$_cinemeta/catalog/movie/top/genre=${b.fallbackGenre}.json',
+        fallbackUrl: null,
         type: 'movie',
         accent: b.color,
         showRanks: true,
@@ -865,7 +978,7 @@ class _HomeScreenState extends State<HomeScreen> {
       specs.add(CatalogRowSpec(
         title: '${b.name} Series',
         primaryUrl: '$_streamingCatalogs/catalog/series/${b.shortId}.json',
-        fallbackUrl: '$_cinemeta/catalog/series/top.json',
+        fallbackUrl: null,
         type: 'series',
         accent: b.color,
         showRanks: true,
@@ -925,18 +1038,24 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() => indiaLoading = true);
     
     final items = await widget.engine.fetchRow(
-      '$_streamingCatalogs/catalog/movie/jhs.json',
       '$_cinemeta/catalog/movie/top.json',
+      '$_cinemeta/catalog/movie/imdbRating.json',
     );
     
     if (!mounted) return;
     setState(() {
-      rows['Top 10 in India Today'] = items;
+      rows['Popular Movies'] = items;
       indiaLoading = false;
       if (hero == null && items.isNotEmpty) {
         hero = items.first;
       }
     });
+    final series = await widget.engine.fetchRow(
+      '$_cinemeta/catalog/series/top.json',
+      '$_cinemeta/catalog/series/imdbRating.json',
+      type: 'series',
+    );
+    if (mounted) setState(() => rows['Popular Series'] = series);
   }
 
   Future<void> _loadRow(CatalogRowSpec spec) async {
@@ -981,17 +1100,38 @@ class _HomeScreenState extends State<HomeScreen> {
           if (widget.resumeMs.isNotEmpty && activeBrandIndex == null && !widget.onlyTheaters && !widget.onlyAnime)
             SliverToBoxAdapter(child: _buildContinueWatching()),
           
-          if (!widget.onlyTheaters && !widget.onlyAnime)
+          if (!widget.onlyTheaters && !widget.onlyAnime && activeBrandIndex == null)
             SliverToBoxAdapter(
               child: _buildPosterRow(
-                title: 'Top 10 in India Today',
-                items: rows['Top 10 in India Today'] ?? [],
+                title: 'Popular Movies',
+                items: rows['Popular Movies'] ?? [],
                 accent: const Color(0xFFFF9933),
                 showRanks: true,
                 loading: indiaLoading,
               ),
             ),
           
+          if (!widget.onlyTheaters && !widget.onlyAnime && activeBrandIndex == null)
+            SliverToBoxAdapter(
+              child: _buildPosterRow(
+                title: 'Popular Series',
+                items: rows['Popular Series'] ?? [],
+                accent: _cyan,
+                showRanks: false,
+                loading: indiaLoading,
+              ),
+            ),
+          if (activeBrandIndex != null && !_brands[activeBrandIndex!].hasCatalog)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Text(
+                  '${_brands[activeBrandIndex!].name} catalog is not declared by the connected Streaming Catalogs addon. Add a provider-specific catalog addon; generic fallback content is intentionally not shown.',
+                  style: const TextStyle(color: _muted, fontSize: 14),
+                ),
+              ),
+            ),
+
           ..._buildSpecs().map((spec) => SliverToBoxAdapter(
                 child: _buildPosterRow(
                   title: spec.title,
@@ -1103,7 +1243,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: const TextStyle(color: _muted, fontSize: 14, height: 1.4),
                 ),
                 const SizedBox(height: 16),
-                Row(
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 8,
                   children: [
                     _FButton(
                       label: 'Play Now',
@@ -1111,13 +1253,11 @@ class _HomeScreenState extends State<HomeScreen> {
                       primary: true,
                       onTap: () => _smartPlay(m),
                     ),
-                    const SizedBox(width: 12),
                     _FButton(
-                      label: '+ Watchlist',
+                      label: isFav ? 'In Watchlist' : '+ Watchlist',
                       icon: isFav ? Icons.check : Icons.add,
                       onTap: () => widget.onDetails(m),
                     ),
-                    const SizedBox(width: 12),
                     _FButton(
                       label: 'Info',
                       icon: Icons.info_outline,
@@ -1302,7 +1442,7 @@ class _HomeScreenState extends State<HomeScreen> {
     
     if (streams.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No streams found. Syncing addons...')),
+        const SnackBar(content: Text('No stream results. Check addon status and configuration.')),
       );
       return;
     }
@@ -1310,12 +1450,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final best = streams.first;
     if (best.isDirect) {
       widget.onPlay(m.name, best.url!, m.id);
-    } else if (best.infoHash != null) {
-      final magnet = Uri.parse('magnet:?xt=urn:btih:${best.infoHash}&dn=${Uri.encodeComponent(m.name)}');
-      final opened = await launchUrl(magnet, mode: LaunchMode.externalApplication);
-      if (!opened && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Torrent client available nahi hai.')));
-      }
+    } else if (best.infoHash != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Best result torrent-only hai. Playback ke liye configured debrid/TorrServer resolver aur uska HTTP stream URL chahiye; Stremio/VLC ko raw magnet auto-send nahi kiya.'),
+        duration: Duration(seconds: 6),
+      ));
     }
   }
 
@@ -1329,10 +1468,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class LiveTvScreen extends StatefulWidget {
   final CatalogEngine engine;
-  final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
-  
+  final void Function(
+    String,
+    String,
+    String, {
+    VoidCallback? onNext,
+    Map<String, String>? headers,
+  }) onPlay;
   const LiveTvScreen({super.key, required this.engine, required this.onPlay});
-  
   @override
   State<LiveTvScreen> createState() => _LiveTvScreenState();
 }
@@ -1340,95 +1483,226 @@ class LiveTvScreen extends StatefulWidget {
 class _LiveTvScreenState extends State<LiveTvScreen> {
   List<Map<String, String>> _channels = [];
   bool _loading = true;
+  String _query = '';
+  String? _error;
+  final _search = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    widget.engine.fetchIptv().then((ch) {
-      if (mounted) {
-        setState(() {
-          _channels = ch;
-          _loading = false;
-        });
-      }
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    if (mounted) setState(() { _loading = true; _error = null; });
+    final channels = await widget.engine.fetchIptv();
+    if (!mounted) return;
+    setState(() {
+      _channels = channels;
+      _loading = false;
+      _error = channels.isEmpty
+          ? 'Public India playlists could not be loaded. Check internet and tap Retry.'
+          : null;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator(color: _cyan));
-    }
-    
-    if (_channels.isEmpty) {
-      return const Center(child: Text('No live channels found.', style: TextStyle(color: _muted)));
-    }
-    
-    return ListView.builder(
-      padding: const EdgeInsets.all(16), 
-      itemCount: _channels.length,
-      itemBuilder: (_, i) {
-        final c = _channels[i];
-        return _Card(
-          child: ListTile(
-            leading: c['logo']!.isNotEmpty 
-                ? Image.network(c['logo']!, width: 40, errorBuilder: (_,__,___) => const Icon(Icons.live_tv, color: _red)) 
-                : const Icon(Icons.live_tv, color: _red),
-            title: Text(c['name']!, style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold)),
-            subtitle: Text(c['group']!, style: const TextStyle(color: _cyan, fontSize: 11)),
-            trailing: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
-            onTap: () => widget.onPlay(c['name']!, c['url']!, c['url']!),
+    final filtered = _channels.where((c) {
+      final q = _query.toLowerCase();
+      return q.isEmpty || (c['name'] ?? '').toLowerCase().contains(q) ||
+          (c['group'] ?? '').toLowerCase().contains(q);
+    }).toList();
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Row(children: [
+            Expanded(child: TextField(
+              controller: _search,
+              onChanged: (v) => setState(() => _query = v.trim()),
+              style: const TextStyle(color: _textPri),
+              decoration: InputDecoration(
+                hintText: 'Search Indian live channels...',
+                prefixIcon: const Icon(Icons.search, color: _cyan),
+                suffixIcon: _query.isEmpty ? null : IconButton(
+                  onPressed: () { _search.clear(); setState(() => _query = ''); },
+                  icon: const Icon(Icons.close),
+                ),
+                filled: true, fillColor: _panel,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+              ),
+            )),
+            const SizedBox(width: 8),
+            IconButton(onPressed: _loading ? null : _load, icon: const Icon(Icons.refresh, color: _cyan), tooltip: 'Refresh channels'),
+          ]),
+        ),
+        if (_channels.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('${filtered.length} of ${_channels.length} channels • Public playlist sources',
+                  style: const TextStyle(color: _muted, fontSize: 12)),
+            ),
           ),
-        );
-      },
+        Expanded(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator(color: _cyan))
+              : filtered.isEmpty
+                  ? Center(child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.live_tv, size: 48, color: _muted),
+                        const SizedBox(height: 12),
+                        Text(_error ?? (_channels.isEmpty ? 'No live channels available.' : 'No matching channels.'),
+                            textAlign: TextAlign.center, style: const TextStyle(color: _muted)),
+                        if (_channels.isEmpty) ...[
+                          const SizedBox(height: 12),
+                          FilledButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+                        ],
+                      ]),
+                    ))
+                  : RefreshIndicator(
+                      onRefresh: _load,
+                      color: _cyan,
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                        itemCount: filtered.length,
+                        itemBuilder: (_, i) {
+                          final c = filtered[i];
+                          final logo = c['logo'] ?? '';
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _Card(child: ListTile(
+                              leading: logo.isNotEmpty
+                                  ? Image.network(logo, width: 42, height: 42, fit: BoxFit.contain,
+                                      errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: _red))
+                                  : const Icon(Icons.live_tv, color: _red),
+                              title: Text(c['name'] ?? 'Channel', style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold)),
+                              subtitle: Text(c['group'] ?? 'Other', style: const TextStyle(color: _cyan, fontSize: 11)),
+                              trailing: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
+                              onTap: () => widget.onPlay(c['name'] ?? 'Live TV', c['url'] ?? '', c['url'] ?? ''),
+                            )),
+                          );
+                        },
+                      ),
+                    ),
+        ),
+      ],
     );
   }
 }
 
-class HubScreen extends StatelessWidget {
+class HubScreen extends StatefulWidget {
+  final CatalogEngine engine;
   final void Function(Meta) onDetails;
-  
-  const HubScreen({super.key, required this.onDetails});
-  
+  const HubScreen({super.key, required this.engine, required this.onDetails});
+  @override
+  State<HubScreen> createState() => _HubScreenState();
+}
+
+class _HubScreenState extends State<HubScreen> {
+  OttBrand? _selected;
+  List<Meta> _movies = [];
+  List<Meta> _series = [];
+  bool _loading = false;
+  String? _message;
+
+  Future<void> _openBrand(OttBrand brand) async {
+    if (!brand.hasCatalog) {
+      setState(() { _selected = brand; _movies = []; _series = []; _message =
+        '${brand.name} is not declared in the connected Streaming Catalogs manifest. Add a compatible provider-specific catalog addon to show its real titles. No unrelated fallback titles will be shown.'; });
+      return;
+    }
+    setState(() { _selected = brand; _loading = true; _message = null; _movies = []; _series = []; });
+    final results = await Future.wait([
+      widget.engine.fetchRow('$_streamingCatalogs/catalog/movie/${brand.shortId}.json', null),
+      widget.engine.fetchRow('$_streamingCatalogs/catalog/series/${brand.shortId}.json', null, type: 'series'),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _movies = results[0];
+      _series = results[1];
+      _loading = false;
+      if (_movies.isEmpty && _series.isEmpty) {
+        _message = 'The ${brand.name} catalog endpoint returned no titles. Check the Streaming Catalogs addon or its service configuration.';
+      }
+    });
+  }
+
+  Widget _contentRow(String title, List<Meta> items, Color accent) {
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 18),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(title,
+          style: TextStyle(color: accent, fontSize: 18, fontWeight: FontWeight.w800))),
+        const SizedBox(height: 10),
+        SizedBox(height: 250, child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: items.length,
+          itemBuilder: (_, i) => PosterCard(
+            meta: items[i], rank: i < 10 ? i + 1 : null, accent: accent,
+            onFocus: () {}, onTap: () => widget.onDetails(items[i]),
+          ),
+        )),
+      ]),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_selected != null) {
+      final brand = _selected!;
+      return Column(children: [
+        Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 4), child: Row(children: [
+          IconButton(onPressed: () => setState(() { _selected = null; _message = null; }),
+            icon: const Icon(Icons.arrow_back, color: _cyan)),
+          Expanded(child: Text(brand.name, style: TextStyle(color: brand.color, fontSize: 20, fontWeight: FontWeight.w900))),
+          IconButton(onPressed: () => _openBrand(brand), icon: const Icon(Icons.refresh, color: _cyan)),
+        ])),
+        if (_loading) const Expanded(child: Center(child: CircularProgressIndicator(color: _cyan)))
+        else if (_message != null) Expanded(child: Center(child: Padding(
+          padding: const EdgeInsets.all(24), child: Text(_message!, textAlign: TextAlign.center,
+            style: const TextStyle(color: _muted, height: 1.5)))))
+        else Expanded(child: ListView(children: [
+          _contentRow('${brand.name} • Movies', _movies, brand.color),
+          _contentRow('${brand.name} • Series', _series, _cyan),
+          const SizedBox(height: 28),
+        ])),
+      ]);
+    }
     return GridView.builder(
       padding: const EdgeInsets.all(20),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 320, 
-        mainAxisExtent: 140, 
-        crossAxisSpacing: 16, 
-        mainAxisSpacing: 16,
+        maxCrossAxisExtent: 320, mainAxisExtent: 140, crossAxisSpacing: 16, mainAxisSpacing: 16,
       ),
       itemCount: _brands.length,
       itemBuilder: (_, i) {
-        final b = _brands[i];
+        final brand = _brands[i];
         return _Card(
-          borderColor: b.color.withValues(alpha: 0.5),
+          borderColor: brand.color.withValues(alpha: 0.5),
+          onTap: () => _openBrand(brand),
           child: Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft, 
-                end: Alignment.bottomRight, 
-                colors: [b.color.withValues(alpha: 0.2), _panel],
-              ),
-            ),
+            decoration: BoxDecoration(gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [brand.color.withValues(alpha: 0.2), _panel],
+            )),
             padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Text(
-                  b.name, 
-                  style: TextStyle(color: b.color, fontWeight: FontWeight.w900, fontSize: 22, letterSpacing: 1.5),
-                ),
-                const SizedBox(height: 6),
-                const Text(
-                  'Top 10 • Originals', 
-                  style: TextStyle(color: _muted, fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(brand.name, style: TextStyle(color: brand.color, fontWeight: FontWeight.w900, fontSize: 22, letterSpacing: 1.2)),
+              const SizedBox(height: 8),
+              Text(brand.hasCatalog ? 'Provider catalog • Movies & Series' : 'Catalog addon required',
+                style: const TextStyle(color: _muted, fontSize: 12, fontWeight: FontWeight.w600)),
+            ]),
           ),
         );
       },
@@ -1588,7 +1862,13 @@ class DetailsSheet extends StatefulWidget {
   final Set<String> watchedEpisodes;
   final Future<void> Function(String) onToggleWatchlist;
   final Future<void> Function(String) onMarkWatched;
-  final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
+  final void Function(
+    String,
+    String,
+    String, {
+    VoidCallback? onNext,
+    Map<String, String>? headers,
+  }) onPlay;
 
   const DetailsSheet({
     super.key,
@@ -1871,16 +2151,17 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 style: const TextStyle(color: _red, fontSize: 13, fontWeight: FontWeight.bold),
                               ),
                               const Spacer(),
-                              if (s.isDirect)
+                              if (s.isDirect) ...[
                                 const Text(
-                                  'PLAY ▶',
-                                  style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold),
-                                )
-                              else if (s.isTorrent)
-                                const Text(
-                                  'VLC/EXTERNAL ▶',
-                                  style: TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                                  'PLAY IN APP',
+                                  style: TextStyle(
+                                    color: Colors.greenAccent,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
+                              ] else if (s.isTorrent)
+                                const Text('TORRENT • RESOLVER NEEDED', style: TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                             ],
                           ),
                           if (s.title.isNotEmpty) ...[
@@ -1904,263 +2185,21 @@ class _DetailsSheetState extends State<DetailsSheet> {
 
   void _playStream(StreamLink s) {
     if (s.isDirect) {
-      widget.onPlay('${widget.meta.name} - $_targetLabel', s.url!, _targetId);
+      widget.onPlay(
+        '${widget.meta.name} - $_targetLabel',
+        s.url!,
+        _targetId,
+        headers: s.headers,
+      );
     } else if (s.isTorrent) {
-      final magnet = 'magnet:?xt=urn:btih:${s.infoHash}&dn=${Uri.encodeComponent(widget.meta.name)}';
-      launchUrl(Uri.parse(magnet), mode: LaunchMode.externalApplication).then((opened) {
-        if (mounted && !opened) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Compatible torrent app nahi mila.')));
-        }
-      });
-    }
-  }
-}
-
-class PlayerScreen extends StatefulWidget {
-  final String title;
-  final String url;
-  final int initialMs;
-  final Future<void> Function(int) onSave;
-  final VoidCallback? onNext;
-
-  const PlayerScreen({
-    super.key,
-    required this.title,
-    required this.url,
-    this.initialMs = 0,
-    required this.onSave,
-    this.onNext,
-  });
-
-  @override
-  State<PlayerScreen> createState() => _PlayerScreenState();
-}
-
-class _PlayerScreenState extends State<PlayerScreen> {
-  VideoPlayerController? _c;
-  bool _initialized = false;
-  bool _error = false;
-  bool _hud = true;
-  Timer? _saveTimer;
-  int _lastSaved = 0;
-  final _focus = FocusNode();
-
-  @override
-  void initState() {
-    super.initState();
-    _init();
-  }
-
-  Future<void> _init() async {
-    try {
-      final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
-      _c = c;
-      await c.initialize();
-      
-      if (widget.initialMs > 5000) {
-        await c.seekTo(Duration(milliseconds: widget.initialMs));
-      }
-      
-      await c.play();
-      c.addListener(() {
-        if (mounted) setState(() {});
-      });
-      
-      _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _savePos());
-      
-      if (mounted) setState(() => _initialized = true);
-    } catch (_) {
-      if (mounted) setState(() => _error = true);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Ye torrent/magnet result hai, direct video URL nahi. VLC ise akela play nahi kar sakta; configured debrid ya TorrServer resolver chahiye.'),
+        duration: Duration(seconds: 5),
+      ));
     }
   }
 
-  Future<void> _savePos() async {
-    final c = _c;
-    if (c == null || !c.value.isInitialized) return;
-    
-    final ms = c.value.position.inMilliseconds;
-    if ((ms - _lastSaved).abs() < 4000) return;
-    
-    _lastSaved = ms;
-    await widget.onSave(ms);
-  }
 
-  @override
-  void dispose() {
-    _saveTimer?.cancel();
-    _savePos();
-    _c?.dispose();
-    _focus.dispose();
-    super.dispose();
-  }
-
-  void _onKey(KeyEvent e) {
-    if (e is! KeyDownEvent) return;
-    final k = e.logicalKey;
-    
-    if (k == LogicalKeyboardKey.select || 
-        k == LogicalKeyboardKey.enter || 
-        k == LogicalKeyboardKey.space || 
-        k == LogicalKeyboardKey.gameButtonA) {
-      _togglePlay();
-    } else if (k == LogicalKeyboardKey.arrowLeft) {
-      _seek(-15);
-    } else if (k == LogicalKeyboardKey.arrowRight) {
-      _seek(15);
-    } else if (k == LogicalKeyboardKey.arrowUp || k == LogicalKeyboardKey.arrowDown) {
-      setState(() => _hud = !_hud);
-    }
-  }
-
-  void _togglePlay() {
-    final c = _c;
-    if (c == null) return;
-    if (c.value.isPlaying) {
-      c.pause();
-    } else {
-      c.play();
-    }
-    setState(() => _hud = true);
-  }
-
-  void _seek(int sec) {
-    final c = _c;
-    if (c == null) return;
-    
-    final target = c.value.position + Duration(seconds: sec);
-    final clamped = target < Duration.zero 
-        ? Duration.zero 
-        : (target > c.value.duration ? c.value.duration : target);
-        
-    c.seekTo(clamped);
-    setState(() => _hud = true);
-  }
-
-  Future<void> _external() async {
-    await launchUrl(Uri.parse(widget.url), mode: LaunchMode.externalApplication);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return KeyboardListener(
-      focusNode: _focus,
-      autofocus: true,
-      onKeyEvent: _onKey,
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: GestureDetector(
-          onTap: () => setState(() => _hud = !_hud),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (_initialized && _c != null)
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: _c!.value.aspectRatio, 
-                    child: VideoPlayer(_c!),
-                  ),
-                )
-              else if (_error)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 56),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'Playback failed. Stream may use unsupported codec (MKV/AC3).',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white, fontSize: 16),
-                        ),
-                        const SizedBox(height: 24),
-                        _FButton(
-                          label: 'Open in External Player (VLC)',
-                          primary: true,
-                          icon: Icons.open_in_new,
-                          onTap: _external,
-                        ),
-                      ],
-                    ),
-                  ),
-                )
-              else
-                const Center(child: CircularProgressIndicator(color: _cyan)),
-              
-              if (_hud && !_error)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: Container(
-                    padding: const EdgeInsets.fromLTRB(24, 60, 24, 24),
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter, 
-                        end: Alignment.bottomCenter, 
-                        colors: [Colors.transparent, Colors.black.withValues(alpha: 0.95)],
-                      ),
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          widget.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 18),
-                        ),
-                        const SizedBox(height: 12),
-                        if (_initialized && _c != null)
-                          VideoProgressIndicator(
-                            _c!,
-                            allowScrubbing: true,
-                            colors: const VideoProgressColors(
-                              playedColor: _red,
-                              bufferedColor: Colors.white30,
-                              backgroundColor: Colors.white10,
-                            ),
-                          ),
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _RoundButton(
-                              icon: Icons.replay_10,
-                              onTap: () => _seek(-15),
-                            ),
-                            const SizedBox(width: 24),
-                            _RoundButton(
-                              icon: (_c?.value.isPlaying ?? false) ? Icons.pause : Icons.play_arrow,
-                              size: 64,
-                              isPrimary: true,
-                              onTap: _togglePlay,
-                            ),
-                            const SizedBox(width: 24),
-                            _RoundButton(
-                              icon: Icons.forward_10,
-                              onTap: () => _seek(15),
-                            ),
-                            if (widget.onNext != null) ...[
-                              const SizedBox(width: 24),
-                              _RoundButton(
-                                icon: Icons.skip_next,
-                                onTap: () => widget.onNext!(),
-                              ),
-                            ],
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class SearchModal extends StatefulWidget {
@@ -2320,6 +2359,14 @@ class _AddonPage extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         const Text('Configured addons are retained when temporarily offline. Only compatible Stremio manifest/stream endpoints are supported.', style: TextStyle(color: _muted, fontSize: 13)),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: () => launchUrl(Uri.parse('https://comet.elfhosted.com/configure'), mode: LaunchMode.externalApplication),
+          icon: const Icon(Icons.tune),
+          label: const Text('Configure Comet (optional debrid source)'),
+        ),
+        const Text('Comet public endpoint may require a debrid account. After configuration, copy its generated manifest URL and use Add addon. Do not paste API keys into public chats.',
+          style: TextStyle(color: _muted, fontSize: 11)),
         const SizedBox(height: 16),
         if (addons.isEmpty) const Text('No addons configured.', style: TextStyle(color: _muted)),
         ...addons.map((a) => Padding(
@@ -2742,7 +2789,7 @@ class _BrandTileState extends State<_BrandTile> {
             ),
             const SizedBox(height: 4),
             Text(
-              widget.brand.fallbackGenre,
+              widget.brand.hasCatalog ? 'Movies & Series' : 'Catalog addon required',
               style: const TextStyle(
                 color: _muted,
                 fontSize: 11,
