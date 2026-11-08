@@ -83,38 +83,86 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Harden Gradle distribution download
+      - name: Cache verified Gradle 9.3.1 distribution
+        id: gradle-dist-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/gradle-9.3.1
+          key: gradle-9.3.1-bin-${{ runner.os }}-verified-v1
+
+      - name: Download and verify Gradle distribution with mirror fallback
+        if: steps.gradle-dist-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PYCODE'
-          from pathlib import Path
-          import re
 
-          props = Path('android/gradle/wrapper/gradle-wrapper.properties')
-          if not props.is_file():
-              raise SystemExit(f'Missing Gradle wrapper properties: {props}')
+          VERSION="9.3.1"
+          EXPECTED_SHA256="b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+          ARCHIVE="$RUNNER_TEMP/gradle-${VERSION}-bin.zip"
+          EXTRACT_DIR="$RUNNER_TEMP/gradle-extract"
+          INSTALL_DIR="$RUNNER_TEMP/gradle-${VERSION}"
 
-          content = props.read_text(encoding='utf-8')
-          match = re.search(r'gradle-([0-9][0-9A-Za-z.+-]*)-(?:all|bin)\.zip', content)
-          if not match:
-              raise SystemExit('Could not identify the generated Gradle wrapper version')
-          version = match.group(1)
+          urls=(
+            "https://downloads.gradle.org/distributions/gradle-${VERSION}-bin.zip"
+            "https://mirrors.huaweicloud.com/gradle/gradle-${VERSION}-bin.zip"
+            "https://mirrors.aliyun.com/gradle/distributions/v${VERSION}/gradle-${VERSION}-bin.zip"
+            "https://mirror.nju.edu.cn/gradle/gradle-${VERSION}-bin.zip"
+          )
 
-          # Use Gradle's official distribution endpoint and the smaller runtime-only ZIP.
-          properties = {
-              'distributionUrl': f'https\\://services.gradle.org/distributions/gradle-{version}-bin.zip',
-              'networkTimeout': '60000',
-              'retries': '4',
-              'retryBackOffMs': '3000',
-          }
-          lines = [line for line in content.splitlines()
-                   if not any(line.startswith(key + '=') for key in properties)]
-          lines.extend(f'{key}={value}' for key, value in properties.items())
-          props.write_text('\n'.join(lines) + '\n', encoding='utf-8')
-          print(f'Gradle {version}: official bin distribution, 60s timeout, 4 retries')
-          PYCODE
+          downloaded=0
+          for url in "${urls[@]}"; do
+            echo "Trying Gradle distribution host: ${url}"
+            for attempt in 1 2 3; do
+              rm -f "$ARCHIVE"
+              if curl --fail --location --silent --show-error \
+                  --retry 2 --retry-all-errors \
+                  --connect-timeout 30 --max-time 1200 \
+                  "$url" --output "$ARCHIVE"; then
+                actual="$(sha256sum "$ARCHIVE" | awk '{print $1}')"
+                if [ "$actual" = "$EXPECTED_SHA256" ]; then
+                  echo "Gradle archive checksum verified."
+                  downloaded=1
+                  break 2
+                fi
+                echo "::warning::Checksum mismatch from ${url}; trying another host."
+                rm -f "$ARCHIVE"
+              else
+                echo "::warning::Download attempt ${attempt}/3 failed for ${url}."
+              fi
+              sleep $((attempt * 5))
+            done
+          done
 
+          if [ "$downloaded" -ne 1 ]; then
+            echo "::error::Could not download a checksum-valid Gradle ${VERSION} distribution from any configured host."
+            exit 1
+          fi
+
+          rm -rf "$EXTRACT_DIR" "$INSTALL_DIR"
+          mkdir -p "$EXTRACT_DIR"
+          unzip -q "$ARCHIVE" -d "$EXTRACT_DIR"
+          test -x "$EXTRACT_DIR/gradle-${VERSION}/bin/gradle"
+          mv "$EXTRACT_DIR/gradle-${VERSION}" "$INSTALL_DIR"
+          rm -rf "$EXTRACT_DIR" "$ARCHIVE"
+
+      - name: Add verified Gradle to PATH and route Flutter wrapper to it
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLE_HOME="$RUNNER_TEMP/gradle-9.3.1"
+          test -x "$GRADLE_HOME/bin/gradle"
+          echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
+
+          # Flutter invokes android/gradlew. Use the checksum-verified Gradle
+          # installation above instead of triggering another remote wrapper download.
+          cat > android/gradlew <<'GRADLE_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          exec gradle "$@"
+          GRADLE_SH
+          chmod +x android/gradlew
+
+          "$GRADLE_HOME/bin/gradle" --version
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v6
         with:
