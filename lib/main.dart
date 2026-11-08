@@ -34,13 +34,15 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
   var group = '';
   var country = '';
   var language = '';
-  final lines = body.replaceFirst('\\uFEFF', '').split(RegExp(r'\\r?\\n'));
+  final lines = body.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
   for (final raw in lines) {
     final line = raw.trim();
     if (line.isEmpty) continue;
     if (line.startsWith('#EXTINF:')) {
       final comma = line.lastIndexOf(',');
-      name = comma >= 0 && comma + 1 < line.length ? line.substring(comma + 1).trim() : '';
+      name = comma >= 0 && comma + 1 < line.length
+          ? line.substring(comma + 1).trim()
+          : '';
       logo = RegExp(r'tvg-logo="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       group = RegExp(r'group-title="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       country = RegExp(r'tvg-country="([^"]*)"').firstMatch(line)?.group(1) ?? '';
@@ -49,14 +51,30 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
     }
     if (line.startsWith('#')) continue;
     final uri = Uri.tryParse(line);
-    if (uri == null || !uri.hasScheme || !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) continue;
-    final g = group.toLowerCase(), n = name.toLowerCase();
-    final restricted = g.contains('xxx') || g.contains('adult') || n.contains('xxx') || n.contains('18+') || n.contains('adult only');
-    if (name.isNotEmpty && !restricted) {
-      channels.add({'name': name, 'url': uri.toString(), 'logo': logo,
-        'group': group.isEmpty ? 'Other' : group, 'country': country, 'language': language});
+    if (uri == null || !uri.hasScheme ||
+        !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
+      continue;
     }
-    name = ''; logo = ''; group = ''; country = ''; language = '';
+    final lowerGroup = group.toLowerCase();
+    final lowerName = name.toLowerCase();
+    final restricted = lowerGroup.contains('xxx') ||
+        lowerGroup.contains('adult') || lowerName.contains('xxx') ||
+        lowerName.contains('18+') || lowerName.contains('adult only');
+    if (name.isNotEmpty && !restricted) {
+      channels.add({
+        'name': name,
+        'url': uri.toString(),
+        'logo': logo,
+        'group': group.isEmpty ? 'Other' : group,
+        'country': country,
+        'language': language,
+      });
+    }
+    name = '';
+    logo = '';
+    group = '';
+    country = '';
+    language = '';
   }
   return channels;
 }
