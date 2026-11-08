@@ -355,7 +355,48 @@ jobs:
               )
               gradle_app.write_text(gradle_text, encoding='utf-8')
 
-          print('Android manifest and LibVLC native packaging patched successfully')
+          # AndroidX WorkManager creates its Room database through reflection during
+          # AndroidX Startup. R8 full mode can strip the generated no-arg constructor,
+          # causing WorkDatabase_Impl.<init>() NoSuchMethodException before Flutter starts.
+          proguard = Path('android/app/proguard-rules.pro')
+          proguard.parent.mkdir(parents=True, exist_ok=True)
+          existing_rules = proguard.read_text(encoding='utf-8') if proguard.exists() else ''
+          required_rules = '''
+          # Keep constructors instantiated reflectively by WorkManager/Room under R8 full mode.
+          -keep class androidx.work.impl.WorkDatabase_Impl { <init>(); }
+          -keep class * extends androidx.room.RoomDatabase { <init>(); }
+          -keep class * extends androidx.work.InputMerger { <init>(); }
+          '''
+          if 'androidx.work.impl.WorkDatabase_Impl' not in existing_rules:
+              proguard.write_text(existing_rules.rstrip() + '\\n' + required_rules.lstrip(), encoding='utf-8')
+
+          # Attach the custom rules to the RELEASE variant; merely creating the file
+          # does not make Gradle/R8 consume it.
+          if '"proguard-rules.pro"' not in gradle_text:
+              gradle_app.write_text(
+                  gradle_text.rstrip() +
+                  '\\n\\nandroid {\\n'
+                  '    buildTypes {\\n'
+                  '        release {\\n'
+                  '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\\n'
+                  '        }\\n'
+                  '    }\\n'
+                  '}\\n',
+                  encoding='utf-8',
+              )
+
+          final_gradle = gradle_app.read_text(encoding='utf-8')
+          final_rules = proguard.read_text(encoding='utf-8')
+          if '"proguard-rules.pro"' not in final_gradle:
+              raise SystemExit('ERROR: Release build does not reference proguard-rules.pro')
+          if 'androidx.work.impl.WorkDatabase_Impl { <init>(); }' not in final_rules:
+              raise SystemExit('ERROR: WorkDatabase_Impl constructor keep rule was not written')
+          if 'extends androidx.work.InputMerger { <init>(); }' not in final_rules:
+              raise SystemExit('ERROR: WorkManager InputMerger constructor keep rule was not written')
+
+          print('Applied WorkManager/Room R8 constructor keep rules:')
+          print(final_rules)
+          print('Release Gradle config references proguard-rules.pro')
           PY
 
       - name: Resolve dependencies
