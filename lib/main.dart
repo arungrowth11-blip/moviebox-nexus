@@ -148,35 +148,6 @@ class StreamLink {
   }
 }
 
-class OttBrand {
-  final String name;
-  final String shortId;
-  final String fallbackGenre;
-  final Color color;
-  final bool hasCatalog;
-
-  const OttBrand({
-    required this.name,
-    required this.shortId,
-    required this.color,
-    required this.fallbackGenre,
-    this.hasCatalog = false,
-  });
-}
-
-const List<OttBrand> _brands = [
-  // These five catalog IDs are declared by the configured Streaming Catalogs manifest.
-  OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller', hasCatalog: true),
-  OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action', hasCatalog: true),
-  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure', hasCatalog: true),
-  OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama', hasCatalog: true),
-  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi', hasCatalog: true),
-  // These providers remain visible, but are never populated with another OTT's generic data.
-  OttBrand(name: 'SONYLIV', shortId: 'sony', color: Color(0xFF0057B7), fallbackGenre: 'Comedy'),
-  OttBrand(name: 'ZEE5', shortId: 'zee5', color: Color(0xFF8230C6), fallbackGenre: 'Mystery'),
-  OttBrand(name: 'JIOCINEMA', shortId: 'jio', color: Color(0xFFE5005C), fallbackGenre: 'Action'),
-];
-
 class ManagedAddon {
   final String name;
   final String manifestUrl;
@@ -209,6 +180,7 @@ class AddonManager {
     'MediaFusion': 'https://mediafusion.elfhosted.com/manifest.json',
     'Cinemeta': 'https://v3-cinemeta.strem.io/manifest.json',
     'Streaming Catalogs': 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
+    'IndiaStreams': 'https://indiastreams.rdata.in/manifest.json',
   };
 
   Future<bool> isAlive(String manifestUrl) async {
@@ -245,6 +217,22 @@ class AddonManager {
   void close() => _client.close();
 }
 
+class AddonCatalog {
+  final String addonName;
+  final String catalogName;
+  final String id;
+  final String baseUrl;
+  final Set<String> types;
+
+  AddonCatalog({
+    required this.addonName,
+    required this.catalogName,
+    required this.id,
+    required this.baseUrl,
+    Set<String>? types,
+  }) : types = types ?? <String>{};
+}
+
 class CatalogEngine {
   final http.Client _client = http.Client();
 
@@ -264,6 +252,54 @@ class CatalogEngine {
       } catch (_) {}
     }
     return [];
+  }
+
+  /// Reads catalog IDs and media types from an addon's own Stremio manifest.
+  /// Catalog IDs are addon-defined; never infer them from provider display names.
+  Future<List<AddonCatalog>> fetchAddonCatalogs(ManagedAddon addon) async {
+    try {
+      final response = await _client
+          .get(Uri.parse(addon.manifestUrl))
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode != 200) return <AddonCatalog>[];
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map) return <AddonCatalog>[];
+      final manifest = Map<String, dynamic>.from(decoded);
+      final resources = manifest['resources'];
+      if (resources is List &&
+          !resources.any((resource) =>
+              resource == 'catalog' ||
+              (resource is Map &&
+                  (resource['name'] == 'catalog' ||
+                      resource['resource'] == 'catalog')))) {
+        return <AddonCatalog>[];
+      }
+      final declaredCatalogs = manifest['catalogs'];
+      if (declaredCatalogs is! List) return <AddonCatalog>[];
+
+      final grouped = <String, AddonCatalog>{};
+      for (final raw in declaredCatalogs.whereType<Map>()) {
+        final item = Map<String, dynamic>.from(raw);
+        final type = (item['type'] ?? '').toString().toLowerCase();
+        final id = (item['id'] ?? '').toString().trim();
+        if (!{'movie', 'series'}.contains(type) || id.isEmpty) continue;
+        final name = (item['name'] ?? id).toString().trim();
+        final key = '${addon.baseUrl}|$id|$name';
+        final catalog = grouped.putIfAbsent(
+          key,
+          () => AddonCatalog(
+            addonName: addon.name,
+            catalogName: name.isEmpty ? id : name,
+            id: id,
+            baseUrl: addon.baseUrl,
+          ),
+        );
+        catalog.types.add(type);
+      }
+      return grouped.values.toList();
+    } catch (_) {
+      return <AddonCatalog>[];
+    }
   }
 
   Future<List<Meta>> search(String query) async {
@@ -855,7 +891,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       case 4:
         return LiveTvScreen(engine: engine, onPlay: _pushPlayer);
       case 5:
-        return HubScreen(engine: engine, onDetails: _openDetails);
+        return HubScreen(engine: engine, addons: managedAddons.toList(), onDetails: _openDetails);
       case 6:
         return _AddonPage(addons: managedAddons, onAdd: _addAddon, onRemove: _removeAddon);
       default:
@@ -1602,29 +1638,102 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
 
 class HubScreen extends StatefulWidget {
   final CatalogEngine engine;
+  final List<ManagedAddon> addons;
   final void Function(Meta) onDetails;
-  const HubScreen({super.key, required this.engine, required this.onDetails});
+  const HubScreen({
+    super.key,
+    required this.engine,
+    required this.addons,
+    required this.onDetails,
+  });
   @override
   State<HubScreen> createState() => _HubScreenState();
 }
 
 class _HubScreenState extends State<HubScreen> {
-  OttBrand? _selected;
+  AddonCatalog? _selected;
+  List<AddonCatalog> _catalogs = [];
   List<Meta> _movies = [];
   List<Meta> _series = [];
+  bool _loadingCatalogs = true;
   bool _loading = false;
   String? _message;
 
-  Future<void> _openBrand(OttBrand brand) async {
-    if (!brand.hasCatalog) {
-      setState(() { _selected = brand; _movies = []; _series = []; _message =
-        '${brand.name} is not declared in the connected Streaming Catalogs manifest. Add a compatible provider-specific catalog addon to show its real titles. No unrelated fallback titles will be shown.'; });
-      return;
+  @override
+  void initState() {
+    super.initState();
+    _loadCatalogs();
+  }
+
+  @override
+  void didUpdateWidget(covariant HubScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.addons, widget.addons)) {
+      _loadCatalogs();
     }
-    setState(() { _selected = brand; _loading = true; _message = null; _movies = []; _series = []; });
+  }
+
+  Future<void> _loadCatalogs() async {
+    if (mounted) {
+      setState(() {
+        _loadingCatalogs = true;
+        _message = null;
+      });
+    }
+    final eligible = widget.addons
+        .where((addon) => !addon.name.toLowerCase().contains('cinemeta'))
+        .toList();
+    final results = await Future.wait(
+      eligible.map(widget.engine.fetchAddonCatalogs),
+    );
+    final merged = <String, AddonCatalog>{};
+    for (final list in results) {
+      for (final catalog in list) {
+        final key = '${catalog.baseUrl}|${catalog.id}|${catalog.catalogName}';
+        final existing = merged.putIfAbsent(key, () => catalog);
+        existing.types.addAll(catalog.types);
+      }
+    }
+    final catalogs = merged.values.toList()
+      ..sort((a, b) {
+        final byName = a.catalogName.toLowerCase().compareTo(
+              b.catalogName.toLowerCase(),
+            );
+        return byName != 0
+            ? byName
+            : a.addonName.toLowerCase().compareTo(b.addonName.toLowerCase());
+      });
+    if (!mounted) return;
+    setState(() {
+      _catalogs = catalogs;
+      _loadingCatalogs = false;
+    });
+  }
+
+  Future<void> _openCatalog(AddonCatalog catalog) async {
+    setState(() {
+      _selected = catalog;
+      _loading = true;
+      _message = null;
+      _movies = [];
+      _series = [];
+    });
+    final base = catalog.baseUrl.replaceFirst(RegExp(r'/+$'), '');
+    final encodedId = Uri.encodeComponent(catalog.id);
     final results = await Future.wait([
-      widget.engine.fetchRow('$_streamingCatalogs/catalog/movie/${brand.shortId}.json', null),
-      widget.engine.fetchRow('$_streamingCatalogs/catalog/series/${brand.shortId}.json', null, type: 'series'),
+      catalog.types.contains('movie')
+          ? widget.engine.fetchRow(
+              '$base/catalog/movie/$encodedId.json',
+              null,
+            )
+          : Future.value(<Meta>[]),
+      catalog.types.contains('series')
+          ? widget.engine.fetchRow(
+              '$base/catalog/series/$encodedId.json',
+              null,
+              type: 'series',
+            )
+          : Future.value(<Meta>[]),
     ]);
     if (!mounted) return;
     setState(() {
@@ -1632,9 +1741,32 @@ class _HubScreenState extends State<HubScreen> {
       _series = results[1];
       _loading = false;
       if (_movies.isEmpty && _series.isEmpty) {
-        _message = 'The ${brand.name} catalog endpoint returned no titles. Check the Streaming Catalogs addon or its service configuration.';
+        _message =
+            'No titles were returned by ${catalog.catalogName} from ${catalog.addonName}. This catalog may require provider/country configuration. Add its configured manifest URL in the Addons tab, then refresh.';
       }
     });
+  }
+
+  Future<void> _openStreamingCatalogsSetup() async {
+    final uri = Uri.parse(
+      'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/configure',
+    );
+    try {
+      final opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open the catalog setup page.')),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Catalog setup unavailable: $error')),
+      );
+    }
   }
 
   Widget _contentRow(String title, List<Meta> items, Color accent) {
@@ -1642,67 +1774,196 @@ class _HubScreenState extends State<HubScreen> {
     return Padding(
       padding: const EdgeInsets.only(top: 18),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: Text(title,
-          style: TextStyle(color: accent, fontSize: 18, fontWeight: FontWeight.w800))),
-        const SizedBox(height: 10),
-        SizedBox(height: 250, child: ListView.builder(
-          scrollDirection: Axis.horizontal,
+        Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          itemCount: items.length,
-          itemBuilder: (_, i) => PosterCard(
-            meta: items[i], rank: i < 10 ? i + 1 : null, accent: accent,
-            onFocus: () {}, onTap: () => widget.onDetails(items[i]),
+          child: Text(title,
+              style: TextStyle(
+                  color: accent, fontSize: 18, fontWeight: FontWeight.w800)),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          height: 250,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: items.length,
+            itemBuilder: (_, i) => PosterCard(
+              meta: items[i],
+              rank: i < 10 ? i + 1 : null,
+              accent: accent,
+              onFocus: () {},
+              onTap: () => widget.onDetails(items[i]),
+            ),
           ),
-        )),
+        ),
       ]),
+    );
+  }
+
+  Widget _emptyCatalogState() {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.video_library_outlined, color: _cyan, size: 52),
+            const SizedBox(height: 14),
+            const Text(
+              'No OTT catalog feeds are available yet.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: _textPri, fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'IndiaStreams and configured Stremio catalog addons are read from their manifests. To enable provider-specific catalogs, configure Streaming Catalogs for India, copy its generated manifest URL, and add it in the Addons tab.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _muted, height: 1.5),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _openStreamingCatalogsSetup,
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Configure Streaming Catalogs'),
+              style: FilledButton.styleFrom(backgroundColor: _red),
+            ),
+            TextButton.icon(
+              onPressed: _loadCatalogs,
+              icon: const Icon(Icons.refresh, color: _cyan),
+              label: const Text('Refresh catalogs'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     if (_selected != null) {
-      final brand = _selected!;
+      final catalog = _selected!;
       return Column(children: [
-        Padding(padding: const EdgeInsets.fromLTRB(16, 12, 16, 4), child: Row(children: [
-          IconButton(onPressed: () => setState(() { _selected = null; _message = null; }),
-            icon: const Icon(Icons.arrow_back, color: _cyan)),
-          Expanded(child: Text(brand.name, style: TextStyle(color: brand.color, fontSize: 20, fontWeight: FontWeight.w900))),
-          IconButton(onPressed: () => _openBrand(brand), icon: const Icon(Icons.refresh, color: _cyan)),
-        ])),
-        if (_loading) const Expanded(child: Center(child: CircularProgressIndicator(color: _cyan)))
-        else if (_message != null) Expanded(child: Center(child: Padding(
-          padding: const EdgeInsets.all(24), child: Text(_message!, textAlign: TextAlign.center,
-            style: const TextStyle(color: _muted, height: 1.5)))))
-        else Expanded(child: ListView(children: [
-          _contentRow('${brand.name} • Movies', _movies, brand.color),
-          _contentRow('${brand.name} • Series', _series, _cyan),
-          const SizedBox(height: 28),
-        ])),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Row(children: [
+            IconButton(
+              onPressed: () => setState(() {
+                _selected = null;
+                _message = null;
+              }),
+              icon: const Icon(Icons.arrow_back, color: _cyan),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    catalog.catalogName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        color: _cyan, fontSize: 18, fontWeight: FontWeight.w900),
+                  ),
+                  Text(
+                    catalog.addonName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: _muted, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              onPressed: () => _openCatalog(catalog),
+              icon: const Icon(Icons.refresh, color: _cyan),
+            ),
+          ]),
+        ),
+        if (_loading)
+          const Expanded(
+              child: Center(
+                  child: CircularProgressIndicator(color: _cyan)))
+        else if (_message != null)
+          Expanded(
+            child: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  _message!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: _muted, height: 1.5),
+                ),
+              ),
+            ),
+          )
+        else
+          Expanded(
+            child: ListView(children: [
+              _contentRow('${catalog.catalogName} • Movies', _movies, _cyan),
+              _contentRow('${catalog.catalogName} • Series', _series, _textPri),
+              const SizedBox(height: 28),
+            ]),
+          ),
       ]);
     }
+    if (_loadingCatalogs) {
+      return const Center(
+          child: CircularProgressIndicator(color: _cyan));
+    }
+    if (_catalogs.isEmpty) return _emptyCatalogState();
     return GridView.builder(
       padding: const EdgeInsets.all(20),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 320, mainAxisExtent: 140, crossAxisSpacing: 16, mainAxisSpacing: 16,
+        maxCrossAxisExtent: 320,
+        mainAxisExtent: 140,
+        crossAxisSpacing: 16,
+        mainAxisSpacing: 16,
       ),
-      itemCount: _brands.length,
+      itemCount: _catalogs.length,
       itemBuilder: (_, i) {
-        final brand = _brands[i];
+        final catalog = _catalogs[i];
+        final types = [
+          if (catalog.types.contains('movie')) 'Movies',
+          if (catalog.types.contains('series')) 'Series',
+        ].join(' & ');
         return _Card(
-          borderColor: brand.color.withValues(alpha: 0.5),
-          onTap: () => _openBrand(brand),
+          borderColor: _cyan.withValues(alpha: 0.42),
+          onTap: () => _openCatalog(catalog),
           child: Container(
-            decoration: BoxDecoration(gradient: LinearGradient(
-              begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: [brand.color.withValues(alpha: 0.2), _panel],
-            )),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_cyan.withValues(alpha: 0.12), _panel],
+              ),
+            ),
             padding: const EdgeInsets.all(20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text(brand.name, style: TextStyle(color: brand.color, fontWeight: FontWeight.w900, fontSize: 22, letterSpacing: 1.2)),
-              const SizedBox(height: 8),
-              Text(brand.hasCatalog ? 'Provider catalog • Movies & Series' : 'Catalog addon required',
-                style: const TextStyle(color: _muted, fontSize: 12, fontWeight: FontWeight.w600)),
-            ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  catalog.catalogName.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontWeight: FontWeight.w900,
+                    fontSize: 19,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${catalog.addonName} • $types',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      color: _muted, fontSize: 11, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
           ),
         );
       },
