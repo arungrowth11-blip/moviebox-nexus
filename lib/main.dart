@@ -1698,7 +1698,15 @@ class _HubScreenState extends State<HubScreen> {
   @override
   void didUpdateWidget(covariant HubScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.addons, widget.addons)) {
+    final oldManifests = oldWidget.addons
+        .map((addon) => addon.manifestUrl)
+        .toList()
+      ..sort();
+    final newManifests = widget.addons
+        .map((addon) => addon.manifestUrl)
+        .toList()
+      ..sort();
+    if (oldManifests.join('\\n') != newManifests.join('\\n')) {
       _loadCatalogs();
     }
   }
