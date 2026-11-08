@@ -83,6 +83,43 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
+      - name: Harden Gradle distribution download
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+
+          props = Path('android/gradle/wrapper/gradle-wrapper.properties')
+          if not props.is_file():
+              raise SystemExit(f'Missing Gradle wrapper properties: {props}')
+
+          content = props.read_text(encoding='utf-8')
+          match = re.search(r'gradle-([0-9][0-9A-Za-z.+-]*)-(?:all|bin)\.zip', content)
+          if not match:
+              raise SystemExit('Could not identify the generated Gradle wrapper version')
+          version = match.group(1)
+
+          # Use Gradle's official distribution endpoint and the smaller runtime-only ZIP.
+          properties = {
+              'distributionUrl': f'https\\://services.gradle.org/distributions/gradle-{version}-bin.zip',
+              'networkTimeout': '60000',
+              'retries': '4',
+              'retryBackOffMs': '3000',
+          }
+          lines = [line for line in content.splitlines()
+                   if not any(line.startswith(key + '=') for key in properties)]
+          lines.extend(f'{key}={value}' for key, value in properties.items())
+          props.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print(f'Gradle {version}: official bin distribution, 60s timeout, 4 retries')
+          PYCODE
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
       - name: Patch Android TV and network manifest
         shell: bash
         run: |
@@ -186,8 +223,33 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub
 
-      - name: Build release APK
-        run: flutter build apk --release
+      - name: Build release APK (retry transient network failures)
+        shell: bash
+        run: |
+          set -uo pipefail
+          log_file="$(mktemp)"
+          trap 'rm -f "$log_file"' EXIT
+          for attempt in 1 2 3; do
+            echo "Release build attempt ${attempt}/3"
+            set +e
+            flutter build apk --release 2>&1 | tee "$log_file"
+            build_status=${PIPESTATUS[0]}
+            set -e
+            if [ "$build_status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -Eqi 'HTTP response code: (408|429|5[0-9][0-9])|timed out|UnknownHostException|Temporary failure in name resolution|Connection reset|connection timed out' "$log_file"; then
+              echo 'Build failed for a non-transient reason; not retrying.'
+              exit "$build_status"
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 15))
+              echo "Transient network failure detected; retrying in ${delay}s..."
+              sleep "$delay"
+            fi
+          done
+          echo 'Gradle/build downloads still failing after three attempts.'
+          exit 1
 
       - name: Stage APK
         shell: bash
