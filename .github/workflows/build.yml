@@ -31,11 +31,17 @@ jobs:
             mkdir -p lib
             cp main.dart lib/main.dart
           fi
-          if [ ! -f pubspec.yaml ] || [ ! -d android ]; then
-            if [ -f lib/main.dart ]; then cp lib/main.dart /tmp/moviebox_main.dart; fi
+          # An android/ directory containing only assets is NOT a Flutter scaffold.
+          if [ ! -f pubspec.yaml ] || [ ! -f android/app/src/main/AndroidManifest.xml ] || [ ! -f android/settings.gradle.kts ] && [ ! -f android/settings.gradle ]; then
+            backup_dir="$(mktemp -d)"
+            if [ -f lib/main.dart ]; then cp lib/main.dart "$backup_dir/main.dart"; fi
+            if [ -f pubspec.yaml ]; then cp pubspec.yaml "$backup_dir/pubspec.yaml"; fi
             flutter create --platforms=android --org com.moviebox.nexus --project-name moviebox_nexus .
-            if [ -f /tmp/moviebox_main.dart ]; then cp /tmp/moviebox_main.dart lib/main.dart; fi
+            if [ -f "$backup_dir/main.dart" ]; then cp "$backup_dir/main.dart" lib/main.dart; fi
+            if [ -f "$backup_dir/pubspec.yaml" ]; then cp "$backup_dir/pubspec.yaml" pubspec.yaml; fi
+            rm -rf "$backup_dir"
           fi
+          test -f android/app/src/main/AndroidManifest.xml
           test -s lib/main.dart
       - name: Patch Android TV and network manifest
         shell: bash
