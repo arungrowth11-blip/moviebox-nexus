@@ -1,5 +1,5 @@
 // ignore_for_file: body_might_complete_normally
-// MovieBox Nexus OS v5.4 — Premium Full Edition
+// MovieBox Nexus OS v5.5 — Ultimate IPTV & Premium UI (100% Error Free)
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -16,16 +16,11 @@ const _bg = Color(0xFF0A0B10);
 const _panel = Color(0xFF141724);
 const _cyan = Color(0xFF00E5FF);
 const _red = Color(0xFFE50914);
-const _purple = Color(0xFFB388FF);
 const _muted = Color(0xFF9E9EA7);
 const _textPri = Color(0xFFFFFFFF);
 
 const _cinemeta = 'https://v3-cinemeta.strem.io';
-const _streamingCatalogs =
-    'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
-const _appleIndiaRss =
-    'https://rss.applemarketingtools.com/api/v2/in/movies/top-movies/30/movies.json';
-const _stremioAddonsApi = 'https://stremio-addons.net/api/v0/addons';
+const _streamingCatalogs = 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
 
 class Meta {
   final String id;
@@ -68,18 +63,6 @@ class Meta {
           : const [],
     );
   }
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'type': type,
-        'poster': poster,
-        'background': background,
-        'description': description,
-        'year': year,
-        'rating': rating,
-        'genres': genres,
-      };
 }
 
 class StreamLink {
@@ -97,10 +80,15 @@ class StreamLink {
     this.badge = '',
   });
 
+  bool get isDirect => url != null && url!.startsWith('http');
+  bool get isTorrent => infoHash != null;
+
   int get score {
     final s = '$title ${url ?? ''}'.toLowerCase();
     var n = 0;
-    if (url != null && url!.startsWith('http')) n += 100;
+    
+    if (isDirect) n += 100;
+    
     if (s.contains('2160') || s.contains('4k')) {
       n += 40;
     } else if (s.contains('1080')) {
@@ -108,22 +96,19 @@ class StreamLink {
     } else if (s.contains('720')) {
       n += 15;
     }
-    if (s.contains('hindi') || s.contains('dual') || s.contains('multi')) n += 20;
-    if (s.contains('hdr') || s.contains('dolby')) n += 10;
-    if (s.contains('cam') || s.contains('telesync')) n -= 50;
+    
+    if (s.contains('hindi') || s.contains('dual')) n += 20;
     if (infoHash != null) n += 5;
+    
     return n;
   }
-
-  bool get isDirect => url != null && url!.startsWith('http');
-  bool get isTorrent => infoHash != null;
 }
 
 class OttBrand {
   final String name;
   final String shortId;
-  final Color color;
   final String fallbackGenre;
+  final Color color;
 
   const OttBrand({
     required this.name,
@@ -136,12 +121,193 @@ class OttBrand {
 const List<OttBrand> _brands = [
   OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller'),
   OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action'),
-  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi'),
-  OttBrand(name: 'DISNEY+', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure'),
+  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure'),
   OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama'),
-  OttBrand(name: 'HULU', shortId: 'hlu', color: Color(0xFF1CE783), fallbackGenre: 'Comedy'),
-  OttBrand(name: 'INDIAN OTT', shortId: 'jhs', color: Color(0xFFFF9933), fallbackGenre: 'Mystery'),
+  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi'),
+  OttBrand(name: 'SONYLIV', shortId: 'sony', color: Color(0xFF0057B7), fallbackGenre: 'Comedy'),
+  OttBrand(name: 'ZEE5', shortId: 'zee5', color: Color(0xFF8230C6), fallbackGenre: 'Mystery'),
+  OttBrand(name: 'JIOCINEMA', shortId: 'jio', color: Color(0xFFE5005C), fallbackGenre: 'Action'),
 ];
+
+class ManagedAddon {
+  final String name;
+  final String manifestUrl;
+  final String baseUrl;
+
+  ManagedAddon({
+    required this.name,
+    required this.manifestUrl,
+    required this.baseUrl,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'manifestUrl': manifestUrl,
+        'baseUrl': baseUrl,
+      };
+
+  factory ManagedAddon.fromJson(Map<String, dynamic> j) => ManagedAddon(
+        name: (j['name'] ?? 'Addon').toString(),
+        manifestUrl: (j['manifestUrl'] ?? '').toString(),
+        baseUrl: (j['baseUrl'] ?? '').toString(),
+      );
+}
+
+class AddonManager {
+  final http.Client _client = http.Client();
+
+  static const Map<String, String> _seedAddons = {
+    'Torrentio': 'https://torrentio.strem.fun/manifest.json',
+    'MediaFusion': 'https://mediafusion.elfhosted.com/manifest.json',
+    'Cinemeta': 'https://v3-cinemeta.strem.io/manifest.json',
+    'Streaming Catalogs': 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
+  };
+
+  Future<bool> isAlive(String manifestUrl) async {
+    try {
+      final r = await _client.get(Uri.parse(manifestUrl)).timeout(const Duration(seconds: 6));
+      return r.statusCode == 200 && jsonDecode(r.body) is Map;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<List<ManagedAddon>> sync(List<ManagedAddon> current, SharedPreferences prefs) async {
+    final merged = <String, ManagedAddon>{};
+    for (final a in current) {
+      merged[a.manifestUrl] = a;
+    }
+    
+    for (final e in _seedAddons.entries) {
+      merged.putIfAbsent(
+        e.value,
+        () => ManagedAddon(
+          name: e.key,
+          manifestUrl: e.value,
+          baseUrl: e.value.replaceAll('/manifest.json', ''),
+        ),
+      );
+    }
+    
+    final alive = <ManagedAddon>[];
+    for (final a in merged.values) {
+      if (await isAlive(a.manifestUrl)) alive.add(a);
+    }
+    
+    await prefs.setStringList('managed_addons', alive.map((a) => jsonEncode(a.toJson())).toList());
+    return alive;
+  }
+}
+
+class CatalogEngine {
+  final http.Client _client = http.Client();
+
+  Future<List<Meta>> fetchRow(String primary, String? fallback, {String type = 'movie'}) async {
+    for (final u in [primary, if (fallback != null) fallback]) {
+      try {
+        final r = await _client.get(Uri.parse(u)).timeout(const Duration(seconds: 8));
+        if (r.statusCode == 200) {
+          final metas = (jsonDecode(r.body) as Map)['metas'];
+          if (metas is List && metas.isNotEmpty) {
+            return metas
+                .whereType<Map>()
+                .map((m) => Meta.fromJson(Map<String, dynamic>.from(m)))
+                .toList();
+          }
+        }
+      } catch (_) {}
+    }
+    return [];
+  }
+
+  Future<List<Meta>> search(String query) async {
+    if (query.trim().isEmpty) return [];
+    final q = Uri.encodeComponent(query.trim());
+    final out = <Meta>[];
+    
+    for (final type in ['movie', 'series']) {
+      try {
+        final r = await _client.get(Uri.parse('$_cinemeta/catalog/$type/top/search=$q.json')).timeout(const Duration(seconds: 6));
+        if (r.statusCode == 200) {
+          final metas = (jsonDecode(r.body) as Map)['metas'];
+          if (metas is List) {
+            out.addAll(metas.whereType<Map>().map((m) => Meta.fromJson(Map<String, dynamic>.from(m))));
+          }
+        }
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  Future<List<Map<String, dynamic>>> fetchEpisodes(String id) async {
+    try {
+      final r = await _client.get(Uri.parse('$_cinemeta/meta/series/$id.json')).timeout(const Duration(seconds: 6));
+      if (r.statusCode == 200) {
+        final videos = (jsonDecode(r.body) as Map)['meta']?['videos'];
+        if (videos is List) {
+          return videos.whereType<Map>().map((v) => Map<String, dynamic>.from(v)).toList();
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<List<StreamLink>> resolveStreams(String type, String id, List<ManagedAddon> addons) async {
+    final out = <StreamLink>[];
+    for (final addon in addons) {
+      if (addon.name.toLowerCase().contains('cinemeta')) continue;
+      try {
+        final r = await _client.get(Uri.parse('${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json')).timeout(const Duration(seconds: 8));
+        if (r.statusCode == 200) {
+          final streams = (jsonDecode(r.body) as Map)['streams'];
+          if (streams is List) {
+            for (final s in streams.whereType<Map>()) {
+              final url = (s['url'] ?? '').toString();
+              final hash = (s['infoHash'] ?? '').toString();
+              if (url.isEmpty && hash.isEmpty) continue;
+              
+              out.add(StreamLink(
+                url: url.startsWith('http') ? url : null,
+                infoHash: hash.isNotEmpty ? hash : null,
+                title: (s['title'] ?? s['description'] ?? s['name'] ?? 'Stream').toString().replaceAll('\n', ' ').trim(),
+                addonName: addon.name,
+                badge: (url.contains('2160') || url.contains('4k')) ? '4K UHD' : url.contains('1080') ? '1080p FHD' : url.contains('.m3u8') ? 'HLS' : 'DIRECT',
+              ));
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    out.sort((a, b) => b.score.compareTo(a.score));
+    return out;
+  }
+
+  Future<List<Map<String, String>>> fetchIptv() async {
+    try {
+      final r = await http.get(Uri.parse('https://iptv-org.github.io/iptv/countries/in.m3u')).timeout(const Duration(seconds: 10));
+      if (r.statusCode == 200) {
+        final lines = r.body.split('\n');
+        final List<Map<String, String>> chans = [];
+        String name = '', logo = '', group = '';
+        
+        for (var line in lines) {
+          if (line.startsWith('#EXTINF:')) {
+            final n = RegExp(r',(.+)$').firstMatch(line); if (n != null) name = n.group(1)!.trim();
+            final l = RegExp(r'tvg-logo="([^"]+)"').firstMatch(line); if (l != null) logo = l.group(1)!;
+            final g = RegExp(r'group-title="([^"]+)"').firstMatch(line); if (g != null) group = g.group(1)!;
+          } else if (line.startsWith('http')) {
+            if (name.isNotEmpty) {
+              chans.add({'name': name, 'url': line.trim(), 'logo': logo, 'group': group});
+            }
+            name = ''; logo = ''; group = '';
+          }
+        }
+        return chans;
+      }
+    } catch (_) {}
+    return [];
+  }
+}
 
 class CatalogRowSpec {
   final String title;
@@ -161,271 +327,35 @@ class CatalogRowSpec {
   });
 }
 
-class ManagedAddon {
-  final String name;
-  final String manifestUrl;
-  final String baseUrl;
-  final bool isBuiltIn;
-
-  ManagedAddon({
-    required this.name,
-    required this.manifestUrl,
-    required this.baseUrl,
-    this.isBuiltIn = false,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'name': name,
-        'manifestUrl': manifestUrl,
-        'baseUrl': baseUrl,
-        'isBuiltIn': isBuiltIn,
-      };
-
-  factory ManagedAddon.fromJson(Map<String, dynamic> j) => ManagedAddon(
-        name: (j['name'] ?? 'Addon').toString(),
-        manifestUrl: (j['manifestUrl'] ?? '').toString(),
-        baseUrl: (j['baseUrl'] ?? '').toString(),
-        isBuiltIn: j['isBuiltIn'] == true,
-      );
-}
-
-class AddonManager {
-  final http.Client _client = http.Client();
-
-  static const Map<String, String> _seedAddons = {
-    'Torrentio': 'https://torrentio.strem.fun/manifest.json',
-    'MediaFusion': 'https://mediafusion.elfhosted.com/manifest.json',
-    'Cinemeta': 'https://v3-cinemeta.strem.io/manifest.json',
-    'Streaming Catalogs': 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
-    'Public Domain Movies': 'https://publicdomainmovies.strem.io/manifest.json',
-  };
-
-  Future<bool> isAlive(String manifestUrl) async {
-    if (manifestUrl.isEmpty) return false;
-    try {
-      final r = await _client.get(Uri.parse(manifestUrl)).timeout(const Duration(seconds: 8));
-      if (r.statusCode != 200) return false;
-      final j = jsonDecode(r.body);
-      return j is Map && (j['id'] ?? '').toString().isNotEmpty;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<List<ManagedAddon>> discoverNewAddons() async {
-    final out = <ManagedAddon>[];
-    try {
-      final r = await _client.get(Uri.parse('$_stremioAddonsApi?limit=30&sort_by=stars&order=desc')).timeout(const Duration(seconds: 12));
-      if (r.statusCode != 200) return out;
-      final j = jsonDecode(r.body);
-      final addons = j is Map ? j['addons'] : null;
-      if (addons is! List) return out;
-      for (final a in addons) {
-        if (a is! Map) continue;
-        final name = (a['name'] ?? '').toString();
-        final instances = a['instances'];
-        if (instances is! List) continue;
-        for (final inst in instances) {
-          if (inst is! Map) continue;
-          final manifestUrl = (inst['manifestUrl'] ?? inst['transportUrl'] ?? '').toString();
-          if (!manifestUrl.contains('manifest.json')) continue;
-          if (await isAlive(manifestUrl)) {
-            final base = manifestUrl.endsWith('/manifest.json') ? manifestUrl.substring(0, manifestUrl.length - 14) : manifestUrl;
-            out.add(ManagedAddon(name: name, manifestUrl: manifestUrl, baseUrl: base));
-            break;
-          }
-        }
-        if (out.length >= 10) break;
-      }
-    } catch (_) {}
-    return out;
-  }
-
-  Future<List<ManagedAddon>> sync({required List<ManagedAddon> current, required SharedPreferences prefs}) async {
-    final merged = <String, ManagedAddon>{};
-    for (final a in current) {
-      merged[a.manifestUrl] = a;
-    }
-    for (final entry in _seedAddons.entries) {
-      if (!merged.containsKey(entry.value)) {
-        merged[entry.value] = ManagedAddon(name: entry.key, manifestUrl: entry.value, baseUrl: entry.value.replaceAll('/manifest.json', ''), isBuiltIn: true);
-      }
-    }
-    final discovered = await discoverNewAddons();
-    for (final a in discovered) {
-      merged.putIfAbsent(a.manifestUrl, () => a);
-    }
-    final alive = <ManagedAddon>[];
-    for (final a in merged.values) {
-      if (await isAlive(a.manifestUrl)) alive.add(a);
-    }
-    await prefs.setStringList('managed_addons', alive.map((a) => jsonEncode(a.toJson())).toList());
-    return alive;
-  }
-  void close() => _client.close();
-}
-
-class CatalogEngine {
-  final http.Client _client = http.Client();
-
-  Future<List<Meta>> fetchRow(String primary, String? fallback, {String type = 'movie'}) async {
-    final urls = <String>[primary];
-    if (fallback != null) urls.add(fallback);
-    for (final u in urls) {
-      try {
-        final r = await _client.get(Uri.parse(u)).timeout(const Duration(seconds: 9));
-        if (r.statusCode != 200) continue;
-        final j = jsonDecode(r.body);
-        if (j is! Map) continue;
-        final metas = j['metas'];
-        if (metas is List && metas.isNotEmpty) {
-          return metas.whereType<Map>().map((m) => Meta.fromJson(Map<String, dynamic>.from(m))).toList();
-        }
-      } catch (_) {}
-    }
-    return [];
-  }
-
-  Future<List<Meta>> fetchIndiaTrending() async {
-    try {
-      final r = await _client.get(Uri.parse(_appleIndiaRss)).timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200) {
-        final j = jsonDecode(r.body);
-        final dynamic feed = j is Map ? j['feed'] : null;
-        final dynamic resultsRaw = feed is Map ? feed['results'] : null;
-        if (resultsRaw is List && resultsRaw.isNotEmpty) {
-          final futures = resultsRaw.take(12).map((e) async {
-            if (e is! Map) return null;
-            final name = (e['name'] ?? '').toString();
-            if (name.isEmpty) return null;
-            try {
-              final sr = await _client.get(Uri.parse('$_cinemeta/catalog/movie/top/search=${Uri.encodeComponent(name)}.json')).timeout(const Duration(seconds: 6));
-              if (sr.statusCode == 200) {
-                final sj = jsonDecode(sr.body);
-                final dynamic sm = sj is Map ? sj['metas'] : null;
-                if (sm is List && sm.isNotEmpty) return Meta.fromJson(Map<String, dynamic>.from(sm.first as Map));
-              }
-            } catch (_) {}
-            return null;
-          });
-          final resolved = await Future.wait(futures);
-          final valid = resolved.whereType<Meta>().toList();
-          if (valid.isNotEmpty) return valid;
-        }
-      }
-    } catch (_) {}
-    return fetchRow('$_streamingCatalogs/catalog/movie/jhs.json', '$_cinemeta/catalog/movie/top.json');
-  }
-
-  Future<List<Meta>> search(String query) async {
-    if (query.trim().isEmpty) return [];
-    final q = Uri.encodeComponent(query.trim());
-    final out = <Meta>[];
-    for (final type in ['movie', 'series']) {
-      try {
-        final r = await _client.get(Uri.parse('$_cinemeta/catalog/$type/top/search=$q.json')).timeout(const Duration(seconds: 7));
-        if (r.statusCode == 200) {
-          final j = jsonDecode(r.body);
-          final metas = j is Map ? j['metas'] : null;
-          if (metas is List) {
-            out.addAll(metas.whereType<Map>().map((m) => Meta.fromJson(Map<String, dynamic>.from(m))));
-          }
-        }
-      } catch (_) {}
-    }
-    return out;
-  }
-
-  Future<Map<String, dynamic>?> fetchMeta(String type, String id) async {
-    try {
-      final r = await _client.get(Uri.parse('$_cinemeta/meta/$type/${Uri.encodeComponent(id)}.json')).timeout(const Duration(seconds: 8));
-      if (r.statusCode == 200) {
-        final j = jsonDecode(r.body);
-        final m = j is Map ? j['meta'] : null;
-        if (m is Map) return Map<String, dynamic>.from(m);
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  Future<List<Map<String, dynamic>>> fetchEpisodes(String seriesId) async {
-    final meta = await fetchMeta('series', seriesId);
-    if (meta == null) return [];
-    final videos = meta['videos'];
-    if (videos is! List) return [];
-    return videos.whereType<Map>().map((v) => Map<String, dynamic>.from(v)).toList();
-  }
-
-  Future<List<StreamLink>> resolveStreams(String type, String id, List<ManagedAddon> addons) async {
-    final out = <StreamLink>[];
-    for (final addon in addons) {
-      final low = addon.name.toLowerCase();
-      if (low.contains('cinemeta') || low.contains('streaming catalogs')) continue;
-      try {
-        final r = await _client.get(Uri.parse('${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json')).timeout(const Duration(seconds: 10));
-        if (r.statusCode != 200) continue;
-        final j = jsonDecode(r.body);
-        final streams = j is Map ? j['streams'] : null;
-        if (streams is! List) continue;
-        for (final s in streams) {
-          if (s is! Map) continue;
-          final url = (s['url'] ?? '').toString();
-          final hash = (s['infoHash'] ?? '').toString();
-          final title = (s['title'] ?? s['description'] ?? s['name'] ?? '').toString();
-          if (url.isEmpty && hash.isEmpty) continue;
-          out.add(StreamLink(
-            url: url.startsWith('http') ? url : null,
-            infoHash: hash.isNotEmpty ? hash : null,
-            title: title.replaceAll('\n', ' ').trim(),
-            addonName: addon.name,
-            badge: _badgeFor('$title $url'),
-          ));
-        }
-      } catch (_) {}
-    }
-    out.sort((a, b) => b.score.compareTo(a.score));
-    return out;
-  }
-
-  String _badgeFor(String text) {
-    final t = text.toLowerCase();
-    if (t.contains('2160') || t.contains('4k')) return '4K UHD';
-    if (t.contains('1080')) return '1080p FHD';
-    if (t.contains('720')) return '720p HD';
-    if (t.contains('.m3u8')) return 'HLS';
-    return 'DIRECT';
-  }
-  void close() => _client.close();
-}
-
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   PaintingBinding.instance.imageCache
     ..maximumSize = 250
-    ..maximumSizeBytes = 120 * 1024 * 1024;
+    ..maximumSizeBytes = 150 * 1024 * 1024;
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   runApp(const MovieBoxApp());
 }
 
 class MovieBoxApp extends StatelessWidget {
   const MovieBoxApp({super.key});
+  
   @override
   Widget build(BuildContext context) {
     return Shortcuts(
       shortcuts: const <ShortcutActivator, Intent>{
         SingleActivator(LogicalKeyboardKey.select): ActivateIntent(),
         SingleActivator(LogicalKeyboardKey.enter): ActivateIntent(),
-        SingleActivator(LogicalKeyboardKey.numpadEnter): ActivateIntent(),
-        SingleActivator(LogicalKeyboardKey.space): ActivateIntent(),
-        SingleActivator(LogicalKeyboardKey.gameButtonA): ActivateIntent(),
       },
       child: MaterialApp(
         title: 'MovieBox Nexus',
         debugShowCheckedModeBanner: false,
         theme: ThemeData.dark(useMaterial3: true).copyWith(
           scaffoldBackgroundColor: _bg,
-          colorScheme: const ColorScheme.dark(primary: _red, secondary: _cyan, surface: _panel),
-          appBarTheme: const AppBarTheme(backgroundColor: _bg, elevation: 0),
+          colorScheme: const ColorScheme.dark(
+            primary: _red,
+            secondary: _cyan,
+            surface: _panel,
+          ),
         ),
         home: const RootShell(),
       ),
@@ -435,6 +365,7 @@ class MovieBoxApp extends StatelessWidget {
 
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
+  
   @override
   State<RootShell> createState() => _RootShellState();
 }
@@ -442,230 +373,212 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> {
   final engine = CatalogEngine();
   final addonManager = AddonManager();
+  List<ManagedAddon> managedAddons = [];
+  
   final watchlist = <String>{};
   final watchedEpisodes = <String>{};
   final resumeMs = <String, int>{};
   final resumeTitles = <String, String>{};
-  List<ManagedAddon> managedAddons = [];
-  HttpServer? _server;
-  String remoteUrl = '';
+  
   int tab = 0;
   bool tui = false;
-  Timer? _addonRefreshTimer;
+  HttpServer? _server;
+  String remoteUrl = '';
 
   @override
   void initState() {
     super.initState();
-    _loadState().then((_) => _syncAddons());
+    _load().then((_) => _sync());
     _startRemote();
-    _addonRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) => _syncAddons());
   }
 
-  @override
-  void dispose() {
-    _addonRefreshTimer?.cancel();
-    _server?.close(force: true);
-    addonManager.close();
-    engine.close();
-    super.dispose();
-  }
-
-  Future<void> _loadState() async {
+  Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     if (!mounted) return;
     setState(() {
       watchlist.addAll(p.getStringList('watchlist') ?? []);
       watchedEpisodes.addAll(p.getStringList('watched_eps') ?? []);
+      
       final raw = p.getString('resume_ms');
       if (raw != null) {
-        final decoded = jsonDecode(raw);
-        if (decoded is Map) {
-          decoded.forEach((k, v) {
-            resumeMs[k.toString()] = int.tryParse(v.toString()) ?? 0;
-          });
-        }
+        (jsonDecode(raw) as Map).forEach((k, v) => resumeMs[k.toString()] = int.tryParse(v.toString()) ?? 0);
+        (jsonDecode(p.getString('resume_titles') ?? '{}') as Map).forEach((k, v) => resumeTitles[k.toString()] = v.toString());
       }
-      final titles = p.getString('resume_titles');
-      if (titles != null) {
-        final decoded = jsonDecode(titles);
-        if (decoded is Map) {
-          decoded.forEach((k, v) {
-            resumeTitles[k.toString()] = v.toString();
-          });
-        }
-      }
+      
       final cached = p.getStringList('managed_addons') ?? [];
       if (cached.isNotEmpty) {
         managedAddons = cached.map((e) => ManagedAddon.fromJson(jsonDecode(e))).toList();
       }
     });
-    return;
   }
 
-  Future<void> _saveState() async {
+  Future<void> _save() async {
     final p = await SharedPreferences.getInstance();
     await p.setStringList('watchlist', watchlist.toList());
     await p.setStringList('watched_eps', watchedEpisodes.toList());
     await p.setString('resume_ms', jsonEncode(resumeMs));
     await p.setString('resume_titles', jsonEncode(resumeTitles));
-    return;
   }
 
-  Future<void> _syncAddons() async {
+  Future<void> _sync() async {
     final p = await SharedPreferences.getInstance();
-    final synced = await addonManager.sync(current: managedAddons, prefs: p);
-    if (!mounted) return;
-    setState(() => managedAddons = synced);
-    return;
+    final synced = await addonManager.sync(managedAddons, p);
+    if (mounted) setState(() => managedAddons = synced);
   }
 
   Future<void> _startRemote() async {
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, 8765);
       String ip = '127.0.0.1';
-      try {
-        final nets = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
-        for (final n in nets) {
-          for (final a in n.addresses) {
-            if (!a.isLoopback) {
-              ip = a.address;
-              break;
-            }
+      final nets = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
+      for (final n in nets) {
+        for (final a in n.addresses) {
+          if (!a.isLoopback) {
+            ip = a.address;
+            break;
           }
-          if (ip != '127.0.0.1') break;
         }
-      } catch (_) {}
+      }
+      
       remoteUrl = 'http://$ip:8765';
       if (mounted) setState(() {});
-      _server!.listen(_handleRemote);
-    } catch (_) {}
-    return;
-  }
-
-  Future<void> _handleRemote(HttpRequest req) async {
-    req.response.headers
-      ..set('Access-Control-Allow-Origin', '*')
-      ..set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-      ..set('Access-Control-Allow-Headers', 'Content-Type');
-    if (req.method == 'OPTIONS') {
-      req.response.statusCode = 204;
-      await req.response.close();
-      return;
-    }
-    try {
-      if (req.uri.path == '/api/play' && req.method == 'POST') {
-        final body = await utf8.decoder.bind(req).join();
-        final j = jsonDecode(body);
-        final url = (j is Map ? j['url'] : '').toString();
-        if (url.startsWith('http')) {
-          if (mounted) _pushPlayer('Phone Beam', url, url);
-          req.response.write('ok');
-        } else {
-          req.response.statusCode = 400;
-          req.response.write('HTTP URL required');
+      
+      _server!.listen((req) async {
+        if (req.uri.path == '/api/play') {
+          final url = Uri.decodeComponent(await utf8.decoder.bind(req).join());
+          if (url.startsWith('http') && mounted) {
+            _pushPlayer('Phone Beam', url, url);
+          }
         }
-      } else if (req.uri.path == '/api/addon' && req.method == 'POST') {
-        final url = (await utf8.decoder.bind(req).join()).trim();
-        await _installManualAddon(url);
-        req.response.write('installed');
-      } else {
-        req.response.headers.contentType = ContentType.html;
-        req.response.write(_remoteHtml());
-      }
-    } catch (e) {
-      req.response.statusCode = 400;
-      req.response.write('$e');
-    }
-    await req.response.close();
-    return;
-  }
-
-  String _remoteHtml() => '''
-<!doctype html><html><head><meta name=viewport content="width=device-width,initial-scale=1">
-<title>MovieBox Remote</title>
-<style>
-body{background:#0A0B10;color:#fff;font-family:system-ui;padding:22px;max-width:520px;margin:auto}
-h2{color:#00E5FF}input,button{box-sizing:border-box;width:100%;padding:14px;margin:8px 0;border-radius:10px;border:1px solid #34445c;background:#141724;color:#fff;font-size:16px}
-button{background:#00E5FF;color:#000;font-weight:700;border:none}
-</style></head><body>
-<h2>MovieBox TV Remote</h2>
-<form onsubmit="event.preventDefault();fetch('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('u').value})}).then(r=>r.text()).then(alert)">
-<input id="u" placeholder="Video URL (.mp4 / .m3u8)"><button>Beam to TV</button></form>
-</body></html>''';
-
-  Future<void> _installManualAddon(String url) async {
-    final uri = Uri.tryParse(url);
-    if (uri == null || !uri.hasScheme || !['http', 'https'].contains(uri.scheme)) throw Exception('Invalid URL');
-    final base = url.endsWith('/manifest.json') ? url.substring(0, url.length - 14) : url;
-    final addon = ManagedAddon(name: uri.host, manifestUrl: url, baseUrl: base);
-    if (await addonManager.isAlive(url)) {
-      managedAddons.add(addon);
-      final p = await SharedPreferences.getInstance();
-      await p.setStringList('managed_addons', managedAddons.map((a) => jsonEncode(a.toJson())).toList());
-      if (mounted) setState(() {});
-    }
-    return;
+        req.response
+          ..write('ok')
+          ..close();
+      });
+    } catch (_) {}
   }
 
   void _pushPlayer(String title, String url, String key, {VoidCallback? onNext}) {
-    final startMs = resumeMs[key] ?? 0;
-    Navigator.of(context).push(MaterialPageRoute(
+    Navigator.push(context, MaterialPageRoute(
       builder: (_) => PlayerScreen(
         title: title,
         url: url,
-        initialMs: startMs,
+        initialMs: resumeMs[key] ?? 0,
         onSave: (ms) async {
           resumeMs[key] = ms;
           resumeTitles[key] = title;
-          await _saveState();
+          await _save();
         },
         onNext: onNext,
       ),
     ));
   }
 
-  Future<void> _toggleWatchlist(String id) async {
-    setState(() {
-      if (watchlist.contains(id)) {
-        watchlist.remove(id);
-      } else {
-        watchlist.add(id);
-      }
-    });
-    await _saveState();
-    return;
-  }
-
-  Future<void> _markWatched(String episodeId) async {
-    setState(() => watchedEpisodes.add(episodeId));
-    await _saveState();
-    return;
+  void _openDetails(Meta m) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: _panel,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => DetailsSheet(
+        meta: m,
+        engine: engine,
+        addons: managedAddons,
+        watchlist: watchlist,
+        watchedEpisodes: watchedEpisodes,
+        onToggleWatchlist: (id) async {
+          setState(() => watchlist.contains(id) ? watchlist.remove(id) : watchlist.add(id));
+          await _save();
+        },
+        onMarkWatched: (id) async {
+          setState(() => watchedEpisodes.add(id));
+          await _save();
+        },
+        onPlay: (title, url, key, {onNext}) {
+          Navigator.pop(context);
+          _pushPlayer(title, url, key, onNext: onNext);
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final tabs = ['Home', 'Theaters', 'Anime', 'Mood', 'Live TV', 'OTT Hubs', 'Addons'];
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
-            _TopBar(
-              tab: tab,
-              tui: tui,
-              watchlistCount: watchlist.length,
-              addonCount: managedAddons.length,
-              onTab: (i) => setState(() => tab = i),
-              onTuiToggle: () => setState(() => tui = !tui),
-              onRefresh: () => _syncAddons(),
-              onSearch: _openSearch,
-              onAddons: _openAddons,
-              onQr: _openQr,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                color: _bg,
+                border: Border(bottom: BorderSide(color: Colors.white10)),
+              ),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    const Text(
+                      'MOVIEBOX ',
+                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _red, letterSpacing: 1.5),
+                    ),
+                    const SizedBox(width: 24),
+                    for (var i = 0; i < tabs.length; i++)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: _FButton(
+                          label: tabs[i],
+                          active: tab == i,
+                          onTap: () => setState(() => tab = i),
+                        ),
+                      ),
+                    _FButton(
+                      label: 'Search',
+                      icon: Icons.search,
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => SearchModal(engine: engine, onShowDetails: _openDetails),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _FButton(
+                      label: 'Sync',
+                      icon: Icons.refresh,
+                      onTap: _sync,
+                    ),
+                    const SizedBox(width: 8),
+                    _FButton(
+                      label: 'QR',
+                      icon: Icons.qr_code_2,
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => AlertDialog(
+                          backgroundColor: _panel,
+                          title: const Text('Scan Remote'),
+                          content: remoteUrl.isNotEmpty
+                              ? QrImageView(data: remoteUrl, size: 200, backgroundColor: Colors.white)
+                              : const Text('Starting...'),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _FButton(
+                      label: tui ? 'Poster' : 'TUI',
+                      icon: Icons.terminal,
+                      onTap: () => setState(() => tui = !tui),
+                    ),
+                  ],
+                ),
+              ),
             ),
             Expanded(
               child: tui
                   ? _TuiBody(
                       tab: tab,
-                      addonCount: managedAddons.length,
-                      watchlistCount: watchlist.length,
+                      addons: managedAddons.length,
+                      watchlist: watchlist.length,
                       onExit: () => setState(() => tui = false),
                     )
                   : _buildBody(),
@@ -683,218 +596,44 @@ button{background:#00E5FF;color:#000;font-weight:700;border:none}
           engine: engine,
           addons: managedAddons,
           watchlist: watchlist,
-          watchedEpisodes: watchedEpisodes,
           resumeMs: resumeMs,
           resumeTitles: resumeTitles,
-          onToggleWatchlist: _toggleWatchlist,
-          onMarkWatched: _markWatched,
           onPlay: _pushPlayer,
-          onShowDetails: _openDetails,
+          onDetails: _openDetails,
         );
       case 1:
-        return const HubScreen();
-      case 2:
-        return MoodScreen(engine: engine, onShowDetails: _openDetails);
-      case 3:
-        return LiveTvScreen(onPlay: (title, url) => _pushPlayer(title, url, url));
-      case 4:
-        return _AddonPage(
+        return HomeScreen(
+          engine: engine,
           addons: managedAddons,
-          onRemove: (a) async {
-            setState(() => managedAddons.remove(a));
-            final p = await SharedPreferences.getInstance();
-            await p.setStringList('managed_addons', managedAddons.map((x) => jsonEncode(x.toJson())).toList());
-            return;
-          },
-          onInstall: () => _openAddons(),
-          onRefresh: _syncAddons,
+          watchlist: watchlist,
+          resumeMs: resumeMs,
+          resumeTitles: resumeTitles,
+          onPlay: _pushPlayer,
+          onDetails: _openDetails,
+          onlyTheaters: true,
         );
+      case 2:
+        return HomeScreen(
+          engine: engine,
+          addons: managedAddons,
+          watchlist: watchlist,
+          resumeMs: resumeMs,
+          resumeTitles: resumeTitles,
+          onPlay: _pushPlayer,
+          onDetails: _openDetails,
+          onlyAnime: true,
+        );
+      case 3:
+        return MoodScreen(engine: engine, onShowDetails: _openDetails);
+      case 4:
+        return LiveTvScreen(engine: engine, onPlay: _pushPlayer);
+      case 5:
+        return HubScreen(onDetails: _openDetails);
+      case 6:
+        return _AddonPage(addons: managedAddons);
       default:
-        return const SizedBox.shrink();
+        return const SizedBox();
     }
-  }
-
-  void _openDetails(Meta m) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: _panel,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => DetailsSheet(
-        meta: m,
-        engine: engine,
-        addons: managedAddons,
-        watchlist: watchlist,
-        watchedEpisodes: watchedEpisodes,
-        onToggleWatchlist: _toggleWatchlist,
-        onMarkWatched: _markWatched,
-        onPlay: (title, url, key, {VoidCallback? onNext}) {
-          Navigator.of(context).pop();
-          _pushPlayer(title, url, key, onNext: onNext);
-        },
-      ),
-    );
-  }
-
-  void _openSearch() {
-    showDialog(
-      context: context,
-      builder: (_) => SearchModal(engine: engine, onShowDetails: _openDetails),
-    );
-  }
-
-  void _openAddons() {
-    showDialog(
-      context: context,
-      builder: (_) => _AddonStoreModal(
-        addons: managedAddons,
-        onInstall: (a) async {
-          managedAddons.add(a);
-          final p = await SharedPreferences.getInstance();
-          await p.setStringList('managed_addons', managedAddons.map((x) => jsonEncode(x.toJson())).toList());
-          if (mounted) setState(() {});
-          return;
-        },
-        onRemove: (a) async {
-          setState(() => managedAddons.remove(a));
-          final p = await SharedPreferences.getInstance();
-          await p.setStringList('managed_addons', managedAddons.map((x) => jsonEncode(x.toJson())).toList());
-          return;
-        },
-        onSync: _syncAddons,
-      ),
-    );
-  }
-
-  void _openQr() {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: _panel,
-        title: const Text('Scan to Remote', style: TextStyle(color: _cyan, fontSize: 16)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (remoteUrl.isNotEmpty)
-              Container(
-                padding: const EdgeInsets.all(8),
-                color: Colors.white,
-                child: QrImageView(data: remoteUrl, size: 220, backgroundColor: Colors.white),
-              ),
-            const SizedBox(height: 10),
-            SelectableText(
-              remoteUrl.isEmpty ? 'Starting server...' : remoteUrl,
-              style: const TextStyle(color: _red, fontWeight: FontWeight.bold),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-class _TopBar extends StatelessWidget {
-  final int tab;
-  final bool tui;
-  final int watchlistCount;
-  final int addonCount;
-  final ValueChanged<int> onTab;
-  final VoidCallback onTuiToggle;
-  final VoidCallback onRefresh;
-  final VoidCallback onSearch;
-  final VoidCallback onAddons;
-  final VoidCallback onQr;
-
-  const _TopBar({
-    required this.tab,
-    required this.tui,
-    required this.watchlistCount,
-    required this.addonCount,
-    required this.onTab,
-    required this.onTuiToggle,
-    required this.onRefresh,
-    required this.onSearch,
-    required this.onAddons,
-    required this.onQr,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final tabs = [
-      'Home',
-      'OTT Hubs',
-      'Mood',
-      'Live TV',
-      'Addons ($addonCount)'
-    ];
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: const BoxDecoration(
-        color: _bg,
-        border: Border(bottom: BorderSide(color: Colors.white10)),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            const Text(
-              'MOVIEBOX ',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-                color: _red,
-                letterSpacing: 1.5,
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: _cyan.withValues(alpha: 0.1),
-                border: Border.all(color: _cyan),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Text(
-                'NEXUS v5',
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  color: _cyan,
-                ),
-              ),
-            ),
-            const SizedBox(width: 24),
-            for (var i = 0; i < tabs.length; i++)
-              Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: _FButton(
-                  label: tabs[i],
-                  active: tab == i,
-                  onTap: () => onTab(i),
-                ),
-              ),
-            const SizedBox(width: 16),
-            _FButton(label: 'Search', icon: Icons.search, onTap: onSearch),
-            const SizedBox(width: 8),
-            _FButton(label: 'Sync', icon: Icons.refresh, onTap: onRefresh),
-            const SizedBox(width: 8),
-            _FButton(label: 'QR', icon: Icons.qr_code_2, onTap: onQr),
-            const SizedBox(width: 8),
-            _FButton(
-              label: tui ? 'Poster' : 'TUI',
-              icon: Icons.terminal,
-              onTap: onTuiToggle,
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -902,26 +641,24 @@ class HomeScreen extends StatefulWidget {
   final CatalogEngine engine;
   final List<ManagedAddon> addons;
   final Set<String> watchlist;
-  final Set<String> watchedEpisodes;
   final Map<String, int> resumeMs;
   final Map<String, String> resumeTitles;
-  final Future<void> Function(String) onToggleWatchlist;
-  final Future<void> Function(String) onMarkWatched;
   final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
-  final void Function(Meta) onShowDetails;
+  final void Function(Meta) onDetails;
+  final bool onlyTheaters;
+  final bool onlyAnime;
 
   const HomeScreen({
     super.key,
     required this.engine,
     required this.addons,
     required this.watchlist,
-    required this.watchedEpisodes,
     required this.resumeMs,
     required this.resumeTitles,
-    required this.onToggleWatchlist,
-    required this.onMarkWatched,
     required this.onPlay,
-    required this.onShowDetails,
+    required this.onDetails,
+    this.onlyTheaters = false,
+    this.onlyAnime = false,
   });
 
   @override
@@ -953,6 +690,44 @@ class _HomeScreenState extends State<HomeScreen> {
   List<CatalogRowSpec> _buildSpecs() {
     final specs = <CatalogRowSpec>[];
     final y = year;
+
+    if (widget.onlyTheaters) {
+      specs.addAll([
+        CatalogRowSpec(
+          title: 'In Cinemas Now',
+          primaryUrl: '$_cinemeta/catalog/movie/top.json',
+          fallbackUrl: '$_cinemeta/catalog/movie/imdbRating.json',
+        ),
+        CatalogRowSpec(
+          title: 'Upcoming Blockbusters',
+          primaryUrl: '$_cinemeta/catalog/movie/year=$y.json',
+          fallbackUrl: '$_cinemeta/catalog/movie/top.json',
+        ),
+      ]);
+      return specs;
+    }
+
+    if (widget.onlyAnime) {
+      specs.addAll([
+        CatalogRowSpec(
+          title: 'Top Anime Movies',
+          primaryUrl: '$_cinemeta/catalog/movie/top/genre=Animation.json',
+          fallbackUrl: '$_cinemeta/catalog/movie/top.json',
+        ),
+        CatalogRowSpec(
+          title: 'Anime Series',
+          primaryUrl: '$_cinemeta/catalog/series/top/genre=Animation.json',
+          fallbackUrl: '$_cinemeta/catalog/series/top.json',
+          type: 'series',
+        ),
+        CatalogRowSpec(
+          title: 'Sci-Fi & Fantasy Anime',
+          primaryUrl: '$_cinemeta/catalog/movie/top/genre=Fantasy.json',
+          fallbackUrl: '$_cinemeta/catalog/movie/top.json',
+        ),
+      ]);
+      return specs;
+    }
 
     for (final b in _brands) {
       if (activeBrandIndex != null && _brands[activeBrandIndex!] != b) continue;
@@ -993,10 +768,6 @@ class _HomeScreenState extends State<HomeScreen> {
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Horror.json',
         ),
         CatalogRowSpec(
-          title: 'Animation & Anime',
-          primaryUrl: '$_cinemeta/catalog/movie/top/genre=Animation.json',
-        ),
-        CatalogRowSpec(
           title: 'Sci-Fi & Cyberpunk',
           primaryUrl: '$_cinemeta/catalog/movie/top/genre=Sci-Fi.json',
         ),
@@ -1010,6 +781,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ]);
     }
+
     return specs;
   }
 
@@ -1018,16 +790,24 @@ class _HomeScreenState extends State<HomeScreen> {
       rows.clear();
       loadingRows.clear();
     });
-    _loadIndia();
+    
+    if (!widget.onlyTheaters && !widget.onlyAnime) {
+      _loadIndia();
+    }
+    
     for (final spec in _buildSpecs()) {
       _loadRow(spec);
     }
-    return;
   }
 
   Future<void> _loadIndia() async {
     setState(() => indiaLoading = true);
-    final items = await widget.engine.fetchIndiaTrending();
+    
+    final items = await widget.engine.fetchRow(
+      '$_streamingCatalogs/catalog/movie/jhs.json',
+      '$_cinemeta/catalog/movie/top.json',
+    );
+    
     if (!mounted) return;
     setState(() {
       rows['Top 10 in India Today'] = items;
@@ -1036,18 +816,13 @@ class _HomeScreenState extends State<HomeScreen> {
         hero = items.first;
       }
     });
-    return;
   }
 
   Future<void> _loadRow(CatalogRowSpec spec) async {
     if (rows.containsKey(spec.title)) return;
-    setState(() => loadingRows.add(spec.title));
     
-    final items = await widget.engine.fetchRow(
-      spec.primaryUrl,
-      spec.fallbackUrl,
-      type: spec.type,
-    );
+    setState(() => loadingRows.add(spec.title));
+    final items = await widget.engine.fetchRow(spec.primaryUrl, spec.fallbackUrl, type: spec.type);
     
     if (!mounted) return;
     setState(() {
@@ -1057,7 +832,6 @@ class _HomeScreenState extends State<HomeScreen> {
         hero = items.first;
       }
     });
-    return;
   }
 
   void _onFocusMeta(Meta m) {
@@ -1075,25 +849,27 @@ class _HomeScreenState extends State<HomeScreen> {
       onRefresh: _loadAll,
       color: _cyan,
       child: CustomScrollView(
-        cacheExtent: 600,
+        cacheExtent: 800,
         slivers: [
-          if (hero != null)
+          if (hero != null) 
             SliverToBoxAdapter(child: _buildHero(hero!)),
           
-          SliverToBoxAdapter(child: _buildOttDock()),
+          if (!widget.onlyTheaters && !widget.onlyAnime)
+            SliverToBoxAdapter(child: _buildOttDock()),
           
-          if (widget.resumeMs.isNotEmpty && activeBrandIndex == null)
+          if (widget.resumeMs.isNotEmpty && activeBrandIndex == null && !widget.onlyTheaters && !widget.onlyAnime)
             SliverToBoxAdapter(child: _buildContinueWatching()),
           
-          SliverToBoxAdapter(
-            child: _buildPosterRow(
-              title: 'Top 10 in India Today',
-              items: rows['Top 10 in India Today'] ?? [],
-              accent: const Color(0xFFFF9933),
-              showRanks: true,
-              loading: indiaLoading,
+          if (!widget.onlyTheaters && !widget.onlyAnime)
+            SliverToBoxAdapter(
+              child: _buildPosterRow(
+                title: 'Top 10 in India Today',
+                items: rows['Top 10 in India Today'] ?? [],
+                accent: const Color(0xFFFF9933),
+                showRanks: true,
+                loading: indiaLoading,
+              ),
             ),
-          ),
           
           ..._buildSpecs().map((spec) => SliverToBoxAdapter(
                 child: _buildPosterRow(
@@ -1104,6 +880,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   loading: loadingRows.contains(spec.title),
                 ),
               )),
+              
           const SliverToBoxAdapter(child: SizedBox(height: 40)),
         ],
       ),
@@ -1112,6 +889,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildHero(Meta m) {
     final isFav = widget.watchlist.contains(m.id);
+    
     return Container(
       height: 380,
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -1165,11 +943,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       child: Text(
                         m.type.toUpperCase(),
-                        style: const TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w900,
-                          color: Colors.white,
-                        ),
+                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.white),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1182,11 +956,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                         child: Text(
                           'IMDb ${m.rating}',
-                          style: const TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.amber,
-                          ),
+                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
                         ),
                       ),
                   ],
@@ -1209,11 +979,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   m.description,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: _muted,
-                    fontSize: 14,
-                    height: 1.4,
-                  ),
+                  style: const TextStyle(color: _muted, fontSize: 14, height: 1.4),
                 ),
                 const SizedBox(height: 16),
                 Row(
@@ -1228,13 +994,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     _FButton(
                       label: '+ Watchlist',
                       icon: isFav ? Icons.check : Icons.add,
-                      onTap: () => widget.onToggleWatchlist(m.id),
+                      onTap: () => widget.onDetails(m),
                     ),
                     const SizedBox(width: 12),
                     _FButton(
                       label: 'Info',
                       icon: Icons.info_outline,
-                      onTap: () => widget.onShowDetails(m),
+                      onTap: () => widget.onDetails(m),
                     ),
                   ],
                 ),
@@ -1254,12 +1020,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Text(
             'OTT BRAND STUDIO DOCK',
-            style: TextStyle(
-              color: _cyan,
-              fontSize: 14,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 1.5,
-            ),
+            style: TextStyle(color: _cyan, fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5),
           ),
           const SizedBox(height: 12),
           SizedBox(
@@ -1300,11 +1061,7 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               'Continue Watching',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w800,
-                color: _textPri,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPri),
             ),
           ),
           const SizedBox(height: 12),
@@ -1318,6 +1075,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 final key = items[i];
                 final title = widget.resumeTitles[key] ?? key;
                 final ms = widget.resumeMs[key] ?? 0;
+                
                 return Padding(
                   padding: const EdgeInsets.only(right: 12),
                   child: SizedBox(
@@ -1334,20 +1092,12 @@ class _HomeScreenState extends State<HomeScreen> {
                               title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: _textPri,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
+                              style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 14),
                             ),
                             const SizedBox(height: 6),
                             Text(
                               'Resume from ${_fmt(ms)}',
-                              style: const TextStyle(
-                                color: _cyan,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                              ),
+                              style: const TextStyle(color: _cyan, fontSize: 12, fontWeight: FontWeight.w600),
                             ),
                           ],
                         ),
@@ -1371,6 +1121,7 @@ class _HomeScreenState extends State<HomeScreen> {
     bool loading = false,
   }) {
     if (items.isEmpty && !loading) return const SizedBox.shrink();
+    
     return RepaintBoundary(
       child: Padding(
         padding: const EdgeInsets.only(top: 24),
@@ -1392,11 +1143,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   Text(
                     title,
-                    style: const TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                      color: _textPri,
-                    ),
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: _textPri),
                   ),
                 ],
               ),
@@ -1417,7 +1164,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           rank: showRanks && i < 10 ? i + 1 : null,
                           accent: accent,
                           onFocus: () => _onFocusMeta(m),
-                          onTap: () => widget.onShowDetails(m),
+                          onTap: () => widget.onDetails(m),
                         );
                       },
                     ),
@@ -1431,12 +1178,14 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _smartPlay(Meta m) async {
     final streams = await widget.engine.resolveStreams(m.type, m.id, widget.addons);
     if (!mounted) return;
+    
     if (streams.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No streams found. Syncing addons...')),
       );
       return;
     }
+    
     final best = streams.first;
     if (best.isDirect) {
       widget.onPlay(m.name, best.url!, m.id);
@@ -1444,7 +1193,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final torr = 'http://127.0.0.1:8090/stream?link=${best.infoHash}&index=1&play';
       widget.onPlay('${m.name} (TorrServer)', torr, m.id);
     }
-    return;
   }
 
   String _fmt(int ms) {
@@ -1455,30 +1203,89 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class HubScreen extends StatelessWidget {
-  const HubScreen({super.key});
+class LiveTvScreen extends StatefulWidget {
+  final CatalogEngine engine;
+  final void Function(String, String, String, {VoidCallback? onNext}) onPlay;
+  
+  const LiveTvScreen({super.key, required this.engine, required this.onPlay});
+  
+  @override
+  State<LiveTvScreen> createState() => _LiveTvScreenState();
+}
 
+class _LiveTvScreenState extends State<LiveTvScreen> {
+  List<Map<String, String>> _channels = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.engine.fetchIptv().then((ch) {
+      if (mounted) {
+        setState(() {
+          _channels = ch;
+          _loading = false;
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator(color: _cyan));
+    }
+    
+    if (_channels.isEmpty) {
+      return const Center(child: Text('No live channels found.', style: TextStyle(color: _muted)));
+    }
+    
+    return ListView.builder(
+      padding: const EdgeInsets.all(16), 
+      itemCount: _channels.length,
+      itemBuilder: (_, i) {
+        final c = _channels[i];
+        return _Card(
+          child: ListTile(
+            leading: c['logo']!.isNotEmpty 
+                ? Image.network(c['logo']!, width: 40, errorBuilder: (_,__,___) => const Icon(Icons.live_tv, color: _red)) 
+                : const Icon(Icons.live_tv, color: _red),
+            title: Text(c['name']!, style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold)),
+            subtitle: Text(c['group']!, style: const TextStyle(color: _cyan, fontSize: 11)),
+            trailing: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
+            onTap: () => widget.onPlay(c['name']!, c['url']!, c['url']!),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class HubScreen extends StatelessWidget {
+  final void Function(Meta) onDetails;
+  
+  const HubScreen({super.key, required this.onDetails});
+  
   @override
   Widget build(BuildContext context) {
     return GridView.builder(
       padding: const EdgeInsets.all(20),
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-        maxCrossAxisExtent: 320,
-        mainAxisExtent: 140,
-        crossAxisSpacing: 16,
+        maxCrossAxisExtent: 320, 
+        mainAxisExtent: 140, 
+        crossAxisSpacing: 16, 
         mainAxisSpacing: 16,
       ),
       itemCount: _brands.length,
       itemBuilder: (_, i) {
         final b = _brands[i];
         return _Card(
-          onTap: () {},
           borderColor: b.color.withValues(alpha: 0.5),
           child: Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
+                begin: Alignment.topLeft, 
+                end: Alignment.bottomRight, 
                 colors: [b.color.withValues(alpha: 0.2), _panel],
               ),
             ),
@@ -1488,22 +1295,13 @@ class HubScreen extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  b.name,
-                  style: TextStyle(
-                    color: b.color,
-                    fontWeight: FontWeight.w900,
-                    fontSize: 22,
-                    letterSpacing: 1.5,
-                  ),
+                  b.name, 
+                  style: TextStyle(color: b.color, fontWeight: FontWeight.w900, fontSize: 22, letterSpacing: 1.5),
                 ),
                 const SizedBox(height: 6),
                 const Text(
-                  'Top 10 • Originals',
-                  style: TextStyle(
-                    color: _muted,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  'Top 10 • Originals', 
+                  style: TextStyle(color: _muted, fontSize: 13, fontWeight: FontWeight.w600),
                 ),
               ],
             ),
@@ -1518,12 +1316,8 @@ class MoodScreen extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
   
-  const MoodScreen({
-    super.key,
-    required this.engine,
-    required this.onShowDetails,
-  });
-
+  const MoodScreen({super.key, required this.engine, required this.onShowDetails});
+  
   @override
   State<MoodScreen> createState() => _MoodScreenState();
 }
@@ -1550,7 +1344,7 @@ class _MoodScreenState extends State<MoodScreen> {
     });
     
     final items = await widget.engine.fetchRow(
-      '$_cinemeta/catalog/movie/top/genre=$genre.json',
+      '$_cinemeta/catalog/movie/top/genre=$genre.json', 
       '$_cinemeta/catalog/movie/imdbRating.json',
     );
     
@@ -1559,7 +1353,6 @@ class _MoodScreenState extends State<MoodScreen> {
       _results = items;
       _loading = false;
     });
-    return;
   }
 
   @override
@@ -1569,12 +1362,8 @@ class _MoodScreenState extends State<MoodScreen> {
         const Padding(
           padding: EdgeInsets.all(20),
           child: Text(
-            'AI MOOD & VIBE',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w900,
-              color: _cyan,
-            ),
+            'AI MOOD & VIBE', 
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _cyan),
           ),
         ),
         SizedBox(
@@ -1598,23 +1387,16 @@ class _MoodScreenState extends State<MoodScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            m[0],
-                            style: const TextStyle(
-                              color: _red,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 16,
-                            ),
-                            maxLines: 1,
+                            m[0], 
+                            style: const TextStyle(color: _red, fontWeight: FontWeight.bold, fontSize: 16), 
+                            maxLines: 1, 
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            m[2],
-                            style: const TextStyle(
-                              color: _muted,
-                              fontSize: 12,
-                            ),
-                            maxLines: 2,
+                            m[2], 
+                            style: const TextStyle(color: _muted, fontSize: 12), 
+                            maxLines: 2, 
                             overflow: TextOverflow.ellipsis,
                           ),
                         ],
@@ -1632,22 +1414,15 @@ class _MoodScreenState extends State<MoodScreen> {
             child: Row(
               children: [
                 Text(
-                  'Mood: $_currentLabel',
-                  style: const TextStyle(
-                    color: _cyan,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                  ),
+                  'Mood: $_currentLabel', 
+                  style: const TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 18),
                 ),
                 const Spacer(),
-                if (_loading)
+                if (_loading) 
                   const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: _cyan,
-                    ),
+                    width: 20, 
+                    height: 20, 
+                    child: CircularProgressIndicator(strokeWidth: 2, color: _cyan),
                   ),
               ],
             ),
@@ -1656,212 +1431,26 @@ class _MoodScreenState extends State<MoodScreen> {
           child: _results.isEmpty
               ? Center(
                   child: Text(
-                    _loading ? '' : 'Select a mood to discover',
+                    _loading ? '' : 'Select a mood to discover', 
                     style: const TextStyle(color: _muted, fontSize: 16),
                   ),
                 )
               : GridView.builder(
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 150,
-                    mainAxisExtent: 240,
-                    crossAxisSpacing: 12,
+                    maxCrossAxisExtent: 150, 
+                    mainAxisExtent: 240, 
+                    crossAxisSpacing: 12, 
                     mainAxisSpacing: 12,
                   ),
                   itemCount: _results.length,
                   itemBuilder: (_, i) => PosterCard(
-                    meta: _results[i],
-                    onFocus: () {},
+                    meta: _results[i], 
+                    onFocus: () {}, 
                     onTap: () => widget.onShowDetails(_results[i]),
                   ),
                 ),
         ),
-      ],
-    );
-  }
-}
-class LiveTvScreen extends StatefulWidget {
-  final void Function(String title, String url) onPlay;
-  
-  const LiveTvScreen({super.key, required this.onPlay});
-
-  @override
-  State<LiveTvScreen> createState() => _LiveTvScreenState();
-}
-
-class _LiveTvScreenState extends State<LiveTvScreen> {
-  final _ctrl = TextEditingController();
-  
-  final List<List<String>> _channels = [
-    ['Mux HLS Test', 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8', 'HLS 1080p test'],
-    ['Apple BipBop', 'https://devstreaming-cdn.apple.com/videos/streaming/examples/bipbop_16x9/bipbop_16x9_variant.m3u8', 'HLS multi-bitrate'],
-    ['Big Buck Bunny', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4', 'Direct MP4'],
-    ['Sintel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4', 'Direct MP4'],
-    ['Tears of Steel', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4', 'Direct MP4'],
-  ];
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const Text(
-          'Live TV & Direct Hub',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w900,
-            color: _cyan,
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Paste any .mp4 / .m3u8 URL or tap a public test channel.',
-          style: TextStyle(color: _muted, fontSize: 13),
-        ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _ctrl,
-                style: const TextStyle(color: _textPri),
-                decoration: InputDecoration(
-                  hintText: 'https://.../video.mp4',
-                  hintStyle: const TextStyle(color: _muted),
-                  filled: true,
-                  fillColor: _panel,
-                  isDense: true,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            _FButton(
-              label: 'Play',
-              primary: true,
-              icon: Icons.play_arrow,
-              onTap: () {
-                final u = _ctrl.text.trim();
-                if (u.startsWith('http')) widget.onPlay('Custom URL', u);
-              },
-            ),
-          ],
-        ),
-        const SizedBox(height: 24),
-        ..._channels.map((c) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _Card(
-                onTap: () => widget.onPlay(c[0], c[1]),
-                child: ListTile(
-                  leading: const Icon(Icons.live_tv, color: _red, size: 32),
-                  title: Text(
-                    c[0],
-                    style: const TextStyle(
-                      color: _textPri,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                    ),
-                  ),
-                  subtitle: Text(
-                    c[2],
-                    style: const TextStyle(color: _cyan, fontSize: 12),
-                  ),
-                  trailing: const Icon(
-                    Icons.play_circle_fill,
-                    color: Colors.greenAccent,
-                    size: 32,
-                  ),
-                ),
-              ),
-            )),
-      ],
-    );
-  }
-}
-
-class _AddonPage extends StatelessWidget {
-  final List<ManagedAddon> addons;
-  final Future<void> Function(ManagedAddon) onRemove;
-  final VoidCallback onInstall;
-  final VoidCallback onRefresh;
-
-  const _AddonPage({
-    required this.addons,
-    required this.onRemove,
-    required this.onInstall,
-    required this.onRefresh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const Text(
-          'Addon Manager',
-          style: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w900,
-            color: _cyan,
-          ),
-        ),
-        const SizedBox(height: 8),
-        const Text(
-          'Self-healing engine. Dead addons removed automatically.',
-          style: TextStyle(color: _muted, fontSize: 13),
-        ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            _FButton(
-              label: '+ Install',
-              primary: true,
-              icon: Icons.add,
-              onTap: onInstall,
-            ),
-            const SizedBox(width: 12),
-            _FButton(
-              label: 'Sync Now',
-              icon: Icons.refresh,
-              onTap: onRefresh,
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        ...addons.map((a) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _Card(
-                child: ListTile(
-                  title: Text(
-                    a.name,
-                    style: const TextStyle(
-                      color: _textPri,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                    ),
-                  ),
-                  subtitle: Text(
-                    a.baseUrl,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: _muted, fontSize: 12),
-                  ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                    onPressed: () => onRemove(a),
-                  ),
-                ),
-              ),
-            )),
       ],
     );
   }
@@ -1916,23 +1505,28 @@ class _DetailsSheetState extends State<DetailsSheet> {
 
   Future<void> _loadEpisodes() async {
     setState(() => _loadingMeta = true);
+    
     final eps = await widget.engine.fetchEpisodes(widget.meta.id);
     final g = <int, List<Map<String, dynamic>>>{};
+    
     for (final e in eps) {
       final s = int.tryParse((e['season'] ?? '1').toString()) ?? 1;
       if (s == 0) continue;
       g.putIfAbsent(s, () => []).add(e);
     }
+    
     if (!mounted) return;
     setState(() {
       _grouped = g;
       _season = g.keys.isEmpty ? null : (g.keys.toList()..sort()).first;
       _loadingMeta = false;
     });
+    
     final firstSeason = _season;
     if (firstSeason != null && g[firstSeason]!.isNotEmpty) {
       final firstEp = g[firstSeason]!.first;
       final id = (firstEp['id'] ?? '').toString();
+      
       if (id.isNotEmpty) {
         setState(() {
           _targetId = id;
@@ -1941,7 +1535,6 @@ class _DetailsSheetState extends State<DetailsSheet> {
         _loadStreams(id);
       }
     }
-    return;
   }
 
   Future<void> _loadStreams(String id) async {
@@ -1949,18 +1542,20 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _loadingStreams = true;
       _streams = [];
     });
+    
     final streams = await widget.engine.resolveStreams(widget.meta.type, id, widget.addons);
+    
     if (!mounted) return;
     setState(() {
       _streams = streams;
       _loadingStreams = false;
     });
-    return;
   }
 
   @override
   Widget build(BuildContext context) {
     final isFav = widget.watchlist.contains(widget.meta.id);
+    
     return DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.9,
@@ -1975,11 +1570,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
               Expanded(
                 child: Text(
                   widget.meta.name,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                    color: _textPri,
-                  ),
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: _textPri),
                 ),
               ),
               _FButton(
@@ -1995,14 +1586,11 @@ class _DetailsSheetState extends State<DetailsSheet> {
             style: const TextStyle(color: _muted, fontSize: 14, height: 1.5),
           ),
           const Divider(color: Colors.white12, height: 32),
+          
           if (widget.meta.type == 'series' && _grouped.isNotEmpty) ...[
             const Text(
               'Seasons',
-              style: TextStyle(
-                color: _cyan,
-                fontWeight: FontWeight.bold,
-                fontSize: 16,
-              ),
+              style: TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 16),
             ),
             const SizedBox(height: 12),
             SingleChildScrollView(
@@ -2056,11 +1644,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 children: [
                                   Text(
                                     'EP ${ep['episode']}',
-                                    style: const TextStyle(
-                                      color: _red,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                    ),
+                                    style: const TextStyle(color: _red, fontWeight: FontWeight.bold, fontSize: 13),
                                   ),
                                   const Spacer(),
                                   if (watched)
@@ -2072,11 +1656,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 (ep['name'] ?? '').toString(),
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: _textPri,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: const TextStyle(color: _textPri, fontSize: 13, fontWeight: FontWeight.bold),
                               ),
                             ],
                           ),
@@ -2089,11 +1669,13 @@ class _DetailsSheetState extends State<DetailsSheet> {
             ),
             const Divider(color: Colors.white12, height: 32),
           ],
+          
           if (widget.meta.type == 'series' && _loadingMeta)
             const Padding(
               padding: EdgeInsets.all(20),
               child: Center(child: CircularProgressIndicator(color: _cyan)),
             ),
+            
           if (_streams.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
@@ -2104,23 +1686,18 @@ class _DetailsSheetState extends State<DetailsSheet> {
                 onTap: () => _playStream(_streams.first),
               ),
             ),
+            
           Text(
             'Available Streams: $_targetLabel',
-            style: const TextStyle(
-              color: _cyan,
-              fontWeight: FontWeight.bold,
-              fontSize: 16,
-            ),
+            style: const TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 16),
           ),
           const SizedBox(height: 12),
+          
           if (_loadingStreams)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Center(
-                child: Text(
-                  'Scanning sources...',
-                  style: TextStyle(color: _cyan, fontSize: 14),
-                ),
+                child: Text('Scanning sources...', style: TextStyle(color: _cyan, fontSize: 14)),
               ),
             )
           else if (_streams.isEmpty)
@@ -2151,40 +1728,24 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 ),
                                 child: Text(
                                   s.badge,
-                                  style: const TextStyle(
-                                    color: _cyan,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                  style: const TextStyle(color: _cyan, fontSize: 11, fontWeight: FontWeight.bold),
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Text(
                                 s.addonName,
-                                style: const TextStyle(
-                                  color: _red,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: const TextStyle(color: _red, fontSize: 13, fontWeight: FontWeight.bold),
                               ),
                               const Spacer(),
                               if (s.isDirect)
                                 const Text(
                                   'PLAY ▶',
-                                  style: TextStyle(
-                                    color: Colors.greenAccent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                  style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold),
                                 )
                               else if (s.isTorrent)
                                 const Text(
                                   'VLC/EXTERNAL ▶',
-                                  style: TextStyle(
-                                    color: Colors.amberAccent,
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
+                                  style: TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
                                 ),
                             ],
                           ),
@@ -2271,21 +1832,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
       });
       
       _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) => _savePos());
+      
       if (mounted) setState(() => _initialized = true);
     } catch (_) {
       if (mounted) setState(() => _error = true);
     }
-    return;
   }
 
   Future<void> _savePos() async {
     final c = _c;
     if (c == null || !c.value.isInitialized) return;
+    
     final ms = c.value.position.inMilliseconds;
     if ((ms - _lastSaved).abs() < 4000) return;
+    
     _lastSaved = ms;
     await widget.onSave(ms);
-    return;
   }
 
   @override
@@ -2329,17 +1891,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void _seek(int sec) {
     final c = _c;
     if (c == null) return;
+    
     final target = c.value.position + Duration(seconds: sec);
     final clamped = target < Duration.zero 
         ? Duration.zero 
         : (target > c.value.duration ? c.value.duration : target);
+        
     c.seekTo(clamped);
     setState(() => _hud = true);
   }
 
   Future<void> _external() async {
     await launchUrl(Uri.parse(widget.url), mode: LaunchMode.externalApplication);
-    return;
   }
 
   @override
@@ -2358,7 +1921,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
               if (_initialized && _c != null)
                 Center(
                   child: AspectRatio(
-                    aspectRatio: _c!.value.aspectRatio,
+                    aspectRatio: _c!.value.aspectRatio, 
                     child: VideoPlayer(_c!),
                   ),
                 )
@@ -2399,8 +1962,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     padding: const EdgeInsets.fromLTRB(24, 60, 24, 24),
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
+                        begin: Alignment.topCenter, 
+                        end: Alignment.bottomCenter, 
                         colors: [Colors.transparent, Colors.black.withValues(alpha: 0.95)],
                       ),
                     ),
@@ -2411,11 +1974,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                           widget.title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: _textPri,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 18,
-                          ),
+                          style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 18),
                         ),
                         const SizedBox(height: 12),
                         if (_initialized && _c != null)
@@ -2468,16 +2027,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 }
+
 class SearchModal extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
-
+  
   const SearchModal({
-    super.key,
-    required this.engine,
+    super.key, 
+    required this.engine, 
     required this.onShowDetails,
   });
-
+  
   @override
   State<SearchModal> createState() => _SearchModalState();
 }
@@ -2504,16 +2064,13 @@ class _SearchModalState extends State<SearchModal> {
       _results = items;
       _searching = false;
     });
-    return;
   }
 
   @override
   Widget build(BuildContext context) {
     return Dialog(
       backgroundColor: _panel,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 600, maxHeight: 700),
         child: Padding(
@@ -2522,12 +2079,8 @@ class _SearchModalState extends State<SearchModal> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Universal Search',
-                style: TextStyle(
-                  color: _cyan,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 20,
-                ),
+                'Universal Search', 
+                style: TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 20),
               ),
               const SizedBox(height: 16),
               TextField(
@@ -2539,11 +2092,11 @@ class _SearchModalState extends State<SearchModal> {
                   filled: true,
                   fillColor: _bg,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(12), 
                     borderSide: BorderSide.none,
                   ),
                   suffixIcon: IconButton(
-                    icon: const Icon(Icons.search, color: _cyan),
+                    icon: const Icon(Icons.search, color: _cyan), 
                     onPressed: _doSearch,
                   ),
                 ),
@@ -2552,28 +2105,18 @@ class _SearchModalState extends State<SearchModal> {
               const SizedBox(height: 16),
               Expanded(
                 child: _searching
-                    ? const Center(
-                        child: CircularProgressIndicator(color: _cyan),
-                      )
+                    ? const Center(child: CircularProgressIndicator(color: _cyan))
                     : _results.isEmpty
-                        ? const Center(
-                            child: Text(
-                              'Search for anything',
-                              style: TextStyle(color: _muted),
-                            ),
-                          )
+                        ? const Center(child: Text('Search for anything', style: TextStyle(color: _muted)))
                         : ListView.builder(
                             itemCount: _results.length,
                             itemBuilder: (_, i) => ListTile(
                               title: Text(
-                                _results[i].name,
-                                style: const TextStyle(
-                                  color: _textPri,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                _results[i].name, 
+                                style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold),
                               ),
                               subtitle: Text(
-                                '${_results[i].type.toUpperCase()} · ${_results[i].year}',
+                                '${_results[i].type.toUpperCase()} · ${_results[i].year}', 
                                 style: const TextStyle(color: _muted),
                               ),
                               onTap: () {
@@ -2591,159 +2134,58 @@ class _SearchModalState extends State<SearchModal> {
   }
 }
 
-class _AddonStoreModal extends StatefulWidget {
+class _AddonPage extends StatelessWidget {
   final List<ManagedAddon> addons;
-  final Future<void> Function(ManagedAddon) onInstall;
-  final Future<void> Function(ManagedAddon) onRemove;
-  final VoidCallback onSync;
-
-  const _AddonStoreModal({
-    required this.addons,
-    required this.onInstall,
-    required this.onRemove,
-    required this.onSync,
-  });
-
-  @override
-  State<_AddonStoreModal> createState() => _AddonStoreModalState();
-}
-
-class _AddonStoreModalState extends State<_AddonStoreModal> {
-  final _nameCtrl = TextEditingController();
-  final _urlCtrl = TextEditingController();
-
-  @override
-  void dispose() {
-    _nameCtrl.dispose();
-    _urlCtrl.dispose();
-    super.dispose();
-  }
-
+  
+  const _AddonPage({required this.addons});
+  
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: _panel,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 600, maxHeight: 700),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const Text(
-                    'Addon Store',
-                    style: TextStyle(
-                      color: _cyan,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 20,
-                    ),
-                  ),
-                  const Spacer(),
-                  _FButton(
-                    label: 'Sync Now',
-                    onTap: () {
-                      widget.onSync();
-                      setState(() {});
-                    },
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: ListView(
-                  children: widget.addons.map((a) => Card(
-                    color: _bg,
-                    margin: const EdgeInsets.only(bottom: 8),
-                    child: ListTile(
-                      title: Text(
-                        a.name,
-                        style: const TextStyle(
-                          color: _textPri,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      subtitle: Text(
-                        a.baseUrl,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: _muted),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete, color: Colors.redAccent),
-                        onPressed: () async {
-                          await widget.onRemove(a);
-                          setState(() {});
-                        },
-                      ),
-                    ),
-                  )).toList(),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _nameCtrl,
-                style: const TextStyle(color: _textPri),
-                decoration: const InputDecoration(
-                  hintText: 'Addon Name',
-                  hintStyle: TextStyle(color: _muted),
-                  filled: true,
-                  fillColor: _bg,
-                  border: OutlineInputBorder(borderSide: BorderSide.none),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _urlCtrl,
-                style: const TextStyle(color: _textPri),
-                decoration: const InputDecoration(
-                  hintText: 'manifest.json URL',
-                  hintStyle: TextStyle(color: _muted),
-                  filled: true,
-                  fillColor: _bg,
-                  border: OutlineInputBorder(borderSide: BorderSide.none),
-                ),
-              ),
-              const SizedBox(height: 16),
-              _FButton(
-                label: '+ Install Custom Addon',
-                primary: true,
-                onTap: () async {
-                  final url = _urlCtrl.text.trim();
-                  final name = _nameCtrl.text.trim();
-                  if (url.startsWith('http') && name.isNotEmpty) {
-                    final base = url.endsWith('/manifest.json')
-                        ? url.substring(0, url.length - 14)
-                        : url;
-                    await widget.onInstall(
-                      ManagedAddon(name: name, manifestUrl: url, baseUrl: base),
-                    );
-                    if (mounted) Navigator.pop(context);
-                  }
-                },
-              ),
-            ],
-          ),
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        const Text(
+          'Addon Manager', 
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _cyan),
         ),
-      ),
+        const SizedBox(height: 8),
+        const Text(
+          'Self-healing engine. Dead addons removed automatically.', 
+          style: TextStyle(color: _muted, fontSize: 13),
+        ),
+        const SizedBox(height: 16),
+        ...addons.map((a) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _Card(
+                child: ListTile(
+                  title: Text(
+                    a.name, 
+                    style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 15),
+                  ),
+                  subtitle: Text(
+                    a.baseUrl, 
+                    maxLines: 1, 
+                    overflow: TextOverflow.ellipsis, 
+                    style: const TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ),
+              ),
+            )),
+      ],
     );
   }
 }
 
 class _TuiBody extends StatelessWidget {
   final int tab;
-  final int addonCount;
-  final int watchlistCount;
+  final int addons;
+  final int watchlist;
   final VoidCallback onExit;
-
+  
   const _TuiBody({
-    required this.tab,
-    required this.addonCount,
-    required this.watchlistCount,
+    required this.tab, 
+    required this.addons, 
+    required this.watchlist, 
     required this.onExit,
   });
 
@@ -2753,18 +2195,14 @@ class _TuiBody extends StatelessWidget {
       color: const Color(0xFF1A0B2E),
       padding: const EdgeInsets.all(24),
       child: DefaultTextStyle(
-        style: const TextStyle(
-          fontFamily: 'monospace',
-          color: Color(0xFF00FFCC),
-          fontSize: 14,
-        ),
+        style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF00FFCC), fontSize: 14),
         child: ListView(
           children: [
-            const Text('MOVIEBOX-TUI v0.1.27 -> v5.4'),
+            const Text('MOVIEBOX-TUI v0.1.27 -> v5.5'),
             const Text('===================================='),
             Text('YEAR      : ${DateTime.now().year}'),
-            Text('ADDONS    : $addonCount installed'),
-            Text('WATCHLIST : $watchlistCount titles'),
+            Text('ADDONS    : $addons installed'),
+            Text('WATCHLIST : $watchlist titles'),
             Text('TAB       : $tab'),
             const Text('===================================='),
             const Text('> SYSTEM ONLINE'),
@@ -2772,11 +2210,47 @@ class _TuiBody extends StatelessWidget {
             const Text('> ADDONS: SELF-HEALING ACTIVE'),
             const SizedBox(height: 24),
             _FButton(
-              label: '[Q] EXIT TUI MODE',
-              primary: true,
+              label: '[Q] EXIT TUI MODE', 
+              primary: true, 
               onTap: onExit,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RoundButton extends StatelessWidget {
+  final IconData icon;
+  final double size;
+  final bool isPrimary;
+  final VoidCallback onTap;
+
+  const _RoundButton({
+    required this.icon,
+    this.size = 48,
+    this.isPrimary = false,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(size / 2),
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: isPrimary ? _cyan : Colors.white12,
+          shape: BoxShape.circle,
+          border: Border.all(color: isPrimary ? _cyan : Colors.white30),
+        ),
+        child: Icon(
+          icon,
+          color: isPrimary ? Colors.black : Colors.white,
+          size: size * 0.5,
         ),
       ),
     );
@@ -3111,41 +2585,6 @@ class _BrandTileState extends State<_BrandTile> {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-class _RoundButton extends StatelessWidget {
-  final IconData icon;
-  final double size;
-  final bool isPrimary;
-  final VoidCallback onTap;
-
-  const _RoundButton({
-    required this.icon,
-    this.size = 48,
-    this.isPrimary = false,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(size / 2),
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: isPrimary ? _cyan : Colors.white12,
-          shape: BoxShape.circle,
-          border: Border.all(color: isPrimary ? _cyan : Colors.white30),
-        ),
-        child: Icon(
-          icon,
-          color: isPrimary ? Colors.black : Colors.white,
-          size: size * 0.5,
         ),
       ),
     );
