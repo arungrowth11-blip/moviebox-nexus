@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:libtorrent_flutter/libtorrent_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -526,8 +527,101 @@ class CatalogRowSpec {
   });
 }
 
-void main() {
+/// Embedded libtorrent engine. Stremio infoHash values are converted to a
+/// magnet internally, then exposed to the existing player through the native
+/// loopback HTTP byte-range server. No external TorrServer setup is needed.
+class EmbeddedTorrentService {
+  EmbeddedTorrentService._();
+  static final EmbeddedTorrentService instance = EmbeddedTorrentService._();
+
+  bool _initialized = false;
+  int? _activeTorrentId;
+
+  Future<void> initialize() async {
+    if (_initialized) return;
+    await LibtorrentFlutter.init(fetchTrackers: true);
+    _initialized = true;
+  }
+
+  Future<String> startPlayback(String infoHash, {String title = ''}) async {
+    if (!_initialized) {
+      throw StateError('Built-in torrent engine is not available on this device.');
+    }
+    final hash = infoHash.trim();
+    if (!RegExp(r'^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$').hasMatch(hash)) {
+      throw FormatException('Invalid torrent infoHash.');
+    }
+
+    final engine = LibtorrentFlutter.instance;
+    final previousId = _activeTorrentId;
+    if (previousId != null) {
+      try { engine.disposeTorrent(previousId); } catch (_) {}
+      _activeTorrentId = null;
+    }
+
+    final displayName = title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim();
+    final magnet = 'magnet:?xt=urn:btih:$hash&dn=${Uri.encodeQueryComponent(displayName)}';
+    final torrentId = engine.addMagnet(magnet);
+    _activeTorrentId = torrentId;
+
+    try {
+      // Wait for DHT/tracker metadata before selecting a playable video file.
+      final deadline = DateTime.now().add(const Duration(minutes: 2));
+      while (DateTime.now().isBefore(deadline)) {
+        final torrent = engine.torrents[torrentId];
+        if (torrent != null && torrent.hasMetadata) break;
+        await Future<void>.delayed(const Duration(milliseconds: 500));
+      }
+
+      final torrent = engine.torrents[torrentId];
+      if (torrent == null || !torrent.hasMetadata) {
+        throw TimeoutException(
+          'Torrent metadata not found. This source may have no active peers.',
+          const Duration(minutes: 2),
+        );
+      }
+
+      final files = engine.getFiles(torrentId)
+          .where((file) => file.isStreamable)
+          .toList()
+        ..sort((a, b) => b.size.compareTo(a.size));
+      if (files.isEmpty) {
+        throw StateError('Torrent has no supported video file.');
+      }
+
+      final stream = engine.startStream(
+        torrentId,
+        fileIndex: files.first.index,
+        maxCacheBytes: 384 * 1024 * 1024,
+      );
+      final uri = Uri.tryParse(stream.url);
+      if (uri == null || uri.scheme != 'http' || uri.host != '127.0.0.1') {
+        throw StateError('Built-in torrent engine returned an invalid stream URL.');
+      }
+      return stream.url;
+    } catch (_) {
+      try { engine.disposeTorrent(torrentId); } catch (_) {}
+      if (_activeTorrentId == torrentId) _activeTorrentId = null;
+      rethrow;
+    }
+  }
+
+  void dispose() {
+    final id = _activeTorrentId;
+    if (id != null) {
+      try { LibtorrentFlutter.instance.disposeTorrent(id); } catch (_) {}
+      _activeTorrentId = null;
+    }
+  }
+}
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await EmbeddedTorrentService.instance.initialize();
+  } catch (_) {
+    // Direct URL playback remains available if native engine initialization fails.
+  }
   PaintingBinding.instance.imageCache
     ..maximumSize = 250
     ..maximumSizeBytes = 150 * 1024 * 1024;
@@ -830,6 +924,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
   @override
   void dispose() {
     _server?.close(force: true);
+    EmbeddedTorrentService.instance.dispose();
     engine.close();
     addonManager.close();
     super.dispose();
@@ -2506,7 +2601,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                   ),
                                 ),
                               ] else if (s.isTorrent)
-                                const Text('TORRENT • RESOLVER NEEDED', style: TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                                const Text('BUILT-IN TORRENT • PLAY', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                             ],
                           ),
                           if (s.title.isNotEmpty) ...[
@@ -2528,6 +2623,35 @@ class _DetailsSheetState extends State<DetailsSheet> {
     );
   }
 
+  Future<void> _playTorrent(StreamLink stream) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(const SnackBar(
+      content: Text('Built-in torrent engine: finding peers and preparing video...'),
+      duration: Duration(minutes: 2),
+    ));
+    try {
+      final url = await EmbeddedTorrentService.instance.startPlayback(
+        stream.infoHash!,
+        title: '${widget.meta.name} - $_targetLabel',
+      );
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      widget.onPlay(
+        '${widget.meta.name} - $_targetLabel',
+        url,
+        _targetId,
+      );
+    } catch (error) {
+      if (!mounted) return;
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(
+        content: Text('Torrent playback failed: $error'),
+        duration: const Duration(seconds: 7),
+      ));
+    }
+  }
+
   void _playStream(StreamLink s) {
     if (s.isDirect) {
       widget.onPlay(
@@ -2537,10 +2661,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
         headers: s.headers,
       );
     } else if (s.isTorrent) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Ye torrent/magnet result hai, direct video URL nahi. VLC ise akela play nahi kar sakta; configured debrid ya TorrServer resolver chahiye.'),
-        duration: Duration(seconds: 5),
-      ));
+      _playTorrent(s);
     }
   }
 
