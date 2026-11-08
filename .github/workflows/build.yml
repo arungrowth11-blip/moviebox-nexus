@@ -83,35 +83,51 @@ jobs:
           test -s android/gradlew
           test -s android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Configure Maven Central mirrors for Kotlin artifacts
+      - name: Create Gradle init script for all builds and included build logic
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
+          cat > "$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle" <<'GRADLE_INIT'
+          def mirrorUrls = [
+              'https://maven-central-asia.storage-download.googleapis.com/maven2/',
+              'https://maven-central.storage-download.googleapis.com/maven2/',
+              'https://maven.aliyun.com/repository/central/',
+              'https://repo.huaweicloud.com/repository/maven/'
+          ]
 
-          mirrors = (
-              'maven { url = uri("https://maven-central-asia.storage-download.googleapis.com/maven2/") }\n'
-              '            maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }\n'
-          )
+          def addMovieBoxMirrors = { repositoryHandler, prefix ->
+              mirrorUrls.eachWithIndex { mirrorUrl, index ->
+                  repositoryHandler.maven {
+                      name = "${prefix}MovieBoxMirror${index + 1}"
+                      url = new URI(mirrorUrl)
+                  }
+              }
+          }
 
-          files = sorted(Path("android").rglob("*.gradle.kts"))
-          patched = 0
-          for path in files:
-              source = path.read_text(encoding="utf-8")
-              if "mavenCentral()" not in source:
-                  continue
-              source = source.replace("mavenCentral()", mirrors + "            mavenCentral()")
-              path.write_text(source, encoding="utf-8")
-              print(f"Added Maven mirror fallback to {path}")
-              patched += 1
-
-          if patched < 2:
-              raise SystemExit(
-                  f"Expected to patch plugin and project Gradle repositories; patched {patched} file(s)."
+          // Runs before settings.gradle(.kts) in the main build and included builds.
+          gradle.beforeSettings { settings ->
+              addMovieBoxMirrors.call(
+                  settings.pluginManagement.repositories,
+                  'Plugin'
               )
-          print(f"Configured Maven Central mirrors in {patched} Gradle Kotlin DSL file(s).")
-          PY
+              addMovieBoxMirrors.call(
+                  settings.dependencyResolutionManagement.repositories,
+                  'Dependency'
+              )
+              println "[MovieBox CI] Maven mirrors injected before settings evaluation: ${settings.settingsDir}"
+          }
+
+          // Also cover buildscript classpaths in projects/build logic.
+          gradle.beforeProject { project ->
+              addMovieBoxMirrors.call(
+                  project.buildscript.repositories,
+                  "Buildscript${project.path.replace(':', '_')}"
+              )
+          }
+          GRADLE_INIT
+
+          test -s "$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle"
+          echo "Gradle init script created."
 
       - name: Cache verified Gradle 9.3.1 distribution
         id: gradle-dist-cache
@@ -188,7 +204,14 @@ jobs:
           cat > android/gradlew <<'GRADLE_SH'
           #!/usr/bin/env bash
           set -euo pipefail
-          exec gradle "$@"
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required in GitHub Actions}"
+          INIT_SCRIPT="$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle"
+          test -s "$INIT_SCRIPT" || {
+            echo "ERROR: Maven mirror init script is missing: $INIT_SCRIPT" >&2
+            exit 1
+          }
+          # Force Gradle to re-check repository metadata after the repository order changes.
+          exec gradle --init-script "$INIT_SCRIPT" --refresh-dependencies "$@"
           GRADLE_SH
           chmod +x android/gradlew
 
@@ -316,7 +339,7 @@ jobs:
             if [ "$build_status" -eq 0 ]; then
               exit 0
             fi
-            if ! grep -Eqi 'HTTP response code: (408|429|5[0-9][0-9])|Received status code[[:space:]:]+(408|429|5[0-9][0-9])|Gateway Time[- ]out|timed out|UnknownHostException|Temporary failure in name resolution|Connection reset|connection timed out|Could not GET .*github\.com/JetBrains/' "$log_file"; then
+            if ! grep -Eqi 'HTTP response code: (408|429|5[0-9][0-9])|Received status code[[:space:]:]+(408|429|5[0-9][0-9])|Gateway Time[- ]out|timed out|UnknownHostException|Temporary failure in name resolution|Connection reset|connection timed out|Could not GET .*github\.com/JetBrains/|Could not GET .*repo\.maven\.apache\.org/' "$log_file"; then
               echo 'Build failed for a non-transient reason; not retrying.'
               exit "$build_status"
             fi
