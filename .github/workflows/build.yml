@@ -355,7 +355,34 @@ jobs:
               )
               gradle_app.write_text(gradle_text, encoding='utf-8')
 
-          print('Android manifest and LibVLC native packaging patched successfully')
+          # WorkManager/Room instantiate WorkDatabase_Impl reflectively. R8 full
+          # mode can remove its no-argument constructor unless it is explicitly kept.
+          proguard = Path('android/app/proguard-rules.pro')
+          proguard.parent.mkdir(parents=True, exist_ok=True)
+          existing_rules = proguard.read_text(encoding='utf-8') if proguard.exists() else ''
+          required_rules = (
+              '\\n# Keep constructors used reflectively by AndroidX WorkManager/Room.\\n'
+              '-keep class * extends androidx.room.RoomDatabase { <init>(); }\\n'
+              '-keep class * extends androidx.work.InputMerger { <init>(); }\\n'
+          )
+          if 'extends androidx.room.RoomDatabase { <init>(); }' not in existing_rules:
+              proguard.write_text(existing_rules.rstrip() + required_rules, encoding='utf-8')
+
+          # Ensure the generated Flutter release build actually consumes the rules.
+          release_proguard = (
+              '\\n\\nandroid {\\n'
+              '    buildTypes {\\n'
+              '        release {\\n'
+              '            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")\\n'
+              '        }\\n'
+              '    }\\n'
+              '}\\n'
+          )
+          if '"proguard-rules.pro"' not in gradle_text:
+              with gradle_app.open('a', encoding='utf-8') as gradle_file:
+                  gradle_file.write(release_proguard)
+
+          print('Android manifest, LibVLC packaging, and WorkManager R8 keep rules patched successfully')
           PY
 
       - name: Resolve dependencies
