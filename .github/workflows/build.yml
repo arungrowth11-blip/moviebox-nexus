@@ -317,7 +317,27 @@ jobs:
                           ET.SubElement(intent_filter, 'category', {A + 'name': category})
 
           tree.write(manifest, encoding='utf-8', xml_declaration=True)
-          print('Android manifest patched successfully')
+
+          # flutter_vlc_player bundles native LibVLC libraries. If more than one
+          # dependency packages libc++_shared.so, select one copy per ABI.
+          gradle_app = Path('android/app/build.gradle.kts')
+          if not gradle_app.is_file():
+              raise SystemExit(f'Missing app Gradle Kotlin DSL file: {gradle_app}')
+          gradle_text = gradle_app.read_text(encoding='utf-8')
+          pick_first = 'pickFirsts += "lib/**/libc++_shared.so"'
+          if pick_first not in gradle_text:
+              gradle_text += (
+                  '\\n\\nandroid {\\n'
+                  '    packaging {\\n'
+                  '        jniLibs {\\n'
+                  f'            {pick_first}\\n'
+                  '        }\\n'
+                  '    }\\n'
+                  '}\\n'
+              )
+              gradle_app.write_text(gradle_text, encoding='utf-8')
+
+          print('Android manifest and LibVLC native packaging patched successfully')
           PY
 
       - name: Resolve dependencies
