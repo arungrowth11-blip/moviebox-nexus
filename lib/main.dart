@@ -184,7 +184,18 @@ class StreamLink {
     final s = '$title ${url ?? ''}'.toLowerCase();
     var n = 0;
     
-    if (isDirect) n += 100;
+    if (isDirect) {
+      n += 100;
+      // Adaptive HTTP manifests are preferred for faster startup and bitrate
+      // adaptation; direct file URLs remain ahead of every P2P source.
+      if (s.contains('.m3u8') || s.contains('hls')) {
+        n += 35;
+      } else if (s.contains('.mpd') || s.contains('dash')) {
+        n += 25;
+      } else {
+        n += 10;
+      }
+    }
     
     if (s.contains('2160') || s.contains('4k')) {
       n += 40;
