@@ -132,10 +132,18 @@ void main() {
     final torrent = StreamLink(
       infoHash: '0123456789012345678901234567890123456789',
       title: '2160p Hindi',
+      seeders: 0,
+    );
+    final seeded1080 = StreamLink(
+      infoHash: '1123456789012345678901234567890123456789',
+      title: '1080p Hindi',
+      seeders: 6,
     );
     expect(hls.isDirect, isTrue);
     expect(torrent.isTorrent, isTrue);
     expect(hls.score, greaterThan(torrent.score));
+    expect(hls.score, greaterThan(seeded1080.score));
+    expect(seeded1080.score, greaterThan(torrent.score));
   });
 
   test('Meta.fromJson safely parses catalog metadata', () {
