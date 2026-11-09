@@ -37,6 +37,8 @@ class MainActivity : FlutterActivity() {
                 "startPlayback" -> {
                     val infoHash = call.argument<String>("infoHash")
                     val title = call.argument<String>("title") ?: "MovieBox Nexus stream"
+                    val fileIdx = call.argument<Number>("fileIdx")?.toInt()
+                        ?.takeIf { it >= 0 }
                     val normalizedHash = infoHash?.trim().orEmpty()
                     val validHash = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$").matches(normalizedHash)
                     if (!validHash) {
@@ -44,7 +46,7 @@ class MainActivity : FlutterActivity() {
                     } else {
                         torrentExecutor.execute {
                             try {
-                                val url = engine().startPlayback(infoHash, title)
+                                val url = engine().startPlayback(infoHash, title, fileIdx)
                                 runOnUiThread { result.success(url) }
                             } catch (error: Throwable) {
                                 runOnUiThread {
