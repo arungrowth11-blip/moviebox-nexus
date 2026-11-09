@@ -451,6 +451,18 @@ jobs:
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
 
+          # Keep the generated Android namespace/applicationId aligned with the
+          # package declared by the restored native MainActivity and engine.
+          # Otherwise Flutter's manifest resolves .MainActivity to a different
+          # package and the MethodChannel handler is never registered.
+          for key in ('namespace', 'applicationId'):
+              pattern = rf'({key}\\s*=\\s*)["\\'][^"\\']+["\\']'
+              app_text, count = re.subn(
+                  pattern, rf'\\1"com.moviebox.nexus"', app_text, count=1
+              )
+              if count != 1:
+                  raise SystemExit(f'Could not set Android {key} to com.moviebox.nexus.')
+
           # Flutter's generated Android project prefers project-level repositories.
           # Add FrostWire here, in addition to the settings-level mirror, because
           # Gradle reports that project repositories override settings repositories.
