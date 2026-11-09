@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:moviebox_nexus/main.dart';
 
@@ -154,6 +156,54 @@ void main() {
     // Duplicate official names are ambiguous; never guess a country.
     expect(enriched[4]['countryName'], 'Country not tagged');
     expect(enriched[4]['countryCode'], '');
+  });
+
+  test('direct stream probe accepts HLS and rejects blocked HTML endpoints', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final response = request.response;
+      if (request.uri.path == '/working.m3u8') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType.text;
+        response.write('#EXTM3U\\n#EXT-X-VERSION:3\\n');
+      } else if (request.uri.path == '/blocked.m3u8') {
+        response.statusCode = HttpStatus.forbidden;
+        response.headers.contentType = ContentType.html;
+        response.write('<html>blocked</html>');
+      } else {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType.html;
+        response.write('<!doctype html><html>expired link</html>');
+      }
+      await response.close();
+    });
+    final engine = CatalogEngine();
+    try {
+      expect(
+        await engine.probeDirectStream(StreamLink(
+          url: 'http://127.0.0.1:${server.port}/working.m3u8',
+          title: 'HLS',
+        )),
+        isTrue,
+      );
+      expect(
+        await engine.probeDirectStream(StreamLink(
+          url: 'http://127.0.0.1:${server.port}/blocked.m3u8',
+          title: 'Blocked HLS',
+        )),
+        isFalse,
+      );
+      expect(
+        await engine.probeDirectStream(StreamLink(
+          url: 'http://127.0.0.1:${server.port}/expired',
+          title: 'Expired HTML response',
+        )),
+        isFalse,
+      );
+    } finally {
+      engine.close();
+      await server.close(force: true);
+    }
   });
 
   test('smart play ranks direct adaptive streams above P2P magnets', () {
