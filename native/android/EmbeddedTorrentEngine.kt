@@ -339,7 +339,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }
 
                 if (!pending.ready.await(METADATA_TIMEOUT_MS + HTTP_METADATA_GRACE_MS, TimeUnit.MILLISECONDS)) {
-                    writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\\r\\n")
+                    writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\r\n")
                     return
                 }
                 val target = pending.target
