@@ -64,7 +64,8 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
         lowerName.contains('18+') || lowerName.contains('adult only');
     if (name.isNotEmpty && !restricted) {
       channels.add({
-        'id': id,
+        'id': normalizeIptvChannelId(id),
+        'sourceId': id,
         'name': name,
         'url': uri.toString(),
         'logo': logo,
@@ -85,11 +86,38 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
 
 /// Extracts a two-letter broadcast country code from an explicit field or
 /// the iptv-org channel ID suffix (for example, BBCNews.uk -> UK).
+/// iptv-org playlist IDs can contain a quality/feed suffix (e.g. BBCOne.uk@HD).
+/// The channels API uses the base ID (BBCOne.uk), so normalize before joining.
+String normalizeIptvChannelId(String rawId) =>
+    rawId.trim().split('@').first.trim();
+
 String countryCodeFromChannelId(String id, {String explicitCountry = ''}) {
   final explicit = explicitCountry.trim().toUpperCase();
   if (RegExp(r'^[A-Z]{2}$').hasMatch(explicit)) return explicit;
-  final match = RegExp(r'\.([a-z]{2})$', caseSensitive: false).firstMatch(id.trim());
+  final baseId = normalizeIptvChannelId(id);
+  final match = RegExp(r'\.([a-z]{2})$', caseSensitive: false).firstMatch(baseId);
   return match?.group(1)?.toUpperCase() ?? '';
+}
+
+String _normalizeChannelName(String value) =>
+    value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+
+String _countryCodeFromName(
+  String value,
+  Map<String, dynamic> countries,
+) {
+  final normalized = _normalizeChannelName(value);
+  if (normalized.isEmpty) return '';
+  final upper = value.trim().toUpperCase();
+  if (RegExp(r'^[A-Z]{2}$').hasMatch(upper)) return upper;
+  for (final entry in countries.entries) {
+    if (entry.value is! Map) continue;
+    final item = Map<String, dynamic>.from(entry.value as Map);
+    if (_normalizeChannelName((item['name'] ?? '').toString()) == normalized) {
+      return entry.key.toString().toUpperCase();
+    }
+  }
+  return '';
 }
 
 /// Pure channel filter: kept separate so country/category behavior can be tested
@@ -595,18 +623,34 @@ class CatalogEngine {
       readJson('https://iptv-org.github.io/api/categories.json'),
     ]);
     final channelIndex = <String, dynamic>{};
+    final channelNameIndex = <String, dynamic>{};
     if (values[0] is List) {
       for (final raw in values[0] as List) {
         if (raw is! Map) continue;
         final item = Map<String, dynamic>.from(raw);
-        final id = (item['id'] ?? '').toString().trim();
+        final id = normalizeIptvChannelId((item['id'] ?? '').toString());
         if (id.isEmpty || item['is_nsfw'] == true) continue;
-        channelIndex[id] = {
+        final metadata = <String, dynamic>{
           'country': (item['country'] ?? '').toString().toUpperCase(),
           'categories': item['categories'] is List
               ? (item['categories'] as List).map((v) => v.toString()).toList()
               : <String>[],
         };
+        channelIndex[id] = metadata;
+        final names = <String>[
+          (item['name'] ?? '').toString(),
+          if (item['alt_names'] is List)
+            ...(item['alt_names'] as List).map((v) => v.toString()),
+        ];
+        for (final name in names) {
+          final key = _normalizeChannelName(name);
+          if (key.isEmpty) continue;
+          if (channelNameIndex.containsKey(key)) {
+            channelNameIndex[key] = null; // ambiguous names must not be guessed
+          } else {
+            channelNameIndex[key] = metadata;
+          }
+        }
       }
     }
     final countryIndex = <String, dynamic>{};
@@ -634,6 +678,7 @@ class CatalogEngine {
     }
     final metadata = <String, dynamic>{
       'channels': channelIndex,
+      'channelNames': channelNameIndex,
       'countries': countryIndex,
       'categories': categoryIndex,
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
@@ -658,15 +703,27 @@ class CatalogEngine {
     final categoryIndex = metadata['categories'] is Map
         ? Map<String, dynamic>.from(metadata['categories'] as Map)
         : <String, dynamic>{};
+    final channelNameIndex = metadata['channelNames'] is Map
+        ? Map<String, dynamic>.from(metadata['channelNames'] as Map)
+        : <String, dynamic>{};
     return channels.map((channel) {
-      final id = channel['id'] ?? '';
-      final channelMeta = channelIndex[id] is Map
-          ? Map<String, dynamic>.from(channelIndex[id] as Map)
+      final id = normalizeIptvChannelId(channel['id'] ?? '');
+      final directMeta = channelIndex[id];
+      final matchedByName = channelNameIndex[_normalizeChannelName(channel['name'] ?? '')];
+      final channelMetaRaw = directMeta is Map ? directMeta : matchedByName;
+      final channelMeta = channelMetaRaw is Map
+          ? Map<String, dynamic>.from(channelMetaRaw)
           : <String, dynamic>{};
-      final countryCode = countryCodeFromChannelId(
+      final idCountry = countryCodeFromChannelId(
         id,
         explicitCountry: (channelMeta['country'] ?? channel['country'] ?? '').toString(),
       );
+      final countryCode = idCountry.isNotEmpty
+          ? idCountry
+          : _countryCodeFromName(
+              (channelMeta['country'] ?? channel['country'] ?? '').toString(),
+              countryIndex,
+            );
       final countryMeta = countryIndex[countryCode] is Map
           ? Map<String, dynamic>.from(countryIndex[countryCode] as Map)
           : <String, dynamic>{};
@@ -684,7 +741,7 @@ class CatalogEngine {
         ...channel,
         'country': countryCode,
         'countryCode': countryCode,
-        'countryName': (countryMeta['name'] ?? (countryCode.isEmpty ? 'Unknown country' : countryCode)).toString(),
+        'countryName': (countryMeta['name'] ?? (countryCode.isEmpty ? 'Country not tagged' : countryCode)).toString(),
         'countryFlag': (countryMeta['flag'] ?? '').toString(),
         'categoryIds': categoryIds.join('|'),
         'categoryNames': categoryNames.join(', '),
