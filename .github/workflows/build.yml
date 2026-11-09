@@ -551,6 +551,50 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk dist/MovieBox-Nexus-OS.apk
           test -s dist/MovieBox-Nexus-OS.apk
 
+      - name: Enable KVM for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android emulator integration and release APK smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            # Executes against an Android emulator: native MethodChannel init/stop,
+            # seven-tab navigation, Live TV filter visibility and tab retention.
+            flutter test integration_test/app_smoke_test.dart -d emulator-5554
+
+            # Now install the exact release APK that will be uploaded.
+            adb uninstall com.moviebox.nexus || true
+            adb install dist/MovieBox-Nexus-OS.apk
+            adb logcat -c
+            adb shell monkey -p com.moviebox.nexus 1
+            for attempt in $(seq 1 30); do
+              if adb shell pidof com.moviebox.nexus >/dev/null 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+            adb shell pidof com.moviebox.nexus
+            sleep 8
+            if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
+              echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
+              exit 1
+            fi
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
+            echo "Android emulator integration and release launch smoke tests passed."
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
