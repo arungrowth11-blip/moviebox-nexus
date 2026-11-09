@@ -561,7 +561,8 @@ jobs:
           # that the Android emulator smoke test does not need.
           sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
           sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
-          sudo rm -rf "$ANDROID_SDK_ROOT/ndk" "$ANDROID_SDK_ROOT/cmake" "$ANDROID_SDK_ROOT/system-images"
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          sudo rm -rf "$android_sdk/ndk" "$android_sdk/cmake" "$android_sdk/system-images"
           sudo apt-get clean
           echo "Disk after cleanup:"
           df -h /
