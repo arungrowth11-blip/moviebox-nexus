@@ -86,17 +86,27 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
 
 /// Extracts a two-letter broadcast country code from an explicit field or
 /// the iptv-org channel ID suffix (for example, BBCNews.uk -> UK).
+/// IPTV channel ID suffixes are sometimes country TLDs rather than ISO codes.
+String normalizeCountryCode(String raw) {
+  final code = raw.trim().toUpperCase();
+  const aliases = <String, String>{
+    'UK': 'GB',
+    'EL': 'GR',
+  };
+  return aliases[code] ?? code;
+}
+
 /// iptv-org playlist IDs can contain a quality/feed suffix (e.g. BBCOne.uk@HD).
 /// The channels API uses the base ID (BBCOne.uk), so normalize before joining.
 String normalizeIptvChannelId(String rawId) =>
     rawId.trim().split('@').first.trim();
 
 String countryCodeFromChannelId(String id, {String explicitCountry = ''}) {
-  final explicit = explicitCountry.trim().toUpperCase();
+  final explicit = normalizeCountryCode(explicitCountry);
   if (RegExp(r'^[A-Z]{2}$').hasMatch(explicit)) return explicit;
   final baseId = normalizeIptvChannelId(id);
   final match = RegExp(r'\.([a-z]{2})$', caseSensitive: false).firstMatch(baseId);
-  return match?.group(1)?.toUpperCase() ?? '';
+  return match == null ? '' : normalizeCountryCode(match.group(1)!);
 }
 
 String _normalizeChannelName(String value) =>
@@ -108,7 +118,7 @@ String _countryCodeFromName(
 ) {
   final normalized = _normalizeChannelName(value);
   if (normalized.isEmpty) return '';
-  final upper = value.trim().toUpperCase();
+  final upper = normalizeCountryCode(value);
   if (RegExp(r'^[A-Z]{2}$').hasMatch(upper)) return upper;
   for (final entry in countries.entries) {
     if (entry.value is! Map) continue;
