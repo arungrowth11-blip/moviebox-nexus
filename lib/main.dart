@@ -115,6 +115,30 @@ String countryCodeFromChannelId(String id, {String explicitCountry = ''}) {
 String _normalizeChannelName(String value) =>
     value.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
 
+/// Secondary join key for playlist display names carrying quality/language
+/// suffixes, e.g. "3ABN English (720p)" -> "3abn". Exact names are always
+/// preferred; canonical collisions are marked ambiguous rather than guessed.
+String _normalizeChannelMatchName(String value) {
+  var normalized = _normalizeChannelName(
+    value.replaceAll(RegExp(r'\\([^)]*\\)'), ' '),
+  ).replaceAll(
+    RegExp(r'\\b(?:2160p?|1080p?|720p?|576p?|480p?|360p?|4k|8k|hd|fhd|uhd|sd|hevc|h265|h264|avc|aac)\\b'),
+    ' ',
+  ).trim();
+  const trailingLanguages = <String>{
+    'english', 'french', 'hindi', 'arabic', 'russian', 'ukrainian',
+    'spanish', 'portuguese', 'german', 'italian', 'turkish', 'chinese',
+    'korean', 'japanese', 'bengali', 'urdu', 'tamil', 'telugu',
+    'punjabi', 'malayalam',
+  };
+  while (normalized.isNotEmpty) {
+    final lastWord = normalized.split(' ').last;
+    if (!trailingLanguages.contains(lastWord)) break;
+    normalized = normalized.substring(0, normalized.length - lastWord.length).trim();
+  }
+  return normalized;
+}
+
 String _countryCodeFromName(
   String value,
   Map<String, dynamic> countries,
@@ -775,13 +799,17 @@ class CatalogEngine {
           if (item['alt_names'] is List)
             ...(item['alt_names'] as List).map((v) => v.toString()),
         ];
-        for (final name in names) {
-          final key = _normalizeChannelName(name);
-          if (key.isEmpty) continue;
-          if (channelNameIndex.containsKey(key)) {
-            channelNameIndex[key] = null; // ambiguous names must not be guessed
-          } else {
-            channelNameIndex[key] = metadata;
+        for (final name in names.toSet()) {
+          final keys = <String>{
+            _normalizeChannelName(name),
+            _normalizeChannelMatchName(name),
+          }..removeWhere((key) => key.isEmpty);
+          for (final key in keys) {
+            if (channelNameIndex.containsKey(key)) {
+              channelNameIndex[key] = null; // ambiguous names must not be guessed
+            } else {
+              channelNameIndex[key] = metadata;
+            }
           }
         }
       }
@@ -865,7 +893,11 @@ class CatalogEngine {
     return channels.map((channel) {
       final id = normalizeIptvChannelId(channel['id'] ?? '');
       final directMeta = channelIndex[id];
-      final matchedByName = channelNameIndex[_normalizeChannelName(channel['name'] ?? '')];
+      final exactNameKey = _normalizeChannelName(channel['name'] ?? '');
+      final canonicalNameKey = _normalizeChannelMatchName(channel['name'] ?? '');
+      final matchedByName = channelNameIndex.containsKey(exactNameKey)
+          ? channelNameIndex[exactNameKey]
+          : channelNameIndex[canonicalNameKey];
       // Official playlist IDs do not always match the iptv-org channel
       // index. Use a unique normalized channel-name match as a fallback even
       // when a non-empty source ID exists; ambiguous names remain excluded.
