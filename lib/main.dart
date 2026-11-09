@@ -205,6 +205,7 @@ class StreamLink {
   final String addonName;
   final String badge;
   final Map<String, String> headers;
+  final int? seeders;
 
   StreamLink({
     this.url,
@@ -213,6 +214,7 @@ class StreamLink {
     this.addonName = '',
     this.badge = '',
     this.headers = const <String, String>{},
+    this.seeders,
   });
 
   bool get isDirect => url != null && url!.startsWith('http');
@@ -220,33 +222,31 @@ class StreamLink {
 
   int get score {
     final s = '$title ${url ?? ''}'.toLowerCase();
-    var n = 0;
-    
-    if (isDirect) {
-      n += 100;
-      // Adaptive HTTP manifests are preferred for faster startup and bitrate
-      // adaptation; direct file URLs remain ahead of every P2P source.
-      if (s.contains('.m3u8') || s.contains('hls')) {
-        n += 35;
-      } else if (s.contains('.mpd') || s.contains('dash')) {
-        n += 25;
-      } else {
-        n += 10;
-      }
-    }
-    
+    var quality = 0;
     if (s.contains('2160') || s.contains('4k')) {
-      n += 40;
+      quality += 40;
     } else if (s.contains('1080')) {
-      n += 30;
+      quality += 30;
     } else if (s.contains('720')) {
-      n += 15;
+      quality += 15;
     }
-    
-    if (s.contains('hindi') || s.contains('dual')) n += 20;
-    if (infoHash != null) n += 5;
-    
-    return n;
+    if (s.contains('hindi') || s.contains('dual')) quality += 20;
+
+    if (isDirect) {
+      // Direct adaptive HTTP is always ahead of a P2P magnet. HLS and DASH
+      // get an extra preference because the player can adapt bitrate.
+      final adaptive = s.contains('.m3u8') || s.contains('hls')
+          ? 2000
+          : s.contains('.mpd') || s.contains('dash')
+              ? 1500
+              : 500;
+      return 100000 + adaptive + quality;
+    }
+
+    // When no direct source exists, swarm size is a stronger predictor of
+    // startup than advertised resolution. Cap it to keep corrupted metadata
+    // from overwhelming the ranking.
+    return (seeders ?? 0).clamp(0, 500) * 100 + quality;
   }
 }
 
@@ -506,6 +506,14 @@ class CatalogEngine {
           final title = (item['title'] ?? item['description'] ?? item['name'] ?? 'Stream')
               .toString().replaceAll('\n', ' ').trim();
           final behaviorHints = item['behaviorHints'];
+          final rawSeeders = item['seeders'] ??
+              (behaviorHints is Map ? behaviorHints['seeders'] : null);
+          final titleSeeders = RegExp(r'(?:👤|👥)\\s*(\\d{1,5})')
+              .firstMatch(title);
+          final seeders = rawSeeders is num
+              ? rawSeeders.toInt()
+              : int.tryParse(rawSeeders?.toString() ?? '') ??
+                  int.tryParse(titleSeeders?.group(1) ?? '');
           final proxyHeaders = behaviorHints is Map ? behaviorHints['proxyHeaders'] : null;
           final requestHeaders = proxyHeaders is Map ? proxyHeaders['request'] : null;
           final rawHeaders = requestHeaders is Map
@@ -534,6 +542,7 @@ class CatalogEngine {
             addonName: addon.name,
             badge: badge,
             headers: streamHeaders,
+            seeders: seeders,
           );
         }).whereType<StreamLink>().toList();
       } catch (_) {
