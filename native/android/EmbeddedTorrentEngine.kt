@@ -350,6 +350,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private fun waitForPiece(target: StreamTarget, filePosition: Long, timeoutMs: Long): Boolean {
         val globalOffset = target.fileOffset + filePosition
         val pieceIndex = (globalOffset / target.pieceLength).toInt()
+        // Each HTTP range (including a user seek) reprioritizes the exact piece
+        // being requested so a distant seek is not stuck behind sequential data.
+        runCatching { target.handle.piecePriority(pieceIndex, Priority.SEVEN) }
+        runCatching { target.handle.setPieceDeadline(pieceIndex, PIECE_REQUEST_DEADLINE_MS) }
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (runCatching { target.handle.havePiece(pieceIndex) }.getOrDefault(false)) {
@@ -437,5 +441,6 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12
         private const val STARTUP_DEADLINE_STEP_MS = 750
+        private const val PIECE_REQUEST_DEADLINE_MS = 0
     }
 }
