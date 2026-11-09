@@ -25,6 +25,7 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback? onNext;
   final Map<String, String> headers;
   final bool isLive;
+  final ValueChanged<Duration>? onPrepared;
 
   const PlayerScreen({
     super.key,
@@ -35,6 +36,7 @@ class PlayerScreen extends StatefulWidget {
     this.onNext,
     this.headers = const <String, String>{},
     this.isLive = false,
+    this.onPrepared,
   });
 
   @override
@@ -56,6 +58,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String _engineLabel = 'Media3 / ExoPlayer';
   int _pendingPositionMs = 0;
   int _lastSavedMs = 0;
+  DateTime _playStartedAt = DateTime.now();
+  bool _preparedReported = false;
   final FocusNode _focusNode = FocusNode(debugLabel: 'MovieBoxPlayer');
 
   @override
@@ -85,6 +89,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _isLive => widget.isLive;
 
+  void _reportPrepared() {
+    if (_preparedReported || _disposed) return;
+    _preparedReported = true;
+    widget.onPrepared?.call(DateTime.now().difference(_playStartedAt));
+  }
+
   bool get _isEmbeddedTorrent {
     final uri = Uri.tryParse(widget.url);
     return uri != null &&
@@ -100,6 +110,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _error = null;
     _engineLabel = 'Media3 / ExoPlayer';
     _nextCalled = false;
+    _preparedReported = false;
+    _playStartedAt = DateTime.now();
 
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
@@ -189,6 +201,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.initialized:
         _media3Watchdog?.cancel();
+        _reportPrepared();
         setState(() {
           _loading = false;
           _error = null;
@@ -302,6 +315,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final value = controller.value;
 
     if (value.isInitialized && _loading) {
+      _reportPrepared();
       if (_pendingPositionMs > 5000 && !_isLive) {
         final position = Duration(milliseconds: _pendingPositionMs);
         _pendingPositionMs = 0;
