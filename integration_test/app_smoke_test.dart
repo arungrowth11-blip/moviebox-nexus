@@ -53,6 +53,26 @@ void main() {
           .timeout(const Duration(seconds: 10));
       expect(stopped, isTrue);
 
+      // Starting a magnet must return the local player URL immediately; peer
+      // discovery and metadata resolution happen off the Flutter/UI thread.
+      final startupClock = Stopwatch()..start();
+      final pendingUrl = await torrentChannel
+          .invokeMethod<String>('startPlayback', <String, Object>{
+            'infoHash': '0123456789012345678901234567890123456789',
+            'title': 'Emulator startup smoke test',
+          })
+          .timeout(const Duration(seconds: 8));
+      startupClock.stop();
+      final pendingUri = Uri.parse(pendingUrl!);
+      expect(pendingUri.host, '127.0.0.1');
+      expect(pendingUri.path, startsWith('/stream/'));
+      expect(startupClock.elapsed, lessThan(const Duration(seconds: 5)));
+
+      final cancelled = await torrentChannel
+          .invokeMethod<bool>('stopPlayback')
+          .timeout(const Duration(seconds: 10));
+      expect(cancelled, isTrue);
+
       const tabs = <String>[
         'Home',
         'Theaters',
