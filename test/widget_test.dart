@@ -107,6 +107,16 @@ void main() {
           'language': 'English',
         },
         {
+          'id': 'IndependentFeed',
+          'sourceId': 'IndependentFeed',
+          'name': 'Independent TV',
+          'url': 'https://example.test/independent.m3u8',
+          'group': 'General',
+          'country': '',
+          'countryRaw': 'United States',
+          'language': 'English',
+        },
+        {
           'id': '',
           'sourceId': '',
           'name': 'Shared Name',
@@ -138,9 +148,11 @@ void main() {
     expect(enriched[1]['categoryNames'], 'News');
     expect(enriched[2]['countryName'], 'United Kingdom');
     expect(enriched[2]['countryCode'], 'GB');
+    expect(enriched[3]['countryName'], 'United States');
+    expect(enriched[3]['countryCode'], 'US');
     // Duplicate official names are ambiguous; never guess a country.
-    expect(enriched[3]['countryName'], 'Country not tagged');
-    expect(enriched[3]['countryCode'], '');
+    expect(enriched[4]['countryName'], 'Country not tagged');
+    expect(enriched[4]['countryCode'], '');
   });
 
   test('smart play ranks direct adaptive streams above P2P magnets', () {
