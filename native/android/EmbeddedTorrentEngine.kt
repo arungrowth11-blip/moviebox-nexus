@@ -181,10 +181,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             token = UUID.randomUUID().toString().replace("-", "")
         )
 
-        // Ensure the player's first HTTP request can be answered before returning the URL.
-        if (!waitForPiece(target, 0L, FIRST_PIECE_TIMEOUT_MS)) {
-            throw IllegalStateException("No video data arrived. This torrent may have no active seeders.")
-        }
+        // Do not block the MethodChannel on the first media piece. Return the
+        // loopback URL as soon as torrent metadata/file selection are ready;
+        // the HTTP request will buffer on verified pieces while the player opens.
         startHttpServer(target)
         activeTarget = target
         return "http://127.0.0.1:${serverSocket?.localPort}/stream/${target.token}"
@@ -285,10 +284,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     return
                 }
                 val (start, end, partial) = range
-                if (!waitForPiece(target, start, FIRST_PIECE_TIMEOUT_MS)) {
-                    writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\r\n")
-                    return
-                }
+
+                // Send headers immediately so the in-app player can open its
+                // stream and show its own buffering state instead of waiting on
+                // a blocking MethodChannel call before playback navigation.
 
                 val extension = target.file.extension.lowercase(Locale.US)
                 val contentType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
@@ -314,11 +313,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
                 RandomAccessFile(target.file, "r").use { media ->
                     var position = start
+                    var firstRequestedPiece = true
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
-                        if (!waitForPiece(target, position, STREAM_PIECE_TIMEOUT_MS)) {
+                        val pieceWaitMs = if (firstRequestedPiece) FIRST_STREAM_PIECE_TIMEOUT_MS else STREAM_PIECE_TIMEOUT_MS
+                        if (!waitForPiece(target, position, pieceWaitMs)) {
                             throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
                         }
+                        firstRequestedPiece = false
                         val globalOffset = target.fileOffset + position
                         val bytesToPieceEnd = target.pieceLength - (globalOffset % target.pieceLength)
                         val amount = min(min(end - position + 1, bytesToPieceEnd), buffer.size.toLong()).toInt()
@@ -420,7 +422,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     companion object {
         private const val METADATA_TIMEOUT_MS = 60_000L
-        private const val FIRST_PIECE_TIMEOUT_MS = 30_000L
+        private const val FIRST_STREAM_PIECE_TIMEOUT_MS = 90_000L
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12
