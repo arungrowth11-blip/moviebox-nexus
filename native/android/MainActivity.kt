@@ -46,7 +46,7 @@ class MainActivity : FlutterActivity() {
                     } else {
                         torrentExecutor.execute {
                             try {
-                                val url = engine().startPlayback(infoHash, title, fileIdx)
+                                val url = engine().startPlayback(normalizedHash, title, fileIdx)
                                 runOnUiThread { result.success(url) }
                             } catch (error: Throwable) {
                                 runOnUiThread {
