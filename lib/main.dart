@@ -92,6 +92,31 @@ String countryCodeFromChannelId(String id, {String explicitCountry = ''}) {
   return match?.group(1)?.toUpperCase() ?? '';
 }
 
+/// Pure channel filter: kept separate so country/category behavior can be tested
+/// without rendering the Live TV screen.
+List<Map<String, String>> filterLiveTvChannels(
+  List<Map<String, String>> channels, {
+  String countryCode = '*',
+  String categoryId = '*',
+  String query = '',
+}) {
+  final q = query.trim().toLowerCase();
+  return channels.where((channel) {
+    final categories = (channel['categoryIds'] ?? '').split('|');
+    final searchable = [
+      channel['name'] ?? '',
+      channel['group'] ?? '',
+      channel['countryName'] ?? '',
+      channel['countryCode'] ?? '',
+      channel['language'] ?? '',
+      channel['categoryNames'] ?? '',
+    ].join(' ').toLowerCase();
+    return (countryCode == '*' || (channel['countryCode'] ?? '') == countryCode) &&
+        (categoryId == '*' || categories.contains(categoryId)) &&
+        (q.isEmpty || searchable.contains(q));
+  }).toList(growable: false);
+}
+
 class Meta {
   final String id;
   final String name;
@@ -491,10 +516,10 @@ class CatalogEngine {
       final metadata = await _loadLiveTvMetadata();
       return _enrichLiveTvChannels(parsed, metadata);
     }
+    final metadataFuture = _loadLiveTvMetadata(forceRefresh: forceRefresh);
     final channels = await _refreshIptvPlaylist(cacheFile);
     if (channels.isNotEmpty) {
-      final metadata = await _loadLiveTvMetadata(forceRefresh: forceRefresh);
-      return _enrichLiveTvChannels(channels, metadata);
+      return _enrichLiveTvChannels(channels, await metadataFuture);
     }
     if (hasCache) {
       final metadata = await _loadLiveTvMetadata();
@@ -1823,7 +1848,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     super.initState();
     _load();
     _autoRefreshTimer = Timer.periodic(const Duration(hours: 12), (_) {
-      if (mounted && !_loading) _load(forceRefresh: true);
+      if (mounted && !_loading && !_refreshing) _load(forceRefresh: true);
     });
   }
 
@@ -1878,17 +1903,16 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         }
       }
     }
-    final filtered = _channels.where((c) {
-      final q = _query.toLowerCase();
-      final categories = (c['categoryIds'] ?? '').split('|');
-      final searchable = [
-        c['name'] ?? '', c['group'] ?? '', c['countryName'] ?? '',
-        c['countryCode'] ?? '', c['language'] ?? '', c['categoryNames'] ?? '',
-      ].join(' ').toLowerCase();
-      return (_selectedCountry == '*' || (c['countryCode'] ?? '') == _selectedCountry) &&
-          (_selectedCategory == '*' || categories.contains(_selectedCategory)) &&
-          (q.isEmpty || searchable.contains(q));
-    }).toList();
+    final sortedCountryOptions = countryOptions.entries.toList()
+      ..sort((a, b) => a.value.compareTo(b.value));
+    final sortedCategoryOptions = categoryOptions.entries.toList()
+      ..sort((a, b) => a.value.compareTo(b.value));
+    final filtered = filterLiveTvChannels(
+      _channels,
+      countryCode: _selectedCountry,
+      categoryId: _selectedCategory,
+      query: _query,
+    );
     return Column(
       children: [
         Padding(
@@ -1930,10 +1954,8 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
               style: const TextStyle(color: _textPri, fontSize: 13),
               items: [
                 const DropdownMenuItem(value: '*', child: Text('All countries')),
-                ...countryOptions.entries.toList()
-                    ..sort((a, b) => a.value.compareTo(b.value))
-                    .map((e) => DropdownMenuItem(value: e.key,
-                        child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
+                ...sortedCountryOptions.map((e) => DropdownMenuItem(value: e.key,
+                    child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
               ],
               onChanged: (v) => setState(() => _selectedCountry = v ?? '*'),
             )),
@@ -1952,10 +1974,8 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
               style: const TextStyle(color: _textPri, fontSize: 13),
               items: [
                 const DropdownMenuItem(value: '*', child: Text('All categories')),
-                ...categoryOptions.entries.toList()
-                    ..sort((a, b) => a.value.compareTo(b.value))
-                    .map((e) => DropdownMenuItem(value: e.key,
-                        child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
+                ...sortedCategoryOptions.map((e) => DropdownMenuItem(value: e.key,
+                    child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
               ],
               onChanged: (v) => setState(() => _selectedCategory = v ?? '*'),
             )),
@@ -2751,7 +2771,9 @@ class _DetailsSheetState extends State<DetailsSheet> {
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: _FButton(
-                label: 'Auto-Play Best Stream',
+                label: _streams.first.isDirect
+                    ? '⚡ Play Fastest Direct Stream'
+                    : 'Play Best Available (P2P)',
                 icon: Icons.bolt,
                 primary: true,
                 onTap: () => _playStream(_streams.first),
@@ -2844,8 +2866,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(const SnackBar(
-      content: Text('Built-in torrent engine: finding peers and preparing video...'),
-      duration: Duration(minutes: 2),
+      content: Text('Connecting to torrent peers. First start depends on seeders; direct/HLS sources start faster.'),
+      duration: Duration(seconds: 45),
     ));
     try {
       final url = await EmbeddedTorrentService.instance.startPlayback(
