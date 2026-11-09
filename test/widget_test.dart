@@ -70,7 +70,7 @@ void main() {
       'news': 'News',
       'sports': 'Sports',
     };
-    final enriched = enrichLiveTvChannels(
+    final enriched = CatalogEngine().enrichLiveTvChannels(
       <Map<String, String>>[
         {
           'id': 'BBCOne.uk',
