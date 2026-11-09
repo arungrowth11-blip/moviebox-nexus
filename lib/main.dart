@@ -3079,8 +3079,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(const SnackBar(
-      content: Text('Connecting to peers and reading torrent metadata. Direct HLS/DASH sources start faster; P2P depends on seeders.'),
-      duration: Duration(seconds: 65),
+      content: Text('Opening player now. Peer discovery and torrent metadata continue in the background; P2P speed depends on seeders.'),
+      duration: Duration(seconds: 8),
     ));
     try {
       final url = await EmbeddedTorrentService.instance.startPlayback(
