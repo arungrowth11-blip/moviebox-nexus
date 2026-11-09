@@ -120,9 +120,9 @@ String _normalizeChannelName(String value) =>
 /// preferred; canonical collisions are marked ambiguous rather than guessed.
 String _normalizeChannelMatchName(String value) {
   var normalized = _normalizeChannelName(
-    value.replaceAll(RegExp(r'\\([^)]*\\)'), ' '),
+    value.replaceAll(RegExp(r'\([^)]*\)'), ' '),
   ).replaceAll(
-    RegExp(r'\\b(?:2160p?|1080p?|720p?|576p?|480p?|360p?|4k|8k|hd|fhd|uhd|sd|hevc|h265|h264|avc|aac)\\b'),
+    RegExp(r'\b(?:2160p?|1080p?|720p?|576p?|480p?|360p?|4k|8k|hd|fhd|uhd|sd|hevc|h265|h264|avc|aac)\b'),
     ' ',
   ).trim();
   const trailingLanguages = <String>{
