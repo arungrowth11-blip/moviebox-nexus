@@ -569,16 +569,16 @@ class CatalogEngine {
       final parsed = _uniqueLiveChannels(parseM3uPlaylist(cachedBody));
       if (!isFresh) unawaited(_refreshIptvPlaylist(cacheFile));
       final metadata = await _loadLiveTvMetadata();
-      return _enrichLiveTvChannels(parsed, metadata);
+      return enrichLiveTvChannels(parsed, metadata);
     }
     final metadataFuture = _loadLiveTvMetadata(forceRefresh: forceRefresh);
     final channels = await _refreshIptvPlaylist(cacheFile);
     if (channels.isNotEmpty) {
-      return _enrichLiveTvChannels(channels, await metadataFuture);
+      return enrichLiveTvChannels(channels, await metadataFuture);
     }
     if (hasCache) {
       final metadata = await _loadLiveTvMetadata();
-      return _enrichLiveTvChannels(
+      return enrichLiveTvChannels(
           _uniqueLiveChannels(parseM3uPlaylist(cachedBody)), metadata);
     }
     return <Map<String, String>>[];
@@ -711,7 +711,7 @@ class CatalogEngine {
     return metadata;
   }
 
-  List<Map<String, String>> _enrichLiveTvChannels(
+  List<Map<String, String>> enrichLiveTvChannels(
     List<Map<String, String>> channels,
     Map<String, dynamic> metadata,
   ) {
