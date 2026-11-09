@@ -89,6 +89,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
         val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
         var handle: TorrentHandle? = null
+        var discoveredHandle: TorrentHandle? = null
         var info: com.frostwire.jlibtorrent.TorrentInfo? = null
         while (System.currentTimeMillis() < deadline) {
             val candidate = manager.getTorrentHandles().firstOrNull {
@@ -97,6 +98,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }.getOrDefault(false)
             }
             if (candidate != null) {
+                discoveredHandle = candidate
                 val candidateInfo = runCatching { candidate.torrentFile() }.getOrNull()
                 if (candidateInfo != null && candidateInfo.isValid()) {
                     handle = candidate
@@ -107,12 +109,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             Thread.sleep(350)
         }
 
-        val torrentHandle = handle
-            ?: throw IllegalStateException("Torrent metadata was not received. The swarm may have no reachable peers.")
+        val torrentHandle = handle ?: run {
+            discoveredHandle?.let { incomplete -> runCatching { manager.remove(incomplete) } }
+            throw IllegalStateException("Torrent metadata was not received. The swarm may have no reachable peers.")
+        }
         val torrentInfo = info
             ?: throw IllegalStateException("Torrent metadata is invalid.")
         activeHandle = torrentHandle
-
+        try {
         val storage = torrentInfo.files()
         val videoExtensions = setOf(
             "mp4", "mkv", "m4v", "mov", "avi", "webm", "ts",
@@ -158,6 +162,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         startHttpServer(target)
         activeTarget = target
         return "http://127.0.0.1:${serverSocket?.localPort}/stream/${target.token}"
+        } catch (error: Throwable) {
+            runCatching { manager.remove(torrentHandle) }
+            if (activeHandle == torrentHandle) activeHandle = null
+            activeTarget = null
+            stopHttpServer()
+            throw error
+        }
     }
 
     fun stopPlayback() {
