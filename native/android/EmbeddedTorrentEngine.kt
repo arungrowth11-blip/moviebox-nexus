@@ -90,6 +90,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
         var handle: TorrentHandle? = null
         var discoveredHandle: TorrentHandle? = null
+        var dhtAnnounced = false
         var info: com.frostwire.jlibtorrent.TorrentInfo? = null
         while (System.currentTimeMillis() < deadline) {
             val candidate = manager.getTorrentHandles().firstOrNull {
@@ -99,6 +100,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             }
             if (candidate != null) {
                 discoveredHandle = candidate
+                // Start DHT peer discovery as soon as libtorrent creates the
+                // magnet handle, not after metadata has already arrived.
+                if (!dhtAnnounced) {
+                    runCatching { candidate.forceDHTAnnounce() }
+                    dhtAnnounced = true
+                }
                 val candidateInfo = runCatching { candidate.torrentFile() }.getOrNull()
                 if (candidateInfo != null && candidateInfo.isValid()) {
                     handle = candidate
@@ -162,10 +169,6 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }
             }
         }
-        // Request peers from DHT immediately rather than relying only on the
-        // first periodic DHT announce after the magnet is added.
-        runCatching { torrentHandle.forceDHTAnnounce() }
-
         val canonicalRoot = saveDir.canonicalFile
         val mediaFile = File(saveDir, selected.second).canonicalFile
         if (!mediaFile.path.startsWith(canonicalRoot.path + File.separator)) {
