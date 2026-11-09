@@ -89,6 +89,8 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
 /// IPTV channel ID suffixes are sometimes country TLDs rather than ISO codes.
 String normalizeCountryCode(String raw) {
   final code = raw.trim().toUpperCase();
+  // IPTV sources often use these two-letter placeholders for unassigned data.
+  if (code == 'XX' || code == 'ZZ' || code == 'UN') return '';
   const aliases = <String, String>{
     'UK': 'GB',
     'EL': 'GR',
@@ -750,7 +752,9 @@ class CatalogEngine {
       final id = normalizeIptvChannelId(channel['id'] ?? '');
       final directMeta = channelIndex[id];
       final matchedByName = channelNameIndex[_normalizeChannelName(channel['name'] ?? '')];
-      final channelMetaRaw = directMeta is Map ? directMeta : matchedByName;
+      final channelMetaRaw = directMeta is Map
+          ? directMeta
+          : (id.isEmpty ? matchedByName : null);
       final channelMeta = channelMetaRaw is Map
           ? Map<String, dynamic>.from(channelMetaRaw)
           : <String, dynamic>{};
