@@ -456,9 +456,9 @@ jobs:
           # Otherwise Flutter's manifest resolves .MainActivity to a different
           # package and the MethodChannel handler is never registered.
           for key in ('namespace', 'applicationId'):
-              pattern = rf'({key}\\s*=\\s*)["\\'][^"\\']+["\\']'
+              pattern = rf'({key}\s*=\s*)["\'][^"\']+["\']'
               app_text, count = re.subn(
-                  pattern, rf'\\1"com.moviebox.nexus"', app_text, count=1
+                  pattern, rf'\1"com.moviebox.nexus"', app_text, count=1
               )
               if count != 1:
                   raise SystemExit(f'Could not set Android {key} to com.moviebox.nexus.')
