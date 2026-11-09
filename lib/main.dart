@@ -799,17 +799,20 @@ class CatalogEngine {
           if (item['alt_names'] is List)
             ...(item['alt_names'] as List).map((v) => v.toString()),
         ];
+        // Collect exact/canonical aliases for this one channel first.
+        // Otherwise a primary name and its own language-qualified alt_name can
+        // collide with each other and be incorrectly marked ambiguous.
+        final keysForChannel = <String>{};
         for (final name in names.toSet()) {
-          final keys = <String>{
-            _normalizeChannelName(name),
-            _normalizeChannelMatchName(name),
-          }..removeWhere((key) => key.isEmpty);
-          for (final key in keys) {
-            if (channelNameIndex.containsKey(key)) {
-              channelNameIndex[key] = null; // ambiguous names must not be guessed
-            } else {
-              channelNameIndex[key] = metadata;
-            }
+          keysForChannel.add(_normalizeChannelName(name));
+          keysForChannel.add(_normalizeChannelMatchName(name));
+        }
+        keysForChannel.removeWhere((key) => key.isEmpty);
+        for (final key in keysForChannel) {
+          if (channelNameIndex.containsKey(key)) {
+            channelNameIndex[key] = null; // ambiguous across distinct channels
+          } else {
+            channelNameIndex[key] = metadata;
           }
         }
       }
