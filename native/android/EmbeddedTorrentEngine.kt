@@ -55,7 +55,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         }
     }
 
-    fun startPlayback(infoHash: String, title: String): String {
+    fun startPlayback(infoHash: String, title: String, fileIdx: Int?): String {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
         stopPlayback()
@@ -139,8 +139,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 Triple(index, relativePath, size)
             }
         }
-        val selected = candidates.maxByOrNull { it.third }
-            ?: throw IllegalStateException("This torrent contains no supported video file.")
+        val selected = if (fileIdx != null) {
+            candidates.firstOrNull { it.first == fileIdx }
+                ?: throw IllegalStateException(
+                    "Add-on selected video file index $fileIdx, but that file is not a supported video."
+                )
+        } else {
+            candidates.maxByOrNull { it.third }
+                ?: throw IllegalStateException("This torrent contains no supported video file.")
+        }
 
         // Download only the selected media file; skip samples, subtitles and extras.
         // Keep the whole selected file at normal priority, then boost its opening
