@@ -85,6 +85,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _isLive => widget.isLive;
 
+  bool get _isEmbeddedTorrent {
+    final uri = Uri.tryParse(widget.url);
+    return uri != null &&
+        uri.host == '127.0.0.1' &&
+        uri.path.startsWith('/stream/');
+  }
+
   void _startMedia3() {
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
@@ -164,7 +171,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         betterPlayerDataSource: dataSource,
       );
       if (mounted) setState(() {});
-      _media3Watchdog = Timer(const Duration(seconds: 35), () {
+      final watchdogDelay = _isEmbeddedTorrent
+          ? const Duration(seconds: 105)
+          : const Duration(seconds: 35);
+      _media3Watchdog = Timer(watchdogDelay, () {
         if (mounted && !_disposed && !_usingVlc && _loading) {
           unawaited(_switchToVlc('Media3 initialization timed out'));
         }
