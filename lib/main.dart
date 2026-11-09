@@ -456,16 +456,29 @@ class CatalogEngine {
     return [];
   }
 
-  Future<List<StreamLink>> resolveStreams(String type, String id, List<ManagedAddon> addons) async {
+  Future<List<StreamLink>> resolveStreams(
+    String type,
+    String id,
+    List<ManagedAddon> addons, {
+    void Function(List<StreamLink> streams)? onUpdate,
+  }) async {
     final eligible = addons.where((addon) {
       final name = addon.name.toLowerCase();
       return !name.contains('cinemeta') && !name.contains('streaming catalogs');
     }).toList();
 
-    final results = await Future.wait(eligible.map((addon) async {
+    final accumulated = <String, StreamLink>{};
+    List<StreamLink> ranked() {
+      final streams = accumulated.values.toList()
+        ..sort((a, b) => b.score.compareTo(a.score));
+      return streams;
+    }
+
+    Future<List<StreamLink>> resolveAddon(ManagedAddon addon) async {
       try {
         final endpoint = '${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json';
-        final response = await _client.get(Uri.parse(endpoint)).timeout(const Duration(seconds: 6));
+        final response = await _client.get(Uri.parse(endpoint))
+            .timeout(const Duration(seconds: 5));
         if (response.statusCode != 200) return <StreamLink>[];
         final decoded = jsonDecode(response.body);
         final rawStreams = decoded is Map ? decoded['streams'] : null;
@@ -493,9 +506,7 @@ class CatalogEngine {
             for (final entry in rawHeaders.entries) {
               final key = entry.key.toString().trim();
               final value = entry.value.toString().trim();
-              if (key.isNotEmpty && value.isNotEmpty) {
-                streamHeaders[key] = value;
-              }
+              if (key.isNotEmpty && value.isNotEmpty) streamHeaders[key] = value;
             }
           }
           final probe = '$title ${directUrl ?? ''}'.toLowerCase();
@@ -516,19 +527,24 @@ class CatalogEngine {
           );
         }).whereType<StreamLink>().toList();
       } catch (_) {
+        // One addon timing out or returning malformed JSON must not block the others.
         return <StreamLink>[];
       }
+    }
+
+    // Publish each provider's response as soon as it arrives. The user can
+    // start a stream from the first usable provider without waiting for the
+    // slowest add-on in the parallel fan-out.
+    await Future.wait(eligible.map((addon) async {
+      final streams = await resolveAddon(addon);
+      for (final stream in streams) {
+        final key = stream.url ?? stream.infoHash ?? '${stream.addonName}:${stream.title}';
+        accumulated.putIfAbsent(key, () => stream);
+      }
+      if (streams.isNotEmpty) onUpdate?.call(ranked());
     }));
 
-    final unique = <String, StreamLink>{};
-    for (final list in results) {
-      for (final stream in list) {
-        final key = stream.url ?? stream.infoHash ?? '${stream.addonName}:${stream.title}';
-        unique.putIfAbsent(key, () => stream);
-      }
-    }
-    final out = unique.values.toList()..sort((a, b) => b.score.compareTo(a.score));
-    return out;
+    return ranked();
   }
 
   void close() => _client.close();
@@ -2697,8 +2713,16 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _streams = [];
     });
     
-    final streams = await widget.engine.resolveStreams(widget.meta.type, id, widget.addons);
-    
+    final streams = await widget.engine.resolveStreams(
+      widget.meta.type,
+      id,
+      widget.addons,
+      onUpdate: (partial) {
+        if (!mounted) return;
+        setState(() => _streams = partial);
+      },
+    );
+
     if (!mounted) return;
     setState(() {
       _streams = streams;
