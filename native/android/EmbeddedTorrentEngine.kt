@@ -158,12 +158,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     ?: throw IllegalStateException("Torrent metadata is invalid.")
                 val target = prepareStreamTarget(handle, info, saveDir, fileIdx, pending.token)
 
-                if (Thread.currentThread().isInterrupted || activePending !== pending) {
-                    runCatching { manager.remove(handle) }
-                    return@submit
+                synchronized(lock) {
+                    if (Thread.currentThread().isInterrupted || activePending !== pending) {
+                        runCatching { manager.remove(handle) }
+                        return@submit
+                    }
+                    activeHandle = handle
+                    pending.target = target
                 }
-                activeHandle = handle
-                pending.target = target
             } catch (error: Throwable) {
                 discoveredHandle?.let { runCatching { manager.remove(it) } }
                 if (activePending === pending && error !is InterruptedException) {
