@@ -551,6 +551,26 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk dist/MovieBox-Nexus-OS.apk
           test -s dist/MovieBox-Nexus-OS.apk
 
+      - name: Reclaim runner disk space for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          # Release build has already completed. Remove large preinstalled tools
+          # that the Android emulator smoke test does not need.
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
+          sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          sudo rm -rf "$ANDROID_SDK_ROOT/ndk" "$ANDROID_SDK_ROOT/cmake" "$ANDROID_SDK_ROOT/system-images"
+          sudo apt-get clean
+          echo "Disk after cleanup:"
+          df -h /
+          available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          if [ "$available_kb" -lt 5000000 ]; then
+            echo "::error::Less than 5 GB is available for the Android emulator system image."
+            exit 1
+          fi
+
       - name: Enable KVM for Android emulator
         shell: bash
         run: |
