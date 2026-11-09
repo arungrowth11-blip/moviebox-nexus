@@ -132,15 +132,19 @@ jobs:
               repositoryHandler.google()
           }
 
-          // Gradle plugin marker artifacts are often hosted on the Plugin Portal,
-          // not Maven Central. Keep mirrors first, but retain these official repos.
+          // Plugin markers and Gradle's own Kotlin DSL plugin must resolve from
+          // the Plugin Portal first. Keep mirrors as fallbacks for normal modules.
           gradle.beforeSettings { settings ->
+              settings.pluginManagement.repositories.gradlePluginPortal()
+              settings.pluginManagement.repositories.maven {
+                  name = 'GradlePluginPortalDirect'
+                  url = new URI('https://plugins.gradle.org/m2/')
+              }
+              addGoogleRepository.call(settings.pluginManagement.repositories)
               addMovieBoxMirrors.call(
                   settings.pluginManagement.repositories,
-                  'Plugin'
+                  'PluginFallback'
               )
-              addGoogleRepository.call(settings.pluginManagement.repositories)
-              settings.pluginManagement.repositories.gradlePluginPortal()
 
               addMovieBoxMirrors.call(
                   settings.dependencyResolutionManagement.repositories,
@@ -253,6 +257,21 @@ jobs:
           chmod +x android/gradlew
 
           "$GRADLE_HOME/bin/gradle" --version
+      - name: Verify Gradle Kotlin DSL plugin portal
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_url="https://plugins.gradle.org/m2/org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/6.4.2/org.gradle.kotlin.kotlin-dsl.gradle.plugin-6.4.2.pom"
+          echo "Checking Gradle Kotlin DSL marker: $marker_url"
+          status="$(curl --head --location --silent --show-error \
+            --connect-timeout 20 --max-time 90 \
+            --output /dev/null --write-out '%{http_code}' "$marker_url" || true)"
+          echo "Gradle Plugin Portal marker HTTP status:" "$status"
+          if [ "$status" != "200" ]; then
+            echo "::error::Gradle Plugin Portal marker is not reachable; cannot compile Flutter's Gradle build logic."
+            exit 1
+          fi
+
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v6
         with:
