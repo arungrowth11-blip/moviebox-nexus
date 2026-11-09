@@ -71,10 +71,13 @@ void main() {
       'IN': {'name': 'India', 'flag': '🇮🇳'},
       'GB': {'name': 'United Kingdom', 'flag': '🇬🇧'},
       'US': {'name': 'United States', 'flag': '🇺🇸'},
+      'UA': {'name': 'Ukraine', 'flag': '🇺🇦'},
     };
     final categories = <String, dynamic>{
       'news': 'News',
       'sports': 'Sports',
+      'general': 'General',
+      'religious': 'Religious',
     };
     final enriched = CatalogEngine().enrichLiveTvChannels(
       <Map<String, String>>[
@@ -120,6 +123,24 @@ void main() {
           'language': 'English',
         },
         {
+          'id': 'OnePlusOneFeed',
+          'sourceId': 'OnePlusOneFeed',
+          'name': '1+1 International HD (720p)',
+          'url': 'https://example.test/oneplusone.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': '',
+        },
+        {
+          'id': '3ABNFeed',
+          'sourceId': '3ABNFeed',
+          'name': '3ABN English (720p)',
+          'url': 'https://example.test/3abn.m3u8',
+          'group': 'Religious',
+          'country': '',
+          'language': 'English',
+        },
+        {
           'id': '',
           'sourceId': '',
           'name': 'Shared Name',
@@ -136,6 +157,8 @@ void main() {
         'channelNames': <String, dynamic>{
           'ndtv 24x7': {'country': 'IN', 'categories': ['news']},
           'local news': {'country': 'GB', 'categories': ['news']},
+          '1 1 international': {'country': 'UA', 'categories': ['general']},
+          '3abn': {'country': 'US', 'categories': ['religious']},
           'shared name': null,
         },
         'countries': countries,
@@ -153,9 +176,15 @@ void main() {
     expect(enriched[2]['countryCode'], 'GB');
     expect(enriched[3]['countryName'], 'United States');
     expect(enriched[3]['countryCode'], 'US');
+    expect(enriched[4]['countryName'], 'Ukraine');
+    expect(enriched[4]['countryCode'], 'UA');
+    expect(enriched[4]['categoryNames'], 'General');
+    expect(enriched[5]['countryName'], 'United States');
+    expect(enriched[5]['countryCode'], 'US');
+    expect(enriched[5]['categoryNames'], 'Religious');
     // Duplicate official names are ambiguous; never guess a country.
-    expect(enriched[4]['countryName'], 'Country not tagged');
-    expect(enriched[4]['countryCode'], '');
+    expect(enriched[6]['countryName'], 'Country not tagged');
+    expect(enriched[6]['countryCode'], '');
   });
 
   test('direct stream probe accepts HLS and rejects blocked HTML endpoints', () async {
