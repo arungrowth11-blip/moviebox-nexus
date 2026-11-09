@@ -630,6 +630,7 @@ class _RootShellState extends State<RootShell> {
   final resumeTitles = <String, String>{};
   
   int tab = 0;
+  final Set<int> _visitedTabs = <int>{0};
   bool tui = false;
   HttpServer? _server;
   String remoteUrl = '';
@@ -914,7 +915,10 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
                         child: _FButton(
                           label: tabs[i],
                           active: tab == i,
-                          onTap: () => setState(() => tab = i),
+                          onTap: () => setState(() {
+                            tab = i;
+                            _visitedTabs.add(i);
+                          }),
                         ),
                       ),
                     _FButton(
@@ -973,7 +977,20 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
   }
 
   Widget _buildBody() {
-    switch (tab) {
+    // Preserve already visited tab state while lazily mounting screens.
+    return IndexedStack(
+      index: tab,
+      sizing: StackFit.expand,
+      children: List<Widget>.generate(7, (index) {
+        return _visitedTabs.contains(index)
+            ? _buildTab(index)
+            : const SizedBox.shrink();
+      }),
+    );
+  }
+
+  Widget _buildTab(int index) {
+    switch (index) {
       case 0:
         return HomeScreen(
           engine: engine,
