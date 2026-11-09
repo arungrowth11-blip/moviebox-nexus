@@ -858,11 +858,33 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   child: CircularProgressIndicator(color: _movieBoxCyan),
                 ),
               if (_usingVlc && _vlc != null) _vlcControls(),
-              if (_loading)
+              if (_loading) ...[
                 const Align(
                   alignment: Alignment.center,
                   child: CircularProgressIndicator(color: _movieBoxCyan),
                 ),
+                if (_isEmbeddedTorrent)
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    bottom: 72,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.72),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Text(
+                          'Finding peers and preparing the first verified video pieces. Playback speed depends on seeders and network availability.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
               if (_error != null)
                 _errorPanel(_error!, onRetry: _retryCurrentEngine),
               if (!_usingVlc && _media3 != null)
