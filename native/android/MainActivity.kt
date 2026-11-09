@@ -37,8 +37,10 @@ class MainActivity : FlutterActivity() {
                 "startPlayback" -> {
                     val infoHash = call.argument<String>("infoHash")
                     val title = call.argument<String>("title") ?: "MovieBox Nexus stream"
-                    if (infoHash.isNullOrBlank()) {
-                        result.error("INVALID_INFO_HASH", "A torrent infoHash is required.", null)
+                    val normalizedHash = infoHash?.trim().orEmpty()
+                    val validHash = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$").matches(normalizedHash)
+                    if (!validHash) {
+                        result.error("INVALID_INFO_HASH", "A valid 40-character hex or 32-character base32 infoHash is required.", null)
                     } else {
                         torrentExecutor.execute {
                             try {
