@@ -71,6 +71,7 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
         'logo': logo,
         'group': group.isEmpty ? 'Other' : group,
         'country': countryCodeFromChannelId(id, explicitCountry: country),
+        'countryRaw': country.trim(),
         'language': language,
       });
     }
@@ -651,6 +652,17 @@ class CatalogEngine {
     return <Map<String, String>>[];
   }
 
+  Future<Map<String, dynamic>> _readCachedLiveTvMetadata(File file) async {
+    try {
+      if (!await file.exists()) return <String, dynamic>{};
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is Map && decoded['schemaVersion'] >= 2) {
+        return Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {}
+    return <String, dynamic>{};
+  }
+
   Future<Map<String, dynamic>> _loadLiveTvMetadata({bool forceRefresh = false}) async {
     final support = await getApplicationSupportDirectory();
     final metadataFile = File(support.path + '/live_tv_metadata.json');
@@ -661,8 +673,16 @@ class CatalogEngine {
           final decoded = jsonDecode(await metadataFile.readAsString());
           // Version the cache so old channel-ID-only indexes (without unique
           // name fallback) are rebuilt immediately after an app upgrade.
-          if (decoded is Map && decoded['schemaVersion'] == 2) {
-            return Map<String, dynamic>.from(decoded);
+          if (decoded is Map && decoded['schemaVersion'] >= 2) {
+            final cached = Map<String, dynamic>.from(decoded);
+            final cachedChannels = cached['channels'];
+            final cachedCountries = cached['countries'];
+            // Do not treat a previously cached empty/partial response as fresh:
+            // that can freeze every channel as "Country not tagged" for 7 days.
+            if (cachedChannels is Map && cachedChannels.isNotEmpty &&
+                cachedCountries is Map && cachedCountries.isNotEmpty) {
+              return cached;
+            }
           }
         }
       }
@@ -738,18 +758,40 @@ class CatalogEngine {
         if (id.isNotEmpty) categoryIndex[id] = (item['name'] ?? id).toString();
       }
     }
+    // Merge stale data when an upstream JSON endpoint is temporarily
+    // unavailable. Never overwrite a good index with an empty response.
+    final cached = await _readCachedLiveTvMetadata(metadataFile);
+    final cachedChannels = cached['channels'];
+    final cachedNames = cached['channelNames'];
+    final cachedCountries = cached['countries'];
+    final cachedCategories = cached['categories'];
+    if (channelIndex.isEmpty && cachedChannels is Map) {
+      channelIndex.addAll(Map<String, dynamic>.from(cachedChannels));
+    }
+    if (channelNameIndex.isEmpty && cachedNames is Map) {
+      channelNameIndex.addAll(Map<String, dynamic>.from(cachedNames));
+    }
+    if (countryIndex.isEmpty && cachedCountries is Map) {
+      countryIndex.addAll(Map<String, dynamic>.from(cachedCountries));
+    }
+    if (categoryIndex.isEmpty && cachedCategories is Map) {
+      categoryIndex.addAll(Map<String, dynamic>.from(cachedCategories));
+    }
     final metadata = <String, dynamic>{
-      'schemaVersion': 2,
+      'schemaVersion': 3,
       'channels': channelIndex,
       'channelNames': channelNameIndex,
       'countries': countryIndex,
       'categories': categoryIndex,
       'updatedAt': DateTime.now().toUtc().toIso8601String(),
     };
-    try {
-      await metadataFile.parent.create(recursive: true);
-      await metadataFile.writeAsString(jsonEncode(metadata), flush: true);
-    } catch (_) {}
+    // A network outage must not replace a valid cache with empty metadata.
+    if (channelIndex.isNotEmpty && countryIndex.isNotEmpty) {
+      try {
+        await metadataFile.parent.create(recursive: true);
+        await metadataFile.writeAsString(jsonEncode(metadata), flush: true);
+      } catch (_) {}
+    }
     return metadata;
   }
 
@@ -773,22 +815,33 @@ class CatalogEngine {
       final id = normalizeIptvChannelId(channel['id'] ?? '');
       final directMeta = channelIndex[id];
       final matchedByName = channelNameIndex[_normalizeChannelName(channel['name'] ?? '')];
+      // Official playlist IDs do not always match the iptv-org channel
+      // index. Use a unique normalized channel-name match as a fallback even
+      // when a non-empty source ID exists; ambiguous names remain excluded.
       final channelMetaRaw = directMeta is Map
           ? directMeta
-          : (id.isEmpty ? matchedByName : null);
+          : matchedByName;
       final channelMeta = channelMetaRaw is Map
           ? Map<String, dynamic>.from(channelMetaRaw)
           : <String, dynamic>{};
+      final rawCountry = (channelMeta['country'] ??
+              channel['countryRaw'] ?? channel['country'] ?? '')
+          .toString()
+          .trim();
       final idCountry = countryCodeFromChannelId(
         id,
-        explicitCountry: (channelMeta['country'] ?? channel['country'] ?? '').toString(),
+        explicitCountry: rawCountry,
       );
-      final countryCode = idCountry.isNotEmpty
+      final resolvedCountryCode = idCountry.isNotEmpty
           ? idCountry
-          : _countryCodeFromName(
-              (channelMeta['country'] ?? channel['country'] ?? '').toString(),
-              countryIndex,
-            );
+          : _countryCodeFromName(rawCountry, countryIndex);
+      // Keep a selectable, stable key for an explicitly named country even
+      // when the public country index is temporarily unavailable.
+      final countryCode = resolvedCountryCode.isNotEmpty
+          ? resolvedCountryCode
+          : rawCountry.isNotEmpty
+              ? 'NAME:${_normalizeChannelName(rawCountry).replaceAll(' ', '-')}'
+              : '';
       final countryMeta = countryIndex[countryCode] is Map
           ? Map<String, dynamic>.from(countryIndex[countryCode] as Map)
           : <String, dynamic>{};
@@ -806,7 +859,10 @@ class CatalogEngine {
         ...channel,
         'country': countryCode,
         'countryCode': countryCode,
-        'countryName': (countryMeta['name'] ?? (countryCode.isEmpty ? 'Country not tagged' : countryCode)).toString(),
+        'countryName': (countryMeta['name'] ??
+                (countryCode.startsWith('NAME:') ? rawCountry :
+                    (countryCode.isEmpty ? 'Country not tagged' : countryCode)))
+            .toString(),
         'countryFlag': (countryMeta['flag'] ?? '').toString(),
         'categoryIds': categoryIds.join('|'),
         'categoryNames': categoryNames.join(', '),
