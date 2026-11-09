@@ -55,6 +55,20 @@ void main() {
     expect(filterLiveTvChannels(channels, countryCode: '*', categoryId: '*'), hasLength(3));
   });
 
+  test('smart play ranks direct adaptive streams above P2P magnets', () {
+    final hls = StreamLink(
+      url: 'https://media.example.test/master.m3u8',
+      title: '720p',
+    );
+    final torrent = StreamLink(
+      infoHash: '0123456789012345678901234567890123456789',
+      title: '2160p Hindi',
+    );
+    expect(hls.isDirect, isTrue);
+    expect(torrent.isTorrent, isTrue);
+    expect(hls.score, greaterThan(torrent.score));
+  });
+
   test('Meta.fromJson safely parses catalog metadata', () {
     final meta = Meta.fromJson({
       'id': 'tt1234567',
