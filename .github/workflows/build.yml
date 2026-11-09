@@ -421,15 +421,30 @@ jobs:
           import os
           import re
 
+          frostwire_repository = '''repositories {
+              maven {
+                  url = uri("https://dl.frostwire.com/maven")
+                  content { includeGroup("com.frostwire") }
+              }
+          }
+          '''
+
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
+
+          # Flutter's generated Android project prefers project-level repositories.
+          # Add FrostWire here, in addition to the settings-level mirror, because
+          # Gradle reports that project repositories override settings repositories.
+          if 'https://dl.frostwire.com/maven' not in app_text:
+              app_text += '\n\n' + frostwire_repository + '\n'
+
           dependency = 'jlibtorrent-android:2.0.15.3@aar'
           if dependency not in app_text:
-              app_text += """
+              app_text += '''
           dependencies {
               implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")
           }
-          """
+          '''
 
           min_sdk_pattern = r'minSdk\s*=\s*flutter\.minSdkVersion'
           if re.search(min_sdk_pattern, app_text):
@@ -443,6 +458,8 @@ jobs:
 
           app_gradle.write_text(app_text, encoding='utf-8')
           final_app = app_gradle.read_text(encoding='utf-8')
+          if 'https://dl.frostwire.com/maven' not in final_app:
+              raise SystemExit('FrostWire Maven repository is missing from the app project repositories.')
           if dependency not in final_app:
               raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
           if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
@@ -452,7 +469,7 @@ jobs:
           init_text = init_script.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in init_text:
               raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
-          print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 (all ABIs, minSdk 26).')
+          print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 in project and settings repositories (all ABIs, minSdk 26).')
           PY
 
       - name: Resolve dependencies
