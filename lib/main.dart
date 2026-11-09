@@ -1965,22 +1965,33 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
       _refreshing = hasChannels;
       _error = null;
     });
-    final channels = await widget.engine.fetchIptv(forceRefresh: forceRefresh);
-    if (!mounted) return;
-    setState(() {
-      if (channels.isNotEmpty) _channels = channels;
-      _loading = false;
-      _refreshing = false;
-      _error = _channels.isEmpty
-          ? 'Public playlist is unavailable. Check your connection and retry.'
-          : null;
-      final countryCodes = _channels.map((c) => c['countryCode'] ?? '')
-          .where((v) => v.isNotEmpty).toSet();
-      final categoryIds = _channels.expand((c) => (c['categoryIds'] ?? '').split('|'))
-          .where((v) => v.isNotEmpty).toSet();
-      if (_selectedCountry != '*' && !countryCodes.contains(_selectedCountry)) _selectedCountry = '*';
-      if (_selectedCategory != '*' && !categoryIds.contains(_selectedCategory)) _selectedCategory = '*';
-    });
+    try {
+      final channels = await widget.engine.fetchIptv(forceRefresh: forceRefresh);
+      if (!mounted) return;
+      setState(() {
+        if (channels.isNotEmpty) _channels = channels;
+        _loading = false;
+        _refreshing = false;
+        _error = _channels.isEmpty
+            ? 'Public playlist or channel metadata is unavailable. Check the connection and retry.'
+            : null;
+        final countryCodes = _channels.map((c) => c['countryCode'] ?? '')
+            .where((v) => v.isNotEmpty).toSet();
+        final categoryIds = _channels.expand((c) => (c['categoryIds'] ?? '').split('|'))
+            .where((v) => v.isNotEmpty).toSet();
+        if (_selectedCountry != '*' && !countryCodes.contains(_selectedCountry)) _selectedCountry = '*';
+        if (_selectedCategory != '*' && !categoryIds.contains(_selectedCategory)) _selectedCategory = '*';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _refreshing = false;
+        _error = _channels.isEmpty
+            ? 'Live TV could not load: $error'
+            : 'Refresh failed; showing the cached channel list.';
+      });
+    }
   }
 
   @override
