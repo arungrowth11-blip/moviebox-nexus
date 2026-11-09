@@ -59,6 +59,69 @@ void main() {
     expect(filterLiveTvChannels(channels, countryCode: '*', categoryId: '*'), hasLength(3));
   });
 
+  test('IPTV enrichment joins quality-suffixed IDs and unique channel names', () {
+    final countries = <String, dynamic>{
+      'IN': {'name': 'India', 'flag': '🇮🇳'},
+      'GB': {'name': 'United Kingdom', 'flag': '🇬🇧'},
+    };
+    final categories = <String, dynamic>{
+      'news': 'News',
+      'sports': 'Sports',
+    };
+    final enriched = enrichLiveTvChannels(
+      <Map<String, String>>[
+        {
+          'id': 'BBCOne.uk',
+          'sourceId': 'BBCOne.uk@HD',
+          'name': 'BBC One',
+          'url': 'https://example.test/bbc.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': 'English',
+        },
+        {
+          'id': '',
+          'sourceId': '',
+          'name': 'NDTV 24x7',
+          'url': 'https://example.test/ndtv.m3u8',
+          'group': 'News',
+          'country': '',
+          'language': 'Hindi',
+        },
+        {
+          'id': '',
+          'sourceId': '',
+          'name': 'Shared Name',
+          'url': 'https://example.test/shared.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': '',
+        },
+      ],
+      {
+        'channels': <String, dynamic>{
+          'BBCOne.uk': {'country': 'GB', 'categories': ['news']},
+        },
+        'channelNames': <String, dynamic>{
+          'ndtv 24x7': {'country': 'IN', 'categories': ['news']},
+          'shared name': null,
+        },
+        'countries': countries,
+        'categories': categories,
+      },
+    );
+
+    expect(enriched[0]['countryName'], 'United Kingdom');
+    expect(enriched[0]['countryCode'], 'GB');
+    expect(enriched[0]['categoryNames'], 'News');
+    expect(enriched[1]['countryName'], 'India');
+    expect(enriched[1]['countryCode'], 'IN');
+    expect(enriched[1]['categoryNames'], 'News');
+    // Duplicate official names are ambiguous; never guess a country.
+    expect(enriched[2]['countryName'], 'Country not tagged');
+    expect(enriched[2]['countryCode'], '');
+  });
+
   test('smart play ranks direct adaptive streams above P2P magnets', () {
     final hls = StreamLink(
       url: 'https://media.example.test/master.m3u8',
