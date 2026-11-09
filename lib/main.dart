@@ -85,6 +85,20 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
   return channels;
 }
 
+/// Combines independently maintained public M3U feeds without discarding
+/// alternate URLs for the same channel. Exact duplicate stream URLs are removed.
+List<Map<String, String>> mergeLiveTvPlaylists(Map<String, String> sourceBodies) {
+  final byUrl = <String, Map<String, String>>{};
+  for (final source in sourceBodies.entries) {
+    for (final channel in parseM3uPlaylist(source.value)) {
+      final url = (channel['url'] ?? '').trim();
+      if (url.isEmpty) continue;
+      byUrl.putIfAbsent(url, () => <String, String>{...channel, 'source': source.key});
+    }
+  }
+  return byUrl.values.toList();
+}
+
 /// Extracts a two-letter broadcast country code from an explicit field or
 /// the iptv-org channel ID suffix (for example, BBCNews.uk -> UK).
 /// IPTV channel ID suffixes are sometimes country TLDs rather than ISO codes.
@@ -640,6 +654,7 @@ class CatalogEngine {
       final firstChunk = await response.stream
           .first
           .timeout(const Duration(seconds: 2), onTimeout: () => <int>[]);
+      if (firstChunk.isEmpty) return false;
       final prefix = utf8
           .decode(firstChunk.take(512).toList(), allowMalformed: true)
           .trimLeft()
@@ -665,13 +680,56 @@ class CatalogEngine {
     }
   }
 
+  /// Match alternate public feeds by official channel ID first, then exact normalized name.
+  List<Map<String, String>> liveTvAlternates(
+    Map<String, String> selected,
+    List<Map<String, String>> allChannels,
+  ) {
+    final selectedUrl = selected['url'] ?? '';
+    final id = (selected['id'] ?? '').trim();
+    final name = _normalizeChannelName(selected['name'] ?? '');
+    final idMatches = id.isEmpty
+        ? <Map<String, String>>[]
+        : allChannels.where((item) => (item['id'] ?? '').trim() == id).toList();
+    final matches = idMatches.isNotEmpty
+        ? idMatches
+        : allChannels.where((item) =>
+            name.isNotEmpty && _normalizeChannelName(item['name'] ?? '') == name).toList();
+    final ordered = <Map<String, String>>[
+      selected,
+      ...matches.where((item) => (item['url'] ?? '') != selectedUrl),
+    ];
+    final seen = <String>{};
+    return ordered.where((item) {
+      final url = item['url'] ?? '';
+      return url.isNotEmpty && seen.add(url);
+    }).take(8).toList();
+  }
+
+  /// Probe candidate HTTP URLs concurrently and return the first working feed
+  /// in playlist priority order. HTML error/expired pages are rejected.
+  Future<Map<String, String>?> firstWorkingLiveTvSource(
+    List<Map<String, String>> candidates,
+  ) async {
+    final bounded = candidates.take(8).toList();
+    if (bounded.isEmpty) return null;
+    final checks = await Future.wait(bounded.map((item) {
+      return probeDirectStream(StreamLink(
+        url: item['url'] ?? '',
+        title: item['name'] ?? 'Live TV',
+      ));
+    }));
+    final index = checks.indexWhere((isWorking) => isWorking);
+    return index < 0 ? null : bounded[index];
+  }
+
   void close() => _client.close();
 
 
   /// Cached public IPTV playlist enriched with structured country/category data.
   Future<List<Map<String, String>>> fetchIptv({bool forceRefresh = false}) async {
     final support = await getApplicationSupportDirectory();
-    final cacheFile = File(support.path + '/live_tv.m3u');
+    final cacheFile = File(support.path + '/live_tv_multi_source_v2.m3u');
     String? cachedBody;
     DateTime? cacheTime;
     try {
@@ -703,28 +761,34 @@ class CatalogEngine {
   }
 
   Future<List<Map<String, String>>> _refreshIptvPlaylist(File cacheFile) async {
-    const sources = [
-      'https://iptv-org.github.io/iptv/index.m3u',
-      'https://iptv-org.github.io/iptv/countries/in.m3u',
-      'https://iptv-org.github.io/iptv/languages/hin.m3u',
+    const sources = <MapEntry<String, String>>[
+      MapEntry('India', 'https://iptv-org.github.io/iptv/countries/in.m3u'),
+      MapEntry('Hindi', 'https://iptv-org.github.io/iptv/languages/hin.m3u'),
+      MapEntry('Worldwide', 'https://iptv-org.github.io/iptv/index.m3u'),
     ];
-    for (final source in sources) {
+    final responses = await Future.wait<MapEntry<String, String>?>(sources.map((source) async {
       try {
         final response = await _client.get(
-          Uri.parse(source),
+          Uri.parse(source.value),
           headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': '*/*'},
         ).timeout(const Duration(seconds: 20));
-        if (response.statusCode != 200 || response.body.isEmpty) continue;
-        final parsed = _uniqueLiveChannels(parseM3uPlaylist(response.body));
-        if (parsed.isEmpty) continue;
-        try {
-          await cacheFile.parent.create(recursive: true);
-          await cacheFile.writeAsString(response.body, flush: true);
-        } catch (_) {}
-        return parsed;
-      } catch (_) {}
-    }
-    return <Map<String, String>>[];
+        if (response.statusCode != 200 || response.body.trim().isEmpty) return null;
+        return MapEntry(source.key, response.body);
+      } catch (_) {
+        return null;
+      }
+    }));
+    final sourceBodies = <String, String>{
+      for (final item in responses.whereType<MapEntry<String, String>>())
+        item.key: item.value,
+    };
+    final merged = mergeLiveTvPlaylists(sourceBodies);
+    if (merged.isEmpty) return <Map<String, String>>[];
+    try {
+      await cacheFile.parent.create(recursive: true);
+      await cacheFile.writeAsString(sourceBodies.values.join('\n'), flush: true);
+    } catch (_) {}
+    return _uniqueLiveChannels(merged);
   }
 
   Future<Map<String, dynamic>> _readCachedLiveTvMetadata(File file) async {
@@ -2079,15 +2143,24 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     
-    final best = streams.first;
-    if (best.isDirect) {
-      widget.onPlay(m.name, best.url!, m.id);
-    } else if (best.infoHash != null && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('Best result torrent-only hai. Playback ke liye configured debrid/TorrServer resolver aur uska HTTP stream URL chahiye; Stremio/VLC ko raw magnet auto-send nahi kiya.'),
-        duration: Duration(seconds: 6),
-      ));
+    final direct = streams.where((stream) => stream.isDirect).take(8).toList();
+    if (direct.isNotEmpty) {
+      final checks = await Future.wait(direct.map(widget.engine.probeDirectStream));
+      final workingIndex = checks.indexWhere((isWorking) => isWorking);
+      if (workingIndex >= 0 && mounted) {
+        final stream = direct[workingIndex];
+        widget.onPlay(m.name, stream.url!, m.id);
+        return;
+      }
     }
+    if (!mounted) return;
+    final torrentOnly = streams.every((stream) => stream.isTorrent);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(torrentOnly
+          ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
+          : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.'),
+      duration: const Duration(seconds: 7),
+    ));
   }
 
   String _fmt(int ms) {
@@ -2121,13 +2194,15 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   String _selectedCategory = '*';
   String? _error;
   final _search = TextEditingController();
+  final Map<String, DateTime> _unhealthyUntil = <String, DateTime>{};
+  String? _checkingChannelUrl;
   Timer? _autoRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     _load();
-    _autoRefreshTimer = Timer.periodic(const Duration(hours: 12), (_) {
+    _autoRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) {
       if (mounted && !_loading && !_refreshing) _load(forceRefresh: true);
     });
   }
@@ -2175,8 +2250,60 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     }
   }
 
+  Future<void> _playChannel(Map<String, String> channel) async {
+    if (_checkingChannelUrl != null) return;
+    final candidates = widget.engine.liveTvAlternates(channel, _channels);
+    if (candidates.isEmpty) return;
+    setState(() => _checkingChannelUrl = channel['url']);
+    try {
+      final working = await widget.engine.firstWorkingLiveTvSource(candidates);
+      if (!mounted) return;
+      setState(() {
+        _checkingChannelUrl = null;
+        if (working == null) {
+          final until = DateTime.now().add(const Duration(minutes: 20));
+          for (final item in candidates) {
+            final url = item['url'] ?? '';
+            if (url.isNotEmpty) _unhealthyUntil[url] = until;
+          }
+        } else {
+          _unhealthyUntil.remove(working['url']);
+        }
+      });
+      if (working == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Is channel ke public feeds offline/blocked mile. Dead entries 20 minutes ke liye hide ki gayi hain; Refresh se latest playlist dobara fetch hogi.'),
+          duration: Duration(seconds: 6),
+        ));
+        return;
+      }
+      if ((working['url'] ?? '') != (channel['url'] ?? '')) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Primary feed unavailable; alternate ${working['source'] ?? 'public'} feed selected.'),
+          duration: const Duration(seconds: 3),
+        ));
+      }
+      widget.onPlay(
+        working['name'] ?? channel['name'] ?? 'Live TV',
+        working['url'] ?? '',
+        working['url'] ?? '',
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _checkingChannelUrl = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Channel health check failed: $error')),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    _unhealthyUntil.removeWhere((_, until) => !until.isAfter(DateTime.now()));
+    final healthyCandidates = _channels.where((channel) {
+      final until = _unhealthyUntil[channel['url'] ?? ''];
+      return until == null || !until.isAfter(DateTime.now());
+    }).toList();
     final countryOptions = <String, String>{};
     final categoryOptions = <String, String>{};
     for (final c in _channels) {
@@ -2199,7 +2326,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     final sortedCategoryOptions = categoryOptions.entries.toList()
       ..sort((a, b) => a.value.compareTo(b.value));
     final filtered = filterLiveTvChannels(
-      _channels,
+      healthyCandidates,
       countryCode: _selectedCountry,
       categoryId: _selectedCategory,
       query: _query,
@@ -2279,7 +2406,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text('${filtered.length} of ${_channels.length} channels • Worldwide public playlist • auto-updates every 12h',
+              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + Hindi + worldwide public playlists • refresh every 6h; checked on play',
                   style: const TextStyle(color: _muted, fontSize: 12)),
             ),
           ),
@@ -2322,8 +2449,14 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                                 if ((c['countryName'] ?? '').isNotEmpty) (c['countryFlag'] ?? '') + ' ' + c['countryName']!,
                                 if ((c['language'] ?? '').isNotEmpty) c['language']!,
                               ].join(' • '), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _cyan, fontSize: 11)),
-                              trailing: const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
-                              onTap: () => widget.onPlay(c['name'] ?? 'Live TV', c['url'] ?? '', c['url'] ?? ''),
+                              trailing: _checkingChannelUrl == (c['url'] ?? '')
+                                  ? const SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(strokeWidth: 2, color: _cyan),
+                                    )
+                                  : const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
+                              onTap: () => _playChannel(c),
                             )),
                           );
                         },

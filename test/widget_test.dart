@@ -187,6 +187,55 @@ void main() {
     expect(enriched[6]['countryCode'], '');
   });
 
+  test('multiple IPTV feeds are merged while exact duplicate URLs are removed', () {
+    final merged = mergeLiveTvPlaylists({
+      'India': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV\nhttps://one.example/ndtv.m3u8\n',
+      'Hindi': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV Hindi\nhttps://one.example/ndtv.m3u8\n#EXTINF:-1 tvg-id="AajTak.in",Aaj Tak\nhttps://two.example/aajtak.m3u8\n',
+      'Worldwide': '#EXTM3U\n#EXTINF:-1 tvg-id="BBCNews.uk",BBC News\nhttps://bbc.example/live.m3u8\n',
+    });
+    expect(merged, hasLength(3));
+    expect(merged.first['source'], 'India');
+    expect(merged.any((item) => item['name'] == 'Aaj Tak'), isTrue);
+    expect(merged.any((item) => item['name'] == 'BBC News'), isTrue);
+  });
+
+  test('Live TV failover selects a working alternate for the same channel ID', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      final response = request.response;
+      if (request.uri.path == '/dead.m3u8') {
+        response.statusCode = HttpStatus.notFound;
+        response.headers.contentType = ContentType.html;
+        response.write('<html>not found</html>');
+      } else if (request.uri.path == '/good.m3u8') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
+        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\nhttps://cdn.example/segment.ts\n');
+      } else {
+        response.statusCode = HttpStatus.notFound;
+      }
+      await response.close();
+    });
+    final engine = CatalogEngine();
+    final selected = <String, String>{
+      'id': 'NDTV.in', 'name': 'NDTV', 'url': 'http://127.0.0.1:${server.port}/dead.m3u8',
+    };
+    final alternate = <String, String>{
+      'id': 'NDTV.in', 'name': 'NDTV Hindi', 'url': 'http://127.0.0.1:${server.port}/good.m3u8',
+      'source': 'Hindi',
+    };
+    try {
+      final candidates = engine.liveTvAlternates(selected, [selected, alternate]);
+      expect(candidates, hasLength(2));
+      final working = await engine.firstWorkingLiveTvSource(candidates);
+      expect(working?['url'], alternate['url']);
+      expect(working?['source'], 'Hindi');
+    } finally {
+      engine.close();
+      await server.close(force: true);
+    }
+  });
+
   test('direct stream probe accepts HLS and rejects blocked HTML endpoints', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {

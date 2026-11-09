@@ -60,6 +60,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   int _lastSavedMs = 0;
   DateTime _playStartedAt = DateTime.now();
   bool _preparedReported = false;
+  bool _preferredHindiAudioApplied = false;
   final FocusNode _focusNode = FocusNode(debugLabel: 'MovieBoxPlayer');
 
   @override
@@ -202,6 +203,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       case BetterPlayerEventType.initialized:
         _media3Watchdog?.cancel();
         _reportPrepared();
+        _preferredHindiAudioApplied = false;
+        _applyPreferredHindiAudio();
+        Future<void>.delayed(const Duration(milliseconds: 900), _applyPreferredHindiAudio);
         setState(() {
           _loading = false;
           _error = null;
@@ -386,6 +390,77 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : (target > duration ? duration : target);
     await controller.seekTo(clamped);
     if (mounted) setState(() => _controlsVisible = true);
+  }
+
+  void _applyPreferredHindiAudio() {
+    if (_disposed || _preferredHindiAudioApplied) return;
+    final controller = _media3;
+    if (controller == null) return;
+    final tracks = controller.betterPlayerAsmsAudioTracks ?? const <BetterPlayerAsmsAudioTrack>[];
+    if (tracks.isEmpty) return;
+    final hindi = tracks.where((track) {
+      final language = (track.language ?? '').toLowerCase();
+      final label = (track.label ?? '').toLowerCase();
+      return language == 'hi' ||
+          language.startsWith('hi-') ||
+          label.contains('hindi') ||
+          label.contains('हिंदी');
+    }).toList();
+    if (hindi.isNotEmpty) controller.setAudioTrack(hindi.first);
+    _preferredHindiAudioApplied = true;
+  }
+
+  String _audioTrackLabel(BetterPlayerAsmsAudioTrack track) {
+    final label = (track.label ?? '').trim();
+    final language = (track.language ?? '').trim();
+    if (label.isNotEmpty && language.isNotEmpty) return '$label ($language)';
+    if (label.isNotEmpty) return label;
+    if (language.isNotEmpty) return language.toUpperCase();
+    return 'Audio track ${track.id ?? ''}';
+  }
+
+  Future<void> _showMedia3AudioTracks() async {
+    final controller = _media3;
+    if (controller == null) return;
+    final tracks = controller.betterPlayerAsmsAudioTracks ?? const <BetterPlayerAsmsAudioTrack>[];
+    if (!mounted) return;
+    if (tracks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('This stream exposes only its default audio. Hindi/other audio can be selected only when the source publishes alternate tracks.'),
+      ));
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _playerSurface,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('Audio language', style: TextStyle(
+                color: _movieBoxCyan,
+                fontWeight: FontWeight.bold,
+              )),
+              subtitle: Text('Hindi is preferred automatically when the stream provides it.',
+                style: TextStyle(color: Colors.white60)),
+            ),
+            for (final track in tracks)
+              ListTile(
+                leading: const Icon(Icons.audiotrack, color: Colors.white70),
+                title: Text(_audioTrackLabel(track), style: const TextStyle(color: Colors.white)),
+                trailing: controller.betterPlayerAsmsAudioTrack == track
+                    ? const Icon(Icons.check, color: _movieBoxCyan)
+                    : null,
+                onTap: () {
+                  controller.setAudioTrack(track);
+                  Navigator.pop(sheetContext);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _showVlcTracks({required bool subtitles}) async {
@@ -887,6 +962,22 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ],
               if (_error != null)
                 _errorPanel(_error!, onRetry: _retryCurrentEngine),
+              if (!_usingVlc && _media3 != null)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 4,
+                  right: 10,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: IconButton(
+                      tooltip: 'Audio language',
+                      onPressed: _showMedia3AudioTracks,
+                      icon: const Icon(Icons.audiotrack, color: _movieBoxCyan),
+                    ),
+                  ),
+                ),
               if (!_usingVlc && _media3 != null)
                 Positioned(
                   top: MediaQuery.of(context).padding.top + 4,
