@@ -136,9 +136,37 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             ?: throw IllegalStateException("This torrent contains no supported video file.")
 
         // Download only the selected media file; skip samples, subtitles and extras.
+        // Keep the whole selected file at normal priority, then boost its opening
+        // pieces explicitly. Setting every piece in a large movie to SEVEN makes
+        // the opening bytes compete with the entire rest of the file.
         val priorities = Array(storage.numFiles()) { Priority.IGNORE }
-        priorities[selected.first] = Priority.SEVEN
+        priorities[selected.first] = Priority.NORMAL
         torrentHandle.prioritizeFiles(priorities)
+
+        val selectedFileOffset = storage.fileOffset(selected.first)
+        val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
+        val lastPiece = ((selectedFileOffset + selected.third - 1L) / torrentInfo.pieceLength()).toInt()
+        val piecePriorities = torrentHandle.piecePriorities()
+        val startupLastPiece = minOf(lastPiece, firstPiece + STARTUP_PRIORITY_PIECES - 1)
+        if (firstPiece >= 0 && startupLastPiece < piecePriorities.size) {
+            for (piece in firstPiece..startupLastPiece) {
+                piecePriorities[piece] = Priority.SEVEN
+            }
+            torrentHandle.prioritizePieces(piecePriorities)
+            for (piece in firstPiece..startupLastPiece) {
+                // Earlier playback bytes receive earlier deadlines. Libtorrent
+                // still verifies every piece before the loopback server exposes it.
+                runCatching {
+                    torrentHandle.setPieceDeadline(
+                        piece,
+                        (piece - firstPiece) * STARTUP_DEADLINE_STEP_MS
+                    )
+                }
+            }
+        }
+        // Request peers from DHT immediately rather than relying only on the
+        // first periodic DHT announce after the magnet is added.
+        runCatching { torrentHandle.forceDHTAnnounce() }
 
         val canonicalRoot = saveDir.canonicalFile
         val mediaFile = File(saveDir, selected.second).canonicalFile
@@ -393,9 +421,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     }
 
     companion object {
-        private const val METADATA_TIMEOUT_MS = 90_000L
-        private const val FIRST_PIECE_TIMEOUT_MS = 45_000L
-        private const val STREAM_PIECE_TIMEOUT_MS = 60_000L
+        private const val METADATA_TIMEOUT_MS = 60_000L
+        private const val FIRST_PIECE_TIMEOUT_MS = 30_000L
+        private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
+        private const val STARTUP_PRIORITY_PIECES = 12
+        private const val STARTUP_DEADLINE_STEP_MS = 750
     }
 }
