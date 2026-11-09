@@ -208,6 +208,7 @@ class StreamLink {
   final String badge;
   final Map<String, String> headers;
   final int? seeders;
+  final int? fileIdx;
 
   StreamLink({
     this.url,
@@ -217,6 +218,7 @@ class StreamLink {
     this.badge = '',
     this.headers = const <String, String>{},
     this.seeders,
+    this.fileIdx,
   });
 
   bool get isDirect => url != null && url!.startsWith('http');
@@ -498,8 +500,26 @@ class CatalogEngine {
         return rawStreams.whereType<Map>().map((raw) {
           final item = Map<String, dynamic>.from(raw);
           final rawUrl = (item['url'] ?? '').toString().trim();
-          final rawHash = (item['infoHash'] ?? '').toString().trim();
+          var rawHash = (item['infoHash'] ?? '').toString().trim();
           final uri = Uri.tryParse(rawUrl);
+          if (rawHash.isEmpty && uri?.scheme == 'magnet') {
+            final xt = uri?.queryParameters['xt'] ?? '';
+            rawHash = xt.replaceFirst(
+              RegExp(r'^urn:btih:', caseSensitive: false),
+              '',
+            ).trim();
+          }
+          rawHash = rawHash.replaceFirst(
+            RegExp(r'^urn:btih:', caseSensitive: false),
+            '',
+          );
+          final rawFileIdx = item['fileIdx'];
+          final parsedFileIdx = rawFileIdx is num
+              ? rawFileIdx.toInt()
+              : int.tryParse(rawFileIdx?.toString() ?? '');
+          final fileIdx = parsedFileIdx != null && parsedFileIdx >= 0
+              ? parsedFileIdx
+              : null;
           final directUrl = uri != null && uri.hasScheme &&
                   {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty
               ? uri.toString()
@@ -545,6 +565,7 @@ class CatalogEngine {
             badge: badge,
             headers: streamHeaders,
             seeders: seeders,
+            fileIdx: fileIdx,
           );
         }).whereType<StreamLink>().toList();
       } catch (_) {
@@ -836,7 +857,11 @@ class EmbeddedTorrentService {
     _initialized = true;
   }
 
-  Future<String> startPlayback(String infoHash, {String title = ''}) async {
+  Future<String> startPlayback(
+    String infoHash, {
+    String title = '',
+    int? fileIdx,
+  }) async {
     final hash = infoHash.trim();
     if (!RegExp(r'^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$').hasMatch(hash)) {
       throw FormatException('Invalid torrent infoHash.');
@@ -846,6 +871,7 @@ class EmbeddedTorrentService {
       <String, Object>{
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
+        if (fileIdx != null) 'fileIdx': fileIdx,
       },
     );
     final uri = Uri.tryParse(url ?? '');
@@ -3004,6 +3030,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
         title: '${widget.meta.name} - $_targetLabel',
+        fileIdx: stream.fileIdx,
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
