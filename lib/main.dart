@@ -590,6 +590,57 @@ class CatalogEngine {
     return ranked();
   }
 
+  /// Bounded GET-range probe for direct URLs. It reads at most the first
+  /// response chunk and rejects expired/error HTML endpoints before Smart Play
+  /// hands the URL to Media3. Provider headers are preserved.
+  Future<bool> probeDirectStream(StreamLink stream) async {
+    final rawUrl = stream.url;
+    if (!stream.isDirect || rawUrl == null) return false;
+    try {
+      final request = http.Request('GET', Uri.parse(rawUrl))
+        ..headers.addAll(stream.headers)
+        ..headers['Range'] = 'bytes=0-1023'
+        ..headers.putIfAbsent('Accept', () => '*/*');
+      final response = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 3));
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        await response.stream.listen((_) {}).cancel();
+        return false;
+      }
+      final contentType = (response.headers['content-type'] ?? '').toLowerCase();
+      if (contentType.contains('text/html')) {
+        await response.stream.listen((_) {}).cancel();
+        return false;
+      }
+      final firstChunk = await response.stream
+          .first
+          .timeout(const Duration(seconds: 2), onTimeout: () => <int>[]);
+      final prefix = utf8
+          .decode(firstChunk.take(512).toList(), allowMalformed: true)
+          .trimLeft()
+          .toLowerCase();
+      if (prefix.startsWith('<!doctype html') ||
+          prefix.startsWith('<html') ||
+          prefix.startsWith('{"error')) {
+        return false;
+      }
+      if (contentType.contains('mpegurl') ||
+          contentType.contains('dash+xml') ||
+          contentType.contains('mp2t') ||
+          contentType.contains('octet-stream') ||
+          contentType.startsWith('video/') ||
+          prefix.startsWith('#extm3u') ||
+          prefix.contains('<mpd')) {
+        return true;
+      }
+      // Some providers use generic content types but still honor byte ranges.
+      return response.statusCode == 206 || response.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
   void close() => _client.close();
 
 
@@ -2776,6 +2827,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
   List<StreamLink> _streams = [];
   bool _loadingStreams = false;
   bool _loadingMeta = false;
+  bool _smartPlayBusy = false;
 
   @override
   void initState() {
@@ -2984,12 +3036,12 @@ class _DetailsSheetState extends State<DetailsSheet> {
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: _FButton(
-                label: _streams.first.isDirect
-                    ? '⚡ Play Fastest Direct Stream'
-                    : 'Play Best Available (P2P)',
+                label: _smartPlayBusy
+                    ? 'Checking fastest available source...'
+                    : '⚡ Smart Play • Fastest Valid Source',
                 icon: Icons.bolt,
                 primary: true,
-                onTap: () => _playStream(_streams.first),
+                onTap: _playBestAvailable,
               ),
             ),
             
@@ -3073,6 +3125,43 @@ class _DetailsSheetState extends State<DetailsSheet> {
         ],
       ),
     );
+  }
+
+  Future<void> _playBestAvailable() async {
+    if (_smartPlayBusy || _streams.isEmpty) return;
+    setState(() => _smartPlayBusy = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Probe direct HLS/DASH/file URLs concurrently. One dead/expired source
+      // must not hold the user behind the other providers' timeout.
+      final direct = _streams.where((stream) => stream.isDirect).take(6).toList();
+      if (direct.isNotEmpty) {
+        final checks = await Future.wait(
+          direct.map(widget.engine.probeDirectStream),
+        );
+        final workingIndex = checks.indexWhere((isWorking) => isWorking);
+        if (workingIndex >= 0 && mounted) {
+          _playStream(direct[workingIndex]);
+          return;
+        }
+      }
+
+      // No verified direct URL: use the healthiest available swarm, ranked by
+      // seeders first and then quality. P2P startup remains swarm-dependent.
+      final torrents = _streams.where((stream) => stream.isTorrent).toList()
+        ..sort((a, b) => b.score.compareTo(a.score));
+      if (torrents.isNotEmpty && mounted) {
+        await _playTorrent(torrents.first);
+        return;
+      }
+      if (mounted) {
+        messenger.showSnackBar(const SnackBar(
+          content: Text('No reachable direct stream or torrent source was found. Try another provider or source.'),
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _smartPlayBusy = false);
+    }
   }
 
   Future<void> _playTorrent(StreamLink stream) async {
