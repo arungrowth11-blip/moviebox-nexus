@@ -84,7 +84,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             }
         }
 
-        val flags = TorrentFlags.SEQUENTIAL_DOWNLOAD.or(TorrentFlags.AUTO_MANAGED)
+        val flags = TorrentFlags.SEQUENTIAL_DOWNLOAD.or_(TorrentFlags.AUTO_MANAGED)
         manager.download(magnet, saveDir, flags)
 
         val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
