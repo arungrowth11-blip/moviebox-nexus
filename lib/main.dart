@@ -508,7 +508,7 @@ class CatalogEngine {
           final behaviorHints = item['behaviorHints'];
           final rawSeeders = item['seeders'] ??
               (behaviorHints is Map ? behaviorHints['seeders'] : null);
-          final titleSeeders = RegExp(r'(?:👤|👥)\\s*(\\d{1,5})')
+          final titleSeeders = RegExp(r'(?:👤|👥)\s*(\d{1,5})')
               .firstMatch(title);
           final seeders = rawSeeders is num
               ? rawSeeders.toInt()
