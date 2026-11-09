@@ -146,14 +146,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val selectedFileOffset = storage.fileOffset(selected.first)
         val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
         val lastPiece = ((selectedFileOffset + selected.third - 1L) / torrentInfo.pieceLength()).toInt()
-        val piecePriorities = torrentHandle.piecePriorities()
         val startupLastPiece = minOf(lastPiece, firstPiece + STARTUP_PRIORITY_PIECES - 1)
-        if (firstPiece >= 0 && startupLastPiece < piecePriorities.size) {
+        if (firstPiece >= 0 && firstPiece <= startupLastPiece) {
             for (piece in firstPiece..startupLastPiece) {
-                piecePriorities[piece] = Priority.SEVEN
-            }
-            torrentHandle.prioritizePieces(piecePriorities)
-            for (piece in firstPiece..startupLastPiece) {
+                // Change just the opening pieces instead of allocating a priority
+                // array as large as a potentially multi-gigabyte torrent.
+                torrentHandle.piecePriority(piece, Priority.SEVEN)
                 // Earlier playback bytes receive earlier deadlines. Libtorrent
                 // still verifies every piece before the loopback server exposes it.
                 runCatching {
