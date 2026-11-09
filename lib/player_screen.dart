@@ -315,7 +315,6 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final value = controller.value;
 
     if (value.isInitialized && _loading) {
-      _reportPrepared();
       if (_pendingPositionMs > 5000 && !_isLive) {
         final position = Duration(milliseconds: _pendingPositionMs);
         _pendingPositionMs = 0;
