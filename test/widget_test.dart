@@ -15,6 +15,7 @@ void main() {
     expect(channels.single['sourceId'], 'WorldNews.us@HD');
     expect(normalizeIptvChannelId('WorldNews.us@HD'), 'WorldNews.us');
     expect(channels.single['country'], 'US');
+    expect(channels.single['countryRaw'], 'US');
     expect(channels.single['language'], 'English');
     expect(channels.single['group'], 'News');
   });
@@ -84,13 +85,26 @@ void main() {
           'language': 'English',
         },
         {
-          'id': '',
-          'sourceId': '',
+          // A non-empty playlist ID may still not exist in iptv-org's channel index.
+          'id': 'NDTV24x7',
+          'sourceId': 'NDTV24x7',
           'name': 'NDTV 24x7',
           'url': 'https://example.test/ndtv.m3u8',
           'group': 'News',
           'country': '',
+          'countryRaw': '',
           'language': 'Hindi',
+        },
+        {
+          // Preserve and resolve an explicit country name if the ID has no suffix.
+          'id': 'LocalNewsFeed',
+          'sourceId': 'LocalNewsFeed',
+          'name': 'Local News',
+          'url': 'https://example.test/local.m3u8',
+          'group': 'News',
+          'country': '',
+          'countryRaw': 'United Kingdom',
+          'language': 'English',
         },
         {
           'id': '',
@@ -108,6 +122,7 @@ void main() {
         },
         'channelNames': <String, dynamic>{
           'ndtv 24x7': {'country': 'IN', 'categories': ['news']},
+          'local news': {'country': 'GB', 'categories': ['news']},
           'shared name': null,
         },
         'countries': countries,
@@ -121,9 +136,11 @@ void main() {
     expect(enriched[1]['countryName'], 'India');
     expect(enriched[1]['countryCode'], 'IN');
     expect(enriched[1]['categoryNames'], 'News');
+    expect(enriched[2]['countryName'], 'United Kingdom');
+    expect(enriched[2]['countryCode'], 'GB');
     // Duplicate official names are ambiguous; never guess a country.
-    expect(enriched[2]['countryName'], 'Country not tagged');
-    expect(enriched[2]['countryCode'], '');
+    expect(enriched[3]['countryName'], 'Country not tagged');
+    expect(enriched[3]['countryCode'], '');
   });
 
   test('smart play ranks direct adaptive streams above P2P magnets', () {
