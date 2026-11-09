@@ -601,7 +601,11 @@ class CatalogEngine {
         final modified = await metadataFile.lastModified();
         if (DateTime.now().difference(modified) < const Duration(days: 7)) {
           final decoded = jsonDecode(await metadataFile.readAsString());
-          if (decoded is Map) return Map<String, dynamic>.from(decoded);
+          // Version the cache so old channel-ID-only indexes (without unique
+          // name fallback) are rebuilt immediately after an app upgrade.
+          if (decoded is Map && decoded['schemaVersion'] == 2) {
+            return Map<String, dynamic>.from(decoded);
+          }
         }
       }
     } catch (_) {}
@@ -677,6 +681,7 @@ class CatalogEngine {
       }
     }
     final metadata = <String, dynamic>{
+      'schemaVersion': 2,
       'channels': channelIndex,
       'channelNames': channelNameIndex,
       'countries': countryIndex,
