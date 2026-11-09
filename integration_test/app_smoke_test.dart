@@ -19,6 +19,26 @@ void main() {
           .timeout(const Duration(seconds: 45));
       expect(initialized, isTrue);
 
+      // Exercise the exact method that previously raised MissingPluginException.
+      // An invalid hash must be rejected by the native handler before any torrent
+      // is downloaded, so this remains a free, deterministic offline smoke test.
+      await expectLater(
+        torrentChannel.invokeMethod<String>(
+          'startPlayback',
+          <String, Object>{
+            'infoHash': 'not-a-valid-info-hash',
+            'title': 'Native bridge smoke test',
+          },
+        ),
+        throwsA(
+          isA<PlatformException>().having(
+            (error) => error.code,
+            'code',
+            'INVALID_INFO_HASH',
+          ),
+        ),
+      );
+
       final stopped = await torrentChannel
           .invokeMethod<bool>('stopPlayback')
           .timeout(const Duration(seconds: 10));
