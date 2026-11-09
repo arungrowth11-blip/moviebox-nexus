@@ -103,7 +103,7 @@ void main() {
         var end = videoBytes.length - 1;
         final range = request.headers.value(HttpHeaders.rangeHeader);
         if (range != null) {
-          final match = RegExp(r'^bytes=(\\d+)-(\\d*)$').firstMatch(range);
+          final match = RegExp(r'^bytes=(\d+)-(\d*)$').firstMatch(range);
           if (match != null) {
             start = int.parse(match.group(1)!);
             end = match.group(2)!.isEmpty
@@ -114,11 +114,11 @@ void main() {
               unawaited(response.close());
               return;
             }
-            end = end.clamp(0, videoBytes.length - 1);
+            end = end.clamp(0, videoBytes.length - 1).toInt();
             response.statusCode = HttpStatus.partialContent;
             response.headers.set(
               HttpHeaders.contentRangeHeader,
-              'bytes $start-$end/\\${videoBytes.length}',
+              'bytes $start-$end/${videoBytes.length}',
             );
           }
         }
