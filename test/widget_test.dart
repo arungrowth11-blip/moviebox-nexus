@@ -68,6 +68,7 @@ void main() {
     final countries = <String, dynamic>{
       'IN': {'name': 'India', 'flag': '🇮🇳'},
       'GB': {'name': 'United Kingdom', 'flag': '🇬🇧'},
+      'US': {'name': 'United States', 'flag': '🇺🇸'},
     };
     final categories = <String, dynamic>{
       'news': 'News',
