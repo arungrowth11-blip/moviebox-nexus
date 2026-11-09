@@ -248,7 +248,7 @@ class StreamLink {
     // When no direct source exists, swarm size is a stronger predictor of
     // startup than advertised resolution. Cap it to keep corrupted metadata
     // from overwhelming the ranking.
-    return (seeders ?? 0).clamp(0, 500) * 100 + quality;
+    return (seeders ?? 0).clamp(0, 500).toInt() * 100 + quality;
   }
 }
 
