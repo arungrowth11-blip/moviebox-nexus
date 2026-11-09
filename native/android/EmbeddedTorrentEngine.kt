@@ -16,7 +16,10 @@ import java.net.Socket
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 /**
@@ -34,8 +37,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     @Volatile private var session: SessionManager? = null
     @Volatile private var activeHandle: TorrentHandle? = null
-    @Volatile private var activeTarget: StreamTarget? = null
+    @Volatile private var activePending: PendingStream? = null
+    @Volatile private var startupTask: Future<*>? = null
     @Volatile private var serverSocket: ServerSocket? = null
+    private val startupExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "moviebox-torrent-startup").apply { isDaemon = true }
+    }
 
     private data class StreamTarget(
         val handle: TorrentHandle,
@@ -46,6 +53,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val token: String
     )
 
+    private class PendingStream(
+        val token: String,
+        val infoHash: String
+    ) {
+        val ready = CountDownLatch(1)
+        @Volatile var target: StreamTarget? = null
+        @Volatile var error: String? = null
+    }
+
     fun initialize() {
         synchronized(lock) {
             if (session != null) return
@@ -55,6 +71,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Returns a loopback URL immediately. Magnet metadata discovery runs on a
+     * dedicated worker; the HTTP endpoint waits for the selected file to become
+     * ready. This keeps Flutter responsive and lets the player show buffering
+     * while peers and metadata are being discovered.
+     */
     fun startPlayback(infoHash: String, title: String, fileIdx: Int?): String {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
@@ -66,64 +88,102 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             throw IllegalStateException("Unable to create the app's torrent cache directory.")
         }
 
-        val encodedTitle = URLEncoder.encode(title.take(160), "UTF-8")
-        val trackers = listOf(
-            "udp://tracker.opentrackr.org:1337/announce",
-            "udp://open.stealth.si:80/announce",
-            "udp://open.demonii.com:1337/announce",
-            "udp://exodus.desync.com:6969/announce"
+        val pending = PendingStream(
+            token = UUID.randomUUID().toString().replace("-", ""),
+            infoHash = hashHex
         )
-        val magnet = buildString {
-            append("magnet:?xt=urn:btih:")
-            append(hashHex)
-            append("&dn=")
-            append(encodedTitle)
-            trackers.forEach { tracker ->
-                append("&tr=")
-                append(URLEncoder.encode(tracker, "UTF-8"))
-            }
-        }
+        startHttpServer(pending)
+        activePending = pending
+        val port = serverSocket?.localPort
+            ?: throw IllegalStateException("Unable to start the local torrent stream server.")
 
-        val flags = TorrentFlags.SEQUENTIAL_DOWNLOAD.or_(TorrentFlags.AUTO_MANAGED)
-        manager.download(magnet, saveDir, flags)
-
-        val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
-        var handle: TorrentHandle? = null
-        var discoveredHandle: TorrentHandle? = null
-        var dhtAnnounced = false
-        var info: com.frostwire.jlibtorrent.TorrentInfo? = null
-        while (System.currentTimeMillis() < deadline) {
-            val candidate = manager.getTorrentHandles().firstOrNull {
-                runCatching {
-                    it.infoHash().toHex().equals(hashHex, ignoreCase = true)
-                }.getOrDefault(false)
-            }
-            if (candidate != null) {
-                discoveredHandle = candidate
-                // Start DHT peer discovery as soon as libtorrent creates the
-                // magnet handle, not after metadata has already arrived.
-                if (!dhtAnnounced) {
-                    runCatching { candidate.forceDHTAnnounce() }
-                    dhtAnnounced = true
+        startupTask = startupExecutor.submit {
+            var discoveredHandle: TorrentHandle? = null
+            try {
+                val encodedTitle = URLEncoder.encode(title.take(160), "UTF-8")
+                val trackers = listOf(
+                    "udp://tracker.opentrackr.org:1337/announce",
+                    "udp://open.stealth.si:80/announce",
+                    "udp://open.demonii.com:1337/announce",
+                    "udp://exodus.desync.com:6969/announce"
+                )
+                val magnet = buildString {
+                    append("magnet:?xt=urn:btih:")
+                    append(hashHex)
+                    append("&dn=")
+                    append(encodedTitle)
+                    trackers.forEach { tracker ->
+                        append("&tr=")
+                        append(URLEncoder.encode(tracker, "UTF-8"))
+                    }
                 }
-                val candidateInfo = runCatching { candidate.torrentFile() }.getOrNull()
-                if (candidateInfo != null && candidateInfo.isValid()) {
-                    handle = candidate
-                    info = candidateInfo
-                    break
+
+                val flags = TorrentFlags.SEQUENTIAL_DOWNLOAD.or_(TorrentFlags.AUTO_MANAGED)
+                manager.download(magnet, saveDir, flags)
+
+                val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
+                var torrentHandle: TorrentHandle? = null
+                var torrentInfo: com.frostwire.jlibtorrent.TorrentInfo? = null
+                var dhtAnnounced = false
+                while (System.currentTimeMillis() < deadline) {
+                    if (Thread.currentThread().isInterrupted || activePending !== pending) {
+                        throw InterruptedException("Torrent startup was cancelled.")
+                    }
+                    val candidate = manager.getTorrentHandles().firstOrNull {
+                        runCatching {
+                            it.infoHash().toHex().equals(hashHex, ignoreCase = true)
+                        }.getOrDefault(false)
+                    }
+                    if (candidate != null) {
+                        discoveredHandle = candidate
+                        if (!dhtAnnounced) {
+                            runCatching { candidate.forceDHTAnnounce() }
+                            dhtAnnounced = true
+                        }
+                        val candidateInfo = runCatching { candidate.torrentFile() }.getOrNull()
+                        if (candidateInfo != null && candidateInfo.isValid()) {
+                            torrentHandle = candidate
+                            torrentInfo = candidateInfo
+                            break
+                        }
+                    }
+                    Thread.sleep(350)
                 }
+
+                val handle = torrentHandle
+                    ?: throw IllegalStateException(
+                        "Torrent metadata was not received. The swarm may have no reachable peers."
+                    )
+                val info = torrentInfo
+                    ?: throw IllegalStateException("Torrent metadata is invalid.")
+                val target = prepareStreamTarget(handle, info, saveDir, fileIdx, pending.token)
+
+                if (Thread.currentThread().isInterrupted || activePending !== pending) {
+                    runCatching { manager.remove(handle) }
+                    return@submit
+                }
+                activeHandle = handle
+                pending.target = target
+            } catch (error: Throwable) {
+                discoveredHandle?.let { runCatching { manager.remove(it) } }
+                if (activePending === pending && error !is InterruptedException) {
+                    pending.error = error.message ?: "Torrent metadata or file selection failed."
+                }
+            } finally {
+                pending.ready.countDown()
             }
-            Thread.sleep(350)
         }
 
-        val torrentHandle = handle ?: run {
-            discoveredHandle?.let { incomplete -> runCatching { manager.remove(incomplete) } }
-            throw IllegalStateException("Torrent metadata was not received. The swarm may have no reachable peers.")
-        }
-        val torrentInfo = info
-            ?: throw IllegalStateException("Torrent metadata is invalid.")
-        activeHandle = torrentHandle
-        try {
+        return "http://127.0.0.1:$port/stream/${pending.token}"
+    }
+
+    private fun prepareStreamTarget(
+        torrentHandle: TorrentHandle,
+        torrentInfo: com.frostwire.jlibtorrent.TorrentInfo,
+        saveDir: File,
+        fileIdx: Int?,
+        token: String
+    ): StreamTarget {
         val storage = torrentInfo.files()
         val videoExtensions = setOf(
             "mp4", "mkv", "m4v", "mov", "avi", "webm", "ts",
@@ -149,10 +209,6 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 ?: throw IllegalStateException("This torrent contains no supported video file.")
         }
 
-        // Download only the selected media file; skip samples, subtitles and extras.
-        // Keep the whole selected file at normal priority, then boost its opening
-        // pieces explicitly. Setting every piece in a large movie to SEVEN makes
-        // the opening bytes compete with the entire rest of the file.
         val priorities = Array(storage.numFiles()) { Priority.IGNORE }
         priorities[selected.first] = Priority.NORMAL
         torrentHandle.prioritizeFiles(priorities)
@@ -163,11 +219,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val startupLastPiece = minOf(lastPiece, firstPiece + STARTUP_PRIORITY_PIECES - 1)
         if (firstPiece >= 0 && firstPiece <= startupLastPiece) {
             for (piece in firstPiece..startupLastPiece) {
-                // Change just the opening pieces instead of allocating a priority
-                // array as large as a potentially multi-gigabyte torrent.
                 torrentHandle.piecePriority(piece, Priority.SEVEN)
-                // Earlier playback bytes receive earlier deadlines. Libtorrent
-                // still verifies every piece before the loopback server exposes it.
                 runCatching {
                     torrentHandle.setPieceDeadline(
                         piece,
@@ -176,44 +228,42 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }
             }
         }
+
         val canonicalRoot = saveDir.canonicalFile
         val mediaFile = File(saveDir, selected.second).canonicalFile
         if (!mediaFile.path.startsWith(canonicalRoot.path + File.separator)) {
             throw SecurityException("Torrent metadata contains an unsafe file path.")
         }
-
-        val target = StreamTarget(
+        return StreamTarget(
             handle = torrentHandle,
             file = mediaFile,
             fileSize = selected.third,
-            fileOffset = storage.fileOffset(selected.first),
+            fileOffset = selectedFileOffset,
             pieceLength = torrentInfo.pieceLength(),
-            token = UUID.randomUUID().toString().replace("-", "")
+            token = token
         )
-
-        // Do not block the MethodChannel on the first media piece. Return the
-        // loopback URL as soon as torrent metadata/file selection are ready;
-        // the HTTP request will buffer on verified pieces while the player opens.
-        startHttpServer(target)
-        activeTarget = target
-        return "http://127.0.0.1:${serverSocket?.localPort}/stream/${target.token}"
-        } catch (error: Throwable) {
-            runCatching { manager.remove(torrentHandle) }
-            if (activeHandle == torrentHandle) activeHandle = null
-            activeTarget = null
-            stopHttpServer()
-            throw error
-        }
     }
 
     fun stopPlayback() {
         synchronized(lock) {
+            val pending = activePending
+            activePending = null
+            startupTask?.cancel(true)
+            startupTask = null
+            pending?.error = "Playback was stopped."
+            pending?.ready?.countDown()
             stopHttpServer()
+
             val oldHandle = activeHandle
             activeHandle = null
-            activeTarget = null
             if (oldHandle != null) {
                 runCatching { session?.remove(oldHandle) }
+            } else if (pending != null) {
+                session?.getTorrentHandles()?.filter {
+                    runCatching {
+                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                    }.getOrDefault(false)
+                }?.forEach { handle -> runCatching { session?.remove(handle) } }
             }
         }
     }
@@ -229,9 +279,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             }
         }
         requestPool.shutdownNow()
+        startupExecutor.shutdownNow()
     }
 
-    private fun startHttpServer(target: StreamTarget) {
+    private fun startHttpServer(pending: PendingStream) {
         val server = ServerSocket()
         server.reuseAddress = true
         server.bind(java.net.InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 32)
@@ -240,7 +291,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             while (!server.isClosed) {
                 try {
                     val socket = server.accept()
-                    requestPool.execute { serveRequest(socket, target) }
+                    requestPool.execute { serveRequest(socket, pending) }
                 } catch (_: Exception) {
                     // Closing the server socket is the normal way to leave this loop.
                 }
@@ -256,7 +307,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         serverSocket = null
     }
 
-    private fun serveRequest(socket: Socket, target: StreamTarget) {
+    private fun serveRequest(socket: Socket, pending: PendingStream) {
         socket.use { client ->
             try {
                 client.soTimeout = 15_000
@@ -280,8 +331,18 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                 }
 
-                if (path != "/stream/${target.token}" || (method != "GET" && method != "HEAD")) {
+                if (path != "/stream/${pending.token}" || (method != "GET" && method != "HEAD")) {
                     writeSimpleResponse(client, 404, "Not Found")
+                    return
+                }
+
+                if (!pending.ready.await(METADATA_TIMEOUT_MS + HTTP_METADATA_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                    writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\\r\\n")
+                    return
+                }
+                val target = pending.target
+                if (target == null) {
+                    writeSimpleResponse(client, 502, "Bad Gateway")
                     return
                 }
 
@@ -436,6 +497,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     companion object {
         private const val METADATA_TIMEOUT_MS = 60_000L
+        private const val HTTP_METADATA_GRACE_MS = 5_000L
         private const val FIRST_STREAM_PIECE_TIMEOUT_MS = 90_000L
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
