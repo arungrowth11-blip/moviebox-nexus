@@ -393,9 +393,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     }
 
     companion object {
-        private const val METADATA_TIMEOUT_MS = 120_000L
-        private const val FIRST_PIECE_TIMEOUT_MS = 180_000L
-        private const val STREAM_PIECE_TIMEOUT_MS = 180_000L
+        private const val METADATA_TIMEOUT_MS = 90_000L
+        private const val FIRST_PIECE_TIMEOUT_MS = 45_000L
+        private const val STREAM_PIECE_TIMEOUT_MS = 60_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
     }
 }
