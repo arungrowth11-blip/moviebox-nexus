@@ -4,7 +4,7 @@ import 'package:moviebox_nexus/main.dart';
 void main() {
   test('M3U parser extracts worldwide metadata and filters adult entries', () {
     const playlist = '\uFEFF#EXTM3U\r\n'
-        '#EXTINF:-1 tvg-id="WorldNews.us" tvg-logo="https://example.com/logo.png" group-title="News" tvg-country="US" tvg-language="English",World News\r\n'
+        '#EXTINF:-1 tvg-id="WorldNews.us@HD" tvg-logo="https://example.com/logo.png" group-title="News" tvg-country="US" tvg-language="English",World News\r\n'
         'https://example.com/live.m3u8\r\n'
         '#EXTINF:-1 group-title="Adult",Adult Channel\r\n'
         'https://example.com/adult.m3u8\r\n';
@@ -12,6 +12,8 @@ void main() {
     expect(channels, hasLength(1));
     expect(channels.single['name'], 'World News');
     expect(channels.single['id'], 'WorldNews.us');
+    expect(channels.single['sourceId'], 'WorldNews.us@HD');
+    expect(normalizeIptvChannelId('WorldNews.us@HD'), 'WorldNews.us');
     expect(channels.single['country'], 'US');
     expect(channels.single['language'], 'English');
     expect(channels.single['group'], 'News');
@@ -43,6 +45,8 @@ void main() {
     ];
 
     expect(countryCodeFromChannelId('BBCNews.uk'), 'UK');
+    expect(countryCodeFromChannelId('BBCOne.uk@HD'), 'UK');
+    expect(normalizeIptvChannelId('BBCOne.uk@HD'), 'BBCOne.uk');
     expect(countryCodeFromChannelId('channel.anything', explicitCountry: 'in'), 'IN');
     expect(
       filterLiveTvChannels(channels, countryCode: 'GB', categoryId: 'news'),
