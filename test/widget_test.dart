@@ -47,7 +47,9 @@ void main() {
     expect(countryCodeFromChannelId('BBCNews.uk'), 'GB');
     expect(countryCodeFromChannelId('BBCOne.uk@HD'), 'GB');
     expect(normalizeCountryCode('uk'), 'GB');
+    expect(normalizeCountryCode('XX'), '');
     expect(countryCodeFromChannelId('00sReplay.us@SD'), 'US');
+    expect(countryCodeFromChannelId('00sReplay.us@SD', explicitCountry: 'XX'), 'US');
     expect(normalizeIptvChannelId('BBCOne.uk@HD'), 'BBCOne.uk');
     expect(countryCodeFromChannelId('channel.anything', explicitCountry: 'in'), 'IN');
     expect(
