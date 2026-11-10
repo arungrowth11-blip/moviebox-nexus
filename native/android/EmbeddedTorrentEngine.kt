@@ -13,6 +13,7 @@ import java.io.RandomAccessFile
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.UUID
@@ -77,7 +78,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
      * ready. This keeps Flutter responsive and lets the player show buffering
      * while peers and metadata are being discovered.
      */
-    fun startPlayback(infoHash: String, title: String, fileIdx: Int?): String {
+    fun startPlayback(
+        infoHash: String,
+        title: String,
+        fileIdx: Int?,
+        suppliedTrackers: List<String> = emptyList(),
+        testPeerEndpoint: String? = null
+    ): String {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
         stopPlayback()
@@ -101,12 +108,17 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             var discoveredHandle: TorrentHandle? = null
             try {
                 val encodedTitle = URLEncoder.encode(title.take(160), "UTF-8")
-                val trackers = listOf(
+                val defaultTrackers = listOf(
                     "udp://tracker.opentrackr.org:1337/announce",
                     "udp://open.stealth.si:80/announce",
                     "udp://open.demonii.com:1337/announce",
                     "udp://exodus.desync.com:6969/announce"
                 )
+                val trackers = (suppliedTrackers + defaultTrackers)
+                    .map { it.trim() }
+                    .filter { isSafeTracker(it) }
+                    .distinct()
+                    .take(16)
                 val magnet = buildString {
                     append("magnet:?xt=urn:btih:")
                     append(hashHex)
@@ -115,6 +127,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     trackers.forEach { tracker ->
                         append("&tr=")
                         append(URLEncoder.encode(tracker, "UTF-8"))
+                    }
+                    // Debug-only CI hook: x.pe supplies a direct peer endpoint,
+                    // so metadata and pieces can be tested without public trackers
+                    // or an unpredictable Internet swarm.
+                    if (testPeerEndpoint != null) {
+                        append("&x.pe=")
+                        append(URLEncoder.encode(testPeerEndpoint, "UTF-8"))
                     }
                 }
 
@@ -471,6 +490,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 flush()
             }
         }
+    }
+
+    private fun isSafeTracker(value: String): Boolean {
+        val parsed = runCatching { URI(value) }.getOrNull() ?: return false
+        return parsed.scheme?.lowercase(Locale.US) in setOf("udp", "http", "https") &&
+            !parsed.host.isNullOrBlank() &&
+            (parsed.port == -1 || parsed.port in 1..65535)
     }
 
     private fun normalizeInfoHash(input: String): String {
