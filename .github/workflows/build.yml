@@ -589,6 +589,128 @@ jobs:
       - name: Resolve dependencies for integration test
         run: flutter pub get
 
+      - name: Prepare Android scaffold and FrostWire bridge for emulator test
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_dir="$(mktemp -d)"
+          trap 'rm -rf "$backup_dir"' EXIT
+
+          cp -a lib "$backup_dir/lib"
+          if [ -d test ]; then cp -a test "$backup_dir/test"; fi
+          cp -a integration_test "$backup_dir/integration_test"
+          cp pubspec.yaml "$backup_dir/pubspec.yaml"
+
+          scaffold_complete=1
+          for required_file in \
+            android/gradlew \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            android/settings.gradle.kts \
+            android/build.gradle.kts \
+            android/app/build.gradle.kts \
+            android/app/src/main/AndroidManifest.xml; do
+            if [ ! -s "$required_file" ]; then
+              scaffold_complete=0
+              break
+            fi
+          done
+
+          if [ "$scaffold_complete" -ne 1 ]; then
+            echo "Android scaffold is incomplete in this fresh job; generating it before integration tests."
+            rm -rf android
+            flutter create \
+              --platforms=android \
+              --org com.moviebox.nexus \
+              --project-name moviebox_nexus \
+              .
+          fi
+
+          # flutter create may touch project files; restore the exact source under test.
+          rm -rf lib
+          cp -a "$backup_dir/lib" lib
+          if [ -d "$backup_dir/test" ]; then
+            rm -rf test
+            cp -a "$backup_dir/test" test
+          fi
+          rm -rf integration_test
+          cp -a "$backup_dir/integration_test" integration_test
+          cp "$backup_dir/pubspec.yaml" pubspec.yaml
+
+          # Restore the same Kotlin bridge used by the release APK.
+          mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
+          cp native/android/MainActivity.kt android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+          cp native/android/EmbeddedTorrentEngine.kt android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          gradle = Path("android/app/build.gradle.kts")
+          source = gradle.read_text(encoding="utf-8")
+          for key in ("namespace", "applicationId"):
+              pattern = rf'({key}\\s*=\\s*)["\\'][^"\\']+["\\']'
+              source, count = re.subn(pattern, rf'\\1"com.moviebox.nexus"', source, count=1)
+              if count != 1:
+                  raise SystemExit(f"Could not align Android {key} with the native Kotlin package.")
+
+          if "minSdk = maxOf(26, flutter.minSdkVersion)" not in source:
+              source, count = re.subn(
+                  r"minSdk\\s*=\\s*flutter\\.minSdkVersion",
+                  "minSdk = maxOf(26, flutter.minSdkVersion)",
+                  source,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not raise minSdk to FrostWire's Android requirement.")
+
+          if "https://dl.frostwire.com/maven" not in source:
+              source += '''
+          repositories {
+              maven {
+                  url = uri("https://dl.frostwire.com/maven")
+                  content { includeGroup("com.frostwire") }
+              }
+          }
+          '''
+          if "jlibtorrent-android:2.0.15.3@aar" not in source:
+              source += '''
+          dependencies {
+              implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")
+          }
+          '''
+          gradle.write_text(source, encoding="utf-8")
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          android_ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", android_ns)
+          A = "{" + android_ns + "}"
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+          permissions = {node.get(A + "name") for node in root.findall("uses-permission")}
+          for permission in ("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.WAKE_LOCK"):
+              if permission not in permissions:
+                  ET.SubElement(root, "uses-permission", {A + "name": permission})
+          application = root.find("application")
+          if application is None:
+              raise SystemExit("Android manifest has no application element.")
+          application.set(A + "label", "MovieBox Nexus OS")
+          application.set(A + "usesCleartextTraffic", "true")
+          tree.write(manifest, encoding="utf-8", xml_declaration=True)
+
+          final_gradle = gradle.read_text(encoding="utf-8")
+          if 'namespace = "com.moviebox.nexus"' not in final_gradle or 'applicationId = "com.moviebox.nexus"' not in final_gradle:
+              raise SystemExit("Android namespace/applicationId are not aligned with MainActivity.")
+          if "jlibtorrent-android:2.0.15.3@aar" not in final_gradle:
+              raise SystemExit("FrostWire AAR dependency is missing from the emulator build.")
+          print("Emulator Android scaffold, package identity, Internet access and FrostWire AAR configured.")
+          PY
+
+          test -s android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+          test -s android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+          test -s android/app/src/main/AndroidManifest.xml
+          test -s android/app/build.gradle.kts
+
       - name: Download already-published release APK
         uses: actions/download-artifact@v4
         with:
@@ -625,9 +747,8 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Android emulator integration and release APK smoke test
-        # Emulator boot/ADB can fail on a hosted runner even after the APK is
-        # built. Keep the failure visible, but never discard a valid release APK.
-        continue-on-error: true
+        # This is a required CI gate. The release APK was already uploaded by
+        # android-release, but a failed emulator test must remain a visible failure.
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
