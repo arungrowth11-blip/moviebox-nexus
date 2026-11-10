@@ -19,7 +19,7 @@ class MainActivity : FlutterActivity() {
 
     private fun normalizeTestPeerEndpoint(raw: String?): String? {
         val value = raw?.trim().orEmpty()
-        val match = Regex("^([0-9]{1,3}(?:\\\\.[0-9]{1,3}){3}):([0-9]{1,5})$").matchEntire(value)
+        val match = Regex("""^([0-9]{1,3}(?:\.[0-9]{1,3}){3}):([0-9]{1,5})$""").matchEntire(value)
             ?: return null
         val octets = match.groupValues[1].split(".").mapNotNull { it.toIntOrNull() }
         val port = match.groupValues[2].toIntOrNull() ?: return null
