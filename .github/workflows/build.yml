@@ -287,6 +287,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           import struct
           import xml.etree.ElementTree as ET
           import zlib
@@ -376,6 +377,16 @@ jobs:
           if not gradle_app.is_file():
               raise SystemExit(f'Missing app Gradle Kotlin DSL file: {gradle_app}')
           gradle_text = gradle_app.read_text(encoding='utf-8')
+          # Native code is already shipped as prebuilt FrostWire and LibVLC AARs.
+          # This app has no C/C++ target, so an NDK download is unnecessary.
+          gradle_text, ndk_pin_count = re.subn(
+              r'^\s*ndkVersion\s*=\s*flutter\.ndkVersion\s*\n?',
+              '',
+              gradle_text,
+              flags=re.MULTILINE,
+          )
+          if ndk_pin_count:
+              print(f'Removed unnecessary generated NDK version pin ({ndk_pin_count}).')
           pick_first = 'pickFirsts += "lib/**/libc++_shared.so"'
           if pick_first not in gradle_text:
               gradle_text += (
@@ -388,6 +399,8 @@ jobs:
                   '}\n'
               )
               gradle_app.write_text(gradle_text, encoding='utf-8')
+
+          gradle_app.write_text(gradle_text, encoding='utf-8')
 
           # AndroidX WorkManager creates its Room database through reflection during
           # AndroidX Startup. R8 full mode can strip the generated no-arg constructor,
@@ -420,6 +433,8 @@ jobs:
               )
 
           final_gradle = gradle_app.read_text(encoding='utf-8')
+          if re.search(r'^\s*ndkVersion\s*=\s*flutter\.ndkVersion', final_gradle, flags=re.MULTILINE):
+              raise SystemExit('Unexpected NDK version pin would trigger an SDK-manager download.')
           final_rules = proguard.read_text(encoding='utf-8')
           if '"proguard-rules.pro"' not in final_gradle:
               raise SystemExit('ERROR: Release build does not reference proguard-rules.pro')
@@ -665,6 +680,17 @@ jobs:
               if count != 1:
                   raise SystemExit("Could not raise minSdk to FrostWire's Android requirement.")
 
+          # Native code is supplied by prebuilt AARs; don't make sdkmanager fetch an NDK.
+          source, ndk_pin_count = re.subn(
+              r"^\s*ndkVersion\s*=\s*flutter\.ndkVersion\s*\n?",
+              "",
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if ndk_pin_count:
+              print(f"Removed unnecessary generated NDK version pin ({ndk_pin_count}).")
+
           if "https://dl.frostwire.com/maven" not in source:
               source += '''
           repositories {
@@ -700,6 +726,8 @@ jobs:
           tree.write(manifest, encoding="utf-8", xml_declaration=True)
 
           final_gradle = gradle.read_text(encoding="utf-8")
+          if re.search(r"^\s*ndkVersion\s*=\s*flutter\.ndkVersion", final_gradle, flags=re.MULTILINE):
+              raise SystemExit("Unexpected NDK version pin would trigger an SDK-manager download.")
           if 'namespace = "com.moviebox.nexus"' not in final_gradle or 'applicationId = "com.moviebox.nexus"' not in final_gradle:
               raise SystemExit("Android namespace/applicationId are not aligned with MainActivity.")
           if "jlibtorrent-android:2.0.15.3@aar" not in final_gradle:
