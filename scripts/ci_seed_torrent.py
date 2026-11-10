@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
-import sys
 import time
 from pathlib import Path
 
@@ -48,12 +48,17 @@ def main() -> int:
     if video != target:
         target.write_bytes(video.read_bytes())
 
+    # Use a basename relative to the save directory. Absolute paths would
+    # become nested torrent paths and make the seeder's on-disk layout diverge.
+    previous_cwd = Path.cwd()
+    os.chdir(seed_dir)
     storage = lt.file_storage()
-    lt.add_files(storage, str(target))
+    lt.add_files(storage, target.name)
     builder = lt.create_torrent(storage, 256 * 1024)
     builder.set_creator("MovieBox Nexus deterministic CI test")
     lt.set_piece_hashes(builder, str(seed_dir))
     torrent_bytes = lt.bencode(builder.generate())
+    os.chdir(previous_cwd)
     torrent_path = seed_dir / "moviebox-ci-seed.torrent"
     torrent_path.write_bytes(torrent_bytes)
     info = lt.torrent_info(torrent_bytes)
