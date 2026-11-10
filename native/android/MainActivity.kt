@@ -2,6 +2,7 @@ package com.moviebox.nexus
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 
@@ -28,7 +29,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun handleStartPlayback(
-        call: MethodChannel.MethodCall,
+        call: MethodCall,
         result: MethodChannel.Result,
         testPeerEndpoint: String? = null
     ) {
@@ -79,7 +80,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "startPlayback" -> handleStartPlayback(call, result)
                 "startPlaybackWithPeerForTest" -> {
-                    if (!BuildConfig.DEBUG) {
+                    if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
                         result.error("TEST_ONLY_METHOD", "The controlled peer hook is available only in debug builds.", null)
                     } else {
                         val peer = normalizeTestPeerEndpoint(call.argument<String>("peerEndpoint"))
