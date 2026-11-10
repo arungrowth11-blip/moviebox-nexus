@@ -570,6 +570,7 @@ jobs:
     name: Android emulator smoke test (independent)
     needs: android-release
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -585,6 +586,11 @@ jobs:
         with:
           channel: stable
           cache: true
+
+      - name: Enable Gradle dependency cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Resolve dependencies for integration test
         run: flutter pub get
@@ -711,6 +717,65 @@ jobs:
           test -s android/app/src/main/AndroidManifest.xml
           test -s android/app/build.gradle.kts
 
+      - name: Create a real MP4 and seed a deterministic local torrent
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-libtorrent
+
+          seed_dir="$RUNNER_TEMP/moviebox-local-seed"
+          state_file="$RUNNER_TEMP/moviebox-local-seed.json"
+          mkdir -p "$seed_dir"
+
+          # A real, playable, copyright-free MP4 bigger than the native
+          # engine's 8 MiB video-file selection threshold.
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc2=size=640x360:rate=24" \
+            -f lavfi -i "sine=frequency=997:sample_rate=44100" \
+            -t 48 -c:v libx264 -preset ultrafast -b:v 1800k \
+            -maxrate 1800k -bufsize 3600k -pix_fmt yuv420p \
+            -c:a aac -b:a 96k -movflags +faststart \
+            "$seed_dir/moviebox-ci-video.mp4"
+
+          test "$(stat -c %s "$seed_dir/moviebox-ci-video.mp4")" -gt 8388608
+
+          # Run a real libtorrent seeder on the runner host. The Android
+          # emulator reaches it at 10.0.2.2:6881 via the magnet x.pe extension.
+          /usr/bin/python3 scripts/ci_seed_torrent.py \
+            --video "$seed_dir/moviebox-ci-video.mp4" \
+            --seed-dir "$seed_dir" \
+            --state-file "$state_file" \
+            --port 6881 > "$RUNNER_TEMP/moviebox-local-seed.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/moviebox-local-seed.pid"
+
+          for attempt in $(seq 1 90); do
+            if [ -s "$state_file" ]; then break; fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/moviebox-local-seed.log"
+              echo "::error::Local libtorrent seeder exited before becoming ready."
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$state_file" || {
+            cat "$RUNNER_TEMP/moviebox-local-seed.log"
+            echo "::error::Local libtorrent seeder did not become ready."
+            exit 1
+          }
+
+          info_hash="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["info_hash"])' "$state_file")"
+          peer_endpoint="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["peer_endpoint"])' "$state_file")"
+          first_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["first_hex"])' "$state_file")"
+          seek_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["seek_hex"])' "$state_file")"
+
+          echo "MOVIEBOX_TEST_INFO_HASH=$info_hash" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_PEER=$peer_endpoint" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_FIRST_HEX=$first_hex" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_SEEK_HEX=$seek_hex" >> "$GITHUB_ENV"
+          cat "$state_file"
+          echo "Deterministic local torrent seeder is ready."
+
       - name: Download already-published release APK
         uses: actions/download-artifact@v4
         with:
@@ -728,7 +793,10 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
           sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
           android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
-          sudo rm -rf "$android_sdk/ndk" "$android_sdk/cmake" "$android_sdk/system-images"
+          # Keep the preinstalled NDK/CMake: flutter test's Android debug
+          # build needs them. Removing them here forced a multi-minute NDK
+          # redownload alongside the emulator and contributed to runner loss.
+          sudo rm -rf "$android_sdk/system-images"
           sudo apt-get clean
           echo "Disk after cleanup:"
           df -h /
@@ -752,17 +820,22 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
-          target: google_apis
+          target: default
           arch: x86_64
           profile: pixel_2
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
           disable-animations: true
           script: |
             set -euo pipefail
             # Executes against an Android emulator: native MethodChannel init/stop,
             # seven-tab navigation, Live TV filter visibility and tab retention.
-            flutter test integration_test/app_smoke_test.dart -d emulator-5554
+            flutter test --no-pub integration_test/app_smoke_test.dart -d emulator-5554 \
+              --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" \
+              --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" \
+              --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" \
+              --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX"
+
 
             # Install the exact release APK already uploaded by android-release.
             adb uninstall com.moviebox.nexus || true
@@ -782,4 +855,8 @@ jobs:
               exit 1
             fi
             adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
-            echo "Android emulator integration and release launch smoke tests passed."
+            echo "Android emulator integration, seeded magnet, byte-range seek, Media3 playback and release launch tests passed."
+
+            if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
+              kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
+            fi
