@@ -61,7 +61,7 @@ def main() -> int:
     os.chdir(previous_cwd)
     torrent_path = seed_dir / "moviebox-ci-seed.torrent"
     torrent_path.write_bytes(torrent_bytes)
-    info = lt.torrent_info(torrent_bytes)
+    info = lt.torrent_info(lt.bdecode(torrent_bytes))
     info_hash = str(info.info_hash()).lower()
 
     # Bind on all interfaces: the Android emulator reaches this host through
