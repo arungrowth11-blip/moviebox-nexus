@@ -248,6 +248,7 @@ class StreamLink {
   final Map<String, String> headers;
   final int? seeders;
   final int? fileIdx;
+  final List<String> trackers;
 
   StreamLink({
     this.url,
@@ -258,6 +259,7 @@ class StreamLink {
     this.headers = const <String, String>{},
     this.seeders,
     this.fileIdx,
+    this.trackers = const <String>[],
   });
 
   bool get isDirect => url != null && url!.startsWith('http');
@@ -563,6 +565,29 @@ class CatalogEngine {
                   {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty
               ? uri.toString()
               : null;
+          // Preserve tracker hints supplied by Stremio magnets and the
+          // addon's "tracker:" sources. Dropping these can strand a valid
+          // swarm even though the infoHash itself is correct.
+          final trackerCandidates = <String>[
+            if (uri?.scheme == 'magnet')
+              ...(uri!.queryParametersAll['tr'] ?? const <String>[]),
+            if (item['sources'] is List)
+              ...(item['sources'] as List)
+                  .map((value) => value.toString().trim())
+                  .where((value) => value.toLowerCase().startsWith('tracker:'))
+                  .map((value) => value.substring('tracker:'.length)),
+          ];
+          final trackerUrls = trackerCandidates
+              .map((value) => value.trim())
+              .where((value) {
+                final tracker = Uri.tryParse(value);
+                return tracker != null &&
+                    tracker.host.isNotEmpty &&
+                    {'udp', 'http', 'https'}.contains(tracker.scheme);
+              })
+              .toSet()
+              .take(16)
+              .toList(growable: false);
           if (directUrl == null && rawHash.isEmpty) return null;
           final title = (item['title'] ?? item['description'] ?? item['name'] ?? 'Stream')
               .toString().replaceAll('\n', ' ').trim();
@@ -605,6 +630,7 @@ class CatalogEngine {
             headers: streamHeaders,
             seeders: seeders,
             fileIdx: fileIdx,
+            trackers: trackerUrls,
           );
         }).whereType<StreamLink>().toList();
       } catch (_) {
@@ -1067,6 +1093,7 @@ class EmbeddedTorrentService {
     String infoHash, {
     String title = '',
     int? fileIdx,
+    List<String> trackers = const <String>[],
   }) async {
     final hash = infoHash.trim();
     if (!RegExp(r'^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$').hasMatch(hash)) {
@@ -1078,6 +1105,7 @@ class EmbeddedTorrentService {
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
         if (fileIdx != null) 'fileIdx': fileIdx,
+        if (trackers.isNotEmpty) 'trackers': trackers.take(16).toList(),
       },
     );
     final uri = Uri.tryParse(url ?? '');
@@ -3344,6 +3372,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
         stream.infoHash!,
         title: '${widget.meta.name} - $_targetLabel',
         fileIdx: stream.fileIdx,
+        trackers: stream.trackers,
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
