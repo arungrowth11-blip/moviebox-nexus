@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -320,4 +321,61 @@ void main() {
     expect(meta.year, '2025');
     expect(meta.genres, ['Drama', 'Thriller']);
   });
+
+
+  test('Stremio magnet tracker hints survive stream resolution', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'streams': [
+          {
+            'name': 'Torrent source',
+            'infoHash': '0123456789012345678901234567890123456789',
+            'url': 'magnet:?xt=urn:btih:0123456789012345678901234567890123456789'
+                '&tr=udp%3A%2F%2Ftracker.example%3A1337%2Fannounce'
+                '&tr=https%3A%2F%2Ftracker2.example%2Fannounce',
+            'fileIdx': 2,
+            'sources': [
+              'tracker:udp://tracker3.example:6969/announce',
+              'tracker:udp://tracker.example:1337/announce',
+            ],
+          },
+        ],
+      }));
+      await request.response.close();
+    });
+
+    final engine = CatalogEngine();
+    try {
+      final streams = await engine.resolveStreams(
+        'movie',
+        'tt1234567',
+        [
+          ManagedAddon(
+            name: 'QA addon',
+            manifestUrl: 'http://127.0.0.1:${server.port}/manifest.json',
+            baseUrl: 'http://127.0.0.1:${server.port}',
+          ),
+        ],
+      );
+
+      expect(streams, hasLength(1));
+      expect(streams.single.infoHash,
+          '0123456789012345678901234567890123456789');
+      expect(streams.single.fileIdx, 2);
+      expect(
+        streams.single.trackers,
+        containsAll(<String>[
+          'udp://tracker.example:1337/announce',
+          'https://tracker2.example/announce',
+          'udp://tracker3.example:6969/announce',
+        ]),
+      );
+    } finally {
+      engine.close();
+      await server.close(force: true);
+    }
+  });
+
 }
