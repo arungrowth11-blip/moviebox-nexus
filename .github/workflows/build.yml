@@ -587,11 +587,6 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Enable Gradle dependency cache
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          cache-provider: basic
-
       - name: Resolve dependencies for integration test
         run: flutter pub get
 
@@ -716,6 +711,11 @@ jobs:
           test -s android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
           test -s android/app/src/main/AndroidManifest.xml
           test -s android/app/build.gradle.kts
+
+      - name: Enable Gradle dependency cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Create a real MP4 and seed a deterministic local torrent
         shell: bash
