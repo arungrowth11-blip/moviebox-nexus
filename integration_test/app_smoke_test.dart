@@ -173,4 +173,116 @@ void main() {
     timeout: const Timeout(Duration(minutes: 2)),
   );
 
+
+
+  testWidgets(
+    'real seeded magnet resolves metadata, streams pieces, serves seek ranges and prepares in Media3',
+    (tester) async {
+      const infoHash = String.fromEnvironment('MOVIEBOX_TEST_INFO_HASH');
+      const peerEndpoint = String.fromEnvironment(
+        'MOVIEBOX_TEST_PEER',
+        defaultValue: '10.0.2.2:6881',
+      );
+      const expectedFirstHex = String.fromEnvironment('MOVIEBOX_TEST_FIRST_HEX');
+      const expectedSeekHex = String.fromEnvironment('MOVIEBOX_TEST_SEEK_HEX');
+
+      expect(infoHash, matches(RegExp(r'^[a-f0-9]{40}$')));
+      expect(peerEndpoint, '10.0.2.2:6881');
+      expect(expectedFirstHex, hasLength(32));
+      expect(expectedSeekHex, hasLength(32));
+
+      const channel = MethodChannel('moviebox_nexus/torrent');
+      await channel.invokeMethod<bool>('initialize').timeout(
+        const Duration(seconds: 30),
+      );
+
+      final playerUrl = await channel
+          .invokeMethod<String>(
+            'startPlaybackWithPeerForTest',
+            <String, Object>{
+              'infoHash': infoHash,
+              'title': 'MovieBox Nexus local seeded playback QA',
+              'peerEndpoint': peerEndpoint,
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+
+      final uri = Uri.parse(playerUrl!);
+      expect(uri.host, '127.0.0.1');
+      expect(uri.path, startsWith('/stream/'));
+
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+      String hex(List<int> bytes) =>
+          bytes.map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+
+      Future<List<int>> fetchRange(int start, int end) async {
+        final request = await client.getUrl(uri);
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
+        final response = await request.close().timeout(
+          const Duration(seconds: 75),
+          onTimeout: () => throw TimeoutException(
+            'Torrent metadata did not resolve in 75 seconds.',
+          ),
+        );
+        expect(response.statusCode, HttpStatus.partialContent);
+        expect(
+          response.headers.value(HttpHeaders.contentRangeHeader),
+          startsWith('bytes $start-$end/'),
+        );
+        final bytes = await response.fold<List<int>>(
+          <int>[],
+          (result, chunk) => result..addAll(chunk),
+        ).timeout(
+          const Duration(seconds: 100),
+          onTimeout: () => throw TimeoutException(
+            'Torrent piece $start-$end did not arrive in 100 seconds.',
+          ),
+        );
+        expect(bytes, hasLength(end - start + 1));
+        return bytes;
+      }
+
+      try {
+        // This first 206 response is only available after magnet metadata has
+        // arrived and a supported video file has been selected.
+        final firstRange = await fetchRange(0, 65535);
+        expect(hex(firstRange.take(16).toList()), expectedFirstHex);
+
+        // A distant range forces a different torrent piece to be prioritized.
+        // This verifies the same byte-range path used when a viewer seeks.
+        const seekOffset = 4 * 1024 * 1024;
+        final seekRange = await fetchRange(seekOffset, seekOffset + 65535);
+        expect(hex(seekRange.take(16).toList()), expectedSeekHex);
+
+        // Finally exercise the actual in-app Media3 player against the URL
+        // returned by the magnet bridge—not a separate HTTP test server.
+        final prepared = Completer<Duration>();
+        await tester.pumpWidget(MaterialApp(
+          home: PlayerScreen(
+            title: 'Seeded torrent end-to-end QA',
+            url: uri.toString(),
+            onSave: (_) async {},
+            onPrepared: (elapsed) {
+              if (!prepared.isCompleted) prepared.complete(elapsed);
+            },
+          ),
+        ));
+        final elapsed = await prepared.future.timeout(
+          const Duration(seconds: 105),
+          onTimeout: () => throw TimeoutException(
+            'Media3 did not prepare the seeded torrent video within 105 seconds.',
+          ),
+        );
+        expect(elapsed, lessThan(const Duration(seconds: 105)));
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        client.close(force: true);
+        await channel.invokeMethod<bool>('stopPlayback').timeout(
+          const Duration(seconds: 15),
+        );
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 6)),
+  );
+
 }
