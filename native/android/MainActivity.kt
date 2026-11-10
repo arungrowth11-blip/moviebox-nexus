@@ -17,6 +17,49 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    private fun normalizeTestPeerEndpoint(raw: String?): String? {
+        val value = raw?.trim().orEmpty()
+        val match = Regex("^([0-9]{1,3}(?:\\\\.[0-9]{1,3}){3}):([0-9]{1,5})$").matchEntire(value)
+            ?: return null
+        val octets = match.groupValues[1].split(".").mapNotNull { it.toIntOrNull() }
+        val port = match.groupValues[2].toIntOrNull() ?: return null
+        if (octets.size != 4 || octets.any { it !in 0..255 } || port !in 1..65535) return null
+        return value
+    }
+
+    private fun handleStartPlayback(
+        call: MethodChannel.MethodCall,
+        result: MethodChannel.Result,
+        testPeerEndpoint: String? = null
+    ) {
+        val infoHash = call.argument<String>("infoHash")
+        val title = call.argument<String>("title") ?: "MovieBox Nexus stream"
+        val fileIdx = call.argument<Number>("fileIdx")?.toInt()?.takeIf { it >= 0 }
+        val trackers = call.argument<List<String>>("trackers") ?: emptyList()
+        val normalizedHash = infoHash?.trim().orEmpty()
+        val validHash = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$").matches(normalizedHash)
+        if (!validHash) {
+            result.error("INVALID_INFO_HASH", "A valid 40-character hex or 32-character base32 infoHash is required.", null)
+            return
+        }
+        torrentExecutor.execute {
+            try {
+                val url = engine().startPlayback(
+                    normalizedHash,
+                    title,
+                    fileIdx,
+                    trackers,
+                    testPeerEndpoint
+                )
+                runOnUiThread { result.success(url) }
+            } catch (error: Throwable) {
+                runOnUiThread {
+                    result.error("TORRENT_PLAYBACK_FAILED", error.message ?: "Torrent playback failed.", null)
+                }
+            }
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
@@ -34,25 +77,16 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
-                "startPlayback" -> {
-                    val infoHash = call.argument<String>("infoHash")
-                    val title = call.argument<String>("title") ?: "MovieBox Nexus stream"
-                    val fileIdx = call.argument<Number>("fileIdx")?.toInt()
-                        ?.takeIf { it >= 0 }
-                    val normalizedHash = infoHash?.trim().orEmpty()
-                    val validHash = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$").matches(normalizedHash)
-                    if (!validHash) {
-                        result.error("INVALID_INFO_HASH", "A valid 40-character hex or 32-character base32 infoHash is required.", null)
+                "startPlayback" -> handleStartPlayback(call, result)
+                "startPlaybackWithPeerForTest" -> {
+                    if (!BuildConfig.DEBUG) {
+                        result.error("TEST_ONLY_METHOD", "The controlled peer hook is available only in debug builds.", null)
                     } else {
-                        torrentExecutor.execute {
-                            try {
-                                val url = engine().startPlayback(normalizedHash, title, fileIdx)
-                                runOnUiThread { result.success(url) }
-                            } catch (error: Throwable) {
-                                runOnUiThread {
-                                    result.error("TORRENT_PLAYBACK_FAILED", error.message ?: "Torrent playback failed.", null)
-                                }
-                            }
+                        val peer = normalizeTestPeerEndpoint(call.argument<String>("peerEndpoint"))
+                        if (peer == null) {
+                            result.error("INVALID_TEST_PEER", "A valid IPv4 host:port endpoint is required.", null)
+                        } else {
+                            handleStartPlayback(call, result, peer)
                         }
                     }
                 }
