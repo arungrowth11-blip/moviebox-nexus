@@ -649,14 +649,14 @@ jobs:
           gradle = Path("android/app/build.gradle.kts")
           source = gradle.read_text(encoding="utf-8")
           for key in ("namespace", "applicationId"):
-              pattern = rf'({key}\\s*=\\s*)["\\'][^"\\']+["\\']'
-              source, count = re.subn(pattern, rf'\\1"com.moviebox.nexus"', source, count=1)
+              pattern = rf"""({key}\s*=\s*)["'][^"']+["']"""
+              source, count = re.subn(pattern, rf'\1"com.moviebox.nexus"', source, count=1)
               if count != 1:
                   raise SystemExit(f"Could not align Android {key} with the native Kotlin package.")
 
           if "minSdk = maxOf(26, flutter.minSdkVersion)" not in source:
               source, count = re.subn(
-                  r"minSdk\\s*=\\s*flutter\\.minSdkVersion",
+                  r"minSdk\s*=\s*flutter\.minSdkVersion",
                   "minSdk = maxOf(26, flutter.minSdkVersion)",
                   source,
                   count=1,
