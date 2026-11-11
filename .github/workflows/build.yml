@@ -858,7 +858,10 @@ jobs:
             set -euo pipefail
             # Executes against an Android emulator: native MethodChannel init/stop,
             # seven-tab navigation, Live TV filter visibility and tab retention.
-            flutter test --no-pub integration_test/app_smoke_test.dart -d emulator-5554 \
+            # -d is a global Flutter CLI option; place it before the subcommand.
+            # Putting it after the test file made the device id look like a second
+            # test path, mixing integration_test/ with the default test/ suite.
+            flutter -d emulator-5554 test --no-pub integration_test/app_smoke_test.dart \
               --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" \
               --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" \
               --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" \
