@@ -26,6 +26,7 @@ class PlayerScreen extends StatefulWidget {
   final Map<String, String> headers;
   final bool isLive;
   final ValueChanged<Duration>? onPrepared;
+  final ValueChanged<BetterPlayerController>? onMedia3ControllerReady;
 
   const PlayerScreen({
     super.key,
@@ -37,6 +38,7 @@ class PlayerScreen extends StatefulWidget {
     this.headers = const <String, String>{},
     this.isLive = false,
     this.onPrepared,
+    this.onMedia3ControllerReady,
   });
 
   @override
@@ -202,6 +204,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.initialized:
         _media3Watchdog?.cancel();
+        final initializedController = _media3;
+        if (initializedController != null) {
+          widget.onMedia3ControllerReady?.call(initializedController);
+        }
         _reportPrepared();
         _preferredHindiAudioApplied = false;
         _applyPreferredHindiAudio();
