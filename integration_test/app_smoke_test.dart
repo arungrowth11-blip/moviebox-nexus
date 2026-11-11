@@ -304,8 +304,8 @@ void main() {
         );
         final initialValue = controller.videoPlayerController?.value;
         expect(initialValue, isNotNull);
-        expect(initialValue!.size.width, greaterThan(0));
-        expect(initialValue.size.height, greaterThan(0));
+        expect(initialValue!.size?.width ?? 0, greaterThan(0));
+        expect(initialValue.size?.height ?? 0, greaterThan(0));
         expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
 
         await _waitUntil(
