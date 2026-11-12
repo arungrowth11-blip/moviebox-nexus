@@ -357,6 +357,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             line.substring(separator + 1).trim()
                     }
                 }
+                val requestedRange = headers["range"] ?: "none"
+                Log.i(TAG, "HTTP request method=$method range=$requestedRange")
 
                 if (path != "/stream/${pending.token}" || (method != "GET" && method != "HEAD")) {
                     writeSimpleResponse(client, 404, "Not Found")
@@ -399,6 +401,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     ?: "application/octet-stream"
                 val contentLength = end - start + 1
                 val status = if (partial) "206 Partial Content" else "200 OK"
+                Log.i(
+                    TAG,
+                    "HTTP response status=$status contentType=$contentType length=$contentLength " +
+                        "fileSize=${target.fileSize} pieceLength=${target.pieceLength}"
+                )
                 val responseHeaders = buildString {
                     append("HTTP/1.1 ").append(status).append("\r\n")
                     append("Content-Type: ").append(contentType).append("\r\n")
@@ -418,6 +425,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
                 RandomAccessFile(target.file, "r").use { media ->
                     var position = start
+                    var bytesSent = 0L
                     var firstRequestedPiece = true
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
@@ -434,10 +442,22 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         output.write(buffer, 0, amount)
                         output.flush()
                         position += amount
+                        bytesSent += amount
                     }
+                    Log.i(TAG, "HTTP response complete bytes=$bytesSent expected=$contentLength")
                 }
-            } catch (_: Exception) {
-                // The player may cancel or replace an HTTP range request while seeking.
+            } catch (error: Exception) {
+                // Player range requests can be cancelled during seeks; retain the
+                // reason in logcat so a genuine transport failure is distinguishable.
+                if (error is java.net.SocketException) {
+                    Log.w(TAG, "HTTP client disconnected/cancelled: ${error.message}")
+                } else {
+                    Log.e(
+                        TAG,
+                        "HTTP stream request failed: ${error.javaClass.simpleName}: ${error.message}",
+                        error
+                    )
+                }
             }
         }
     }
@@ -458,6 +478,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             }
             Thread.sleep(200)
         }
+        Log.w(
+            TAG,
+            "Timed out waiting for torrent piece=$pieceIndex filePosition=$filePosition timeoutMs=$timeoutMs"
+        )
         return false
     }
 
