@@ -266,7 +266,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final oldMedia3 = _media3;
     _media3 = null;
-    oldMedia3?.dispose(forceDispose: true);
+    if (oldMedia3 != null) {
+      // Let BetterPlayer finish dispatching its current event before disposal
+      // mutates its internal listener collections.
+      await Future<void>.delayed(Duration.zero);
+      oldMedia3.dispose(forceDispose: true);
+    }
+    if (!mounted || _disposed) return;
 
     setState(() {
       _usingVlc = true;
@@ -881,6 +887,30 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  Future<void> _releaseVlcSafely(VlcPlayerController controller) async {
+    try {
+      controller.removeListener(_onVlcChanged);
+    } catch (error) {
+      debugPrint('MovieBox VLC listener cleanup failed: $error');
+    }
+
+    try {
+      if (controller.value.isInitialized) {
+        await controller.stop();
+      }
+    } catch (error) {
+      // VLC may report a stale initialized value while native setup is still
+      // unwinding. Do not let that prevent the controller from being disposed.
+      debugPrint('MovieBox VLC stop during cleanup was skipped: $error');
+    }
+
+    try {
+      await controller.dispose();
+    } catch (error) {
+      debugPrint('MovieBox VLC dispose cleanup failed: $error');
+    }
+  }
+
   @override
   void dispose() {
     // Capture the last position synchronously before the disposed guard is set.
@@ -892,11 +922,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final vlc = _vlc;
     if (vlc != null) {
-      vlc.removeListener(_onVlcChanged);
-      if (vlc.value.isInitialized) {
-        unawaited(vlc.stop());
-      }
-      unawaited(vlc.dispose());
+      unawaited(_releaseVlcSafely(vlc));
     }
 
     _focusNode.dispose();
