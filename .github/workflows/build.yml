@@ -997,6 +997,63 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Prepare Android emulator test script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/moviebox-emulator-script.sh" <<'MOVIEBOX_EMULATOR_SCRIPT'
+          set -euo pipefail
+          # Route emulator loopback peer traffic to the runner-host seeder.
+          adb reverse tcp:6881 tcp:6881
+          adb reverse --list
+
+          # Run the complete Flutter integration suite as one Bash process.
+          # The emulator-runner action splits its "script" input into individual
+          # lines, so control-flow blocks must live in a separate script file.
+          set +e
+          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart
+          integration_status=$?
+          set -e
+          if [ "$integration_status" -ne 0 ]; then
+            echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
+            adb logcat -d -v time > "$RUNNER_TEMP/moviebox-emulator-logcat.txt" || true
+            grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$RUNNER_TEMP/moviebox-emulator-logcat.txt" | tail -n 300 || true
+            echo "----- deterministic torrent seeder log -----"
+            cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
+            echo "----- direct MP4 range server log -----"
+            cat "$RUNNER_TEMP/moviebox-range-server.log" || true
+            exit "$integration_status"
+          fi
+
+          # Install the exact release APK already uploaded by android-release.
+          adb uninstall com.moviebox.nexus || true
+          adb install dist/MovieBox-Nexus-OS.apk
+          adb logcat -c
+          adb shell monkey -p com.moviebox.nexus 1
+          for attempt in $(seq 1 30); do
+            if adb shell pidof com.moviebox.nexus >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          adb shell pidof com.moviebox.nexus
+          sleep 8
+          if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
+            echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
+            exit 1
+          fi
+          adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
+          echo "Android emulator integration, seeded magnet, byte-range seek, Media3 playback and release launch tests passed."
+
+          if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
+          fi
+          if [ -f "$RUNNER_TEMP/moviebox-range-server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/moviebox-range-server.pid")" 2>/dev/null || true
+          fi
+          MOVIEBOX_EMULATOR_SCRIPT
+          chmod +x "$RUNNER_TEMP/moviebox-emulator-script.sh"
+
       - name: Android emulator integration and release APK smoke test
         # This is a required CI gate. The release APK was already uploaded by
         # android-release, but a failed emulator test must remain a visible failure.
@@ -1009,55 +1066,6 @@ jobs:
           emulator-boot-timeout: 600
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
           disable-animations: true
-          script: |
-            set -euo pipefail
-            # Route emulator loopback peer traffic to the runner-host seeder.
-            adb reverse tcp:6881 tcp:6881
-            adb reverse --list
-            # Executes against an Android emulator: native MethodChannel init/stop,
-            # seven-tab navigation, Live TV filter visibility and tab retention.
-            # -d is a global Flutter CLI option; place it before the subcommand.
-            # Putting it after the test file made the device id look like a second
-            # test path, mixing integration_test/ with the default test/ suite.
-            set +e
-            flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart
-            integration_status=$?
-            set -e
-            if [ "$integration_status" -ne 0 ]; then
-              echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
-              adb logcat -d -v time > "$RUNNER_TEMP/moviebox-emulator-logcat.txt" || true
-              grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$RUNNER_TEMP/moviebox-emulator-logcat.txt" | tail -n 300 || true
-              echo "----- deterministic torrent seeder log -----"
-              cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
-              echo "----- direct MP4 range server log -----"
-              cat "$RUNNER_TEMP/moviebox-range-server.log" || true
-              exit "$integration_status"
-            fi
-
-
-            # Install the exact release APK already uploaded by android-release.
-            adb uninstall com.moviebox.nexus || true
-            adb install dist/MovieBox-Nexus-OS.apk
-            adb logcat -c
-            adb shell monkey -p com.moviebox.nexus 1
-            for attempt in $(seq 1 30); do
-              if adb shell pidof com.moviebox.nexus >/dev/null 2>&1; then
-                break
-              fi
-              sleep 2
-            done
-            adb shell pidof com.moviebox.nexus
-            sleep 8
-            if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
-              echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
-              exit 1
-            fi
-            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
-            echo "Android emulator integration, seeded magnet, byte-range seek, Media3 playback and release launch tests passed."
-
-            if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
-              kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
-            fi
-            if [ -f "$RUNNER_TEMP/moviebox-range-server.pid" ]; then
-              kill "$(cat "$RUNNER_TEMP/moviebox-range-server.pid")" 2>/dev/null || true
-            fi
+          # android-emulator-runner parses this input as one command per line.
+          # Keep it to a single Bash invocation so loops/if blocks retain state.
+          script: bash "$RUNNER_TEMP/moviebox-emulator-script.sh"
