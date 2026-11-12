@@ -1,6 +1,7 @@
 package com.moviebox.nexus
 
 import android.content.Context
+import android.util.Log
 import android.webkit.MimeTypeMap
 import com.frostwire.jlibtorrent.Priority
 import com.frostwire.jlibtorrent.SessionManager
@@ -188,7 +189,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             } catch (error: Throwable) {
                 discoveredHandle?.let { runCatching { manager.remove(it) } }
                 if (activePending === pending && error !is InterruptedException) {
-                    pending.error = error.message ?: "Torrent metadata or file selection failed."
+                    val failure = "${error.javaClass.simpleName}: ${error.message ?: "No error message."}".take(512)
+                    pending.error = failure
+                    Log.e(TAG, "Torrent startup failed for $hashHex: $failure", error)
                 }
             } finally {
                 pending.ready.countDown()
@@ -363,7 +366,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }
                 val target = pending.target
                 if (target == null) {
-                    writeSimpleResponse(client, 502, "Bad Gateway")
+                    val startupError = pending.error ?: "Metadata discovery or video selection produced no stream target."
+                    Log.e(TAG, "Returning HTTP 502 for ${pending.infoHash}: $startupError")
+                    writeSimpleResponse(
+                        client,
+                        502,
+                        "Bad Gateway",
+                        bodyText = "Torrent startup failed: $startupError"
+                    )
                     return
                 }
 
@@ -477,9 +487,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         socket: Socket,
         status: Int,
         reason: String,
-        extraHeaders: String = ""
+        extraHeaders: String = "",
+        bodyText: String = reason
     ) {
-        val body = reason.toByteArray(Charsets.UTF_8)
+        val body = bodyText.toByteArray(Charsets.UTF_8)
         val header = "HTTP/1.1 $status $reason\r\n$extraHeaders" +
             "Content-Type: text/plain; charset=utf-8\r\n" +
             "Content-Length: ${body.size}\r\nConnection: close\r\n\r\n"
@@ -524,6 +535,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
         private const val FIRST_STREAM_PIECE_TIMEOUT_MS = 90_000L
