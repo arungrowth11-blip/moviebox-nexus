@@ -220,6 +220,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         break;
       case BetterPlayerEventType.exception:
         final details = event.parameters?.toString() ?? 'Unsupported stream or network error';
+        debugPrint('MovieBox Media3 exception: $details');
         // BetterPlayer dispatches events while iterating its listener list.
         // Defer fallback/disposal until that iteration has completed.
         scheduleMicrotask(() {

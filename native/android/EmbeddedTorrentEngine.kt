@@ -134,7 +134,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     // or an unpredictable Internet swarm.
                     if (testPeerEndpoint != null) {
                         append("&x.pe=")
-                        append(URLEncoder.encode(testPeerEndpoint, "UTF-8"))
+                        // BEP 9 defines x.pe as a literal host:port token. libtorrent parses
+                        // this value directly as an endpoint and does not URL-decode it;
+                        // encoding the colon makes the peer silently disappear.
+                        append(testPeerEndpoint)
                     }
                 }
 

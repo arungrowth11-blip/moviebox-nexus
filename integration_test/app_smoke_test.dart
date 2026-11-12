@@ -162,6 +162,15 @@ void main() {
         expect(initialValue!.size?.width ?? 0, greaterThan(0));
         expect(initialValue.size?.height ?? 0, greaterThan(0));
         expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+        debugPrint(
+          'MovieBox CI direct Media3 before play: isPlaying=${initialValue.isPlaying}, '
+          'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
+          'duration=${initialValue.duration}',
+        );
+        await controller.play().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => throw TimeoutException('Media3 play command timed out on the direct MP4.'),
+        );
 
         await _waitUntil(
           () => controller.videoPlayerController?.value.isPlaying == true,
@@ -316,6 +325,15 @@ void main() {
         expect(initialValue!.size?.width ?? 0, greaterThan(0));
         expect(initialValue.size?.height ?? 0, greaterThan(0));
         expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+        debugPrint(
+          'MovieBox CI torrent Media3 before play: isPlaying=${initialValue.isPlaying}, '
+          'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
+          'duration=${initialValue.duration}',
+        );
+        await controller.play().timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => throw TimeoutException('Media3 play command timed out on the torrent stream.'),
+        );
 
         await _waitUntil(
           () => controller.videoPlayerController?.value.isPlaying == true,

@@ -814,10 +814,259 @@ jobs:
           ffmpeg -hide_banner -loglevel error -y \
             -f lavfi -i "testsrc2=size=640x360:rate=24" \
             -f lavfi -i "sine=frequency=997:sample_rate=44100" \
-            -t 48 -c:v libx264 -preset ultrafast -b:v 1800k \
-            -maxrate 1800k -bufsize 3600k -pix_fmt yuv420p \
-            -c:a aac -b:a 96k -movflags +faststart \
+            -t 48 -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 \
+            -g 48 -bf 0 -b:v 1800k -maxrate 1800k -bufsize 3600k \
+            -pix_fmt yuv420p -c:a aac -b:a 96k -movflags +faststart \
             "$seed_dir/moviebox-ci-video.mp4"
+
+          # Verify the fixture is a fully decodable, emulator-compatible H.264
+          # Baseline MP4 before it is served to either Media3 or the torrent seeder.
+          ffprobe -v error -select_streams v:0 \
+            -show_entries stream=codec_name,profile,width,height \
+            -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4" \
+            | tee "$RUNNER_TEMP/moviebox-video-probe.txt"
+          grep -qx 'codec_name=h264' "$RUNNER_TEMP/moviebox-video-probe.txt"
+          grep -Eq '^profile=(Constrained )?Baseline
+
+          # Serve the same known-good MP4 to Media3 over a real HTTP byte-range
+          # endpoint. The Android emulator reaches the runner host via 10.0.2.2.
+          cat > "$RUNNER_TEMP/moviebox-range-server.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import re
+          import sys
+
+          video = Path(sys.argv[1]).resolve()
+          size = video.stat().st_size
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.1"
+
+              def _send_file(self, include_body):
+                  start, end, status = 0, size - 1, 200
+                  value = self.headers.get("Range")
+                  if value:
+                      match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+                      if not match:
+                          self.send_response(416)
+                          self.send_header("Content-Range", f"bytes */{size}")
+                          self.send_header("Content-Length", "0")
+                          self.end_headers()
+                          return
+                      first, last = match.groups()
+                      if not first:
+                          suffix = int(last or "0")
+                          if suffix <= 0:
+                              self.send_response(416)
+                              self.send_header("Content-Range", f"bytes */{size}")
+                              self.send_header("Content-Length", "0")
+                              self.end_headers()
+                              return
+                          start = max(0, size - suffix)
+                      else:
+                          start = int(first)
+                      end = min(int(last) if last else size - 1, size - 1)
+                      if start >= size or end < start:
+                          self.send_response(416)
+                          self.send_header("Content-Range", f"bytes */{size}")
+                          self.send_header("Content-Length", "0")
+                          self.end_headers()
+                          return
+                      status = 206
+
+                  length = end - start + 1
+                  self.send_response(status)
+                  self.send_header("Content-Type", "video/mp4")
+                  self.send_header("Accept-Ranges", "bytes")
+                  self.send_header("Content-Length", str(length))
+                  self.send_header("Connection", "close")
+                  if status == 206:
+                      self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                  self.end_headers()
+                  if include_body:
+                      with video.open("rb") as stream:
+                          stream.seek(start)
+                          remaining = length
+                          while remaining:
+                              chunk = stream.read(min(128 * 1024, remaining))
+                              if not chunk:
+                                  break
+                              self.wfile.write(chunk)
+                              remaining -= len(chunk)
+
+              def do_GET(self):
+                  self._send_file(True)
+
+              def do_HEAD(self):
+                  self._send_file(False)
+
+              def log_message(self, _format, *_args):
+                  pass
+
+          ThreadingHTTPServer(("0.0.0.0", 18765), Handler).serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/moviebox-range-server.py" "$seed_dir/moviebox-ci-video.mp4" \
+            > "$RUNNER_TEMP/moviebox-range-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/moviebox-range-server.pid"
+
+          range_ready=0
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header 'Range: bytes=0-31' http://127.0.0.1:18765/moviebox-ci-video.mp4 || true)"
+            if [ "$status" = "206" ]; then
+              range_ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$range_ready" -eq 1 || {
+            cat "$RUNNER_TEMP/moviebox-range-server.log"
+            echo "::error::The real MP4 HTTP range server did not become ready."
+            exit 1
+          }
+
+          # Run a real libtorrent seeder on the runner host. The Android
+          # emulator reaches it at 10.0.2.2:6881 via the magnet x.pe extension.
+          /usr/bin/python3 scripts/ci_seed_torrent.py \
+            --video "$seed_dir/moviebox-ci-video.mp4" \
+            --seed-dir "$seed_dir" \
+            --state-file "$state_file" \
+            --port 6881 > "$RUNNER_TEMP/moviebox-local-seed.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/moviebox-local-seed.pid"
+
+          for attempt in $(seq 1 90); do
+            if [ -s "$state_file" ]; then break; fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/moviebox-local-seed.log"
+              echo "::error::Local libtorrent seeder exited before becoming ready."
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$state_file" || {
+            cat "$RUNNER_TEMP/moviebox-local-seed.log"
+            echo "::error::Local libtorrent seeder did not become ready."
+            exit 1
+          }
+
+          info_hash="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["info_hash"])' "$state_file")"
+          peer_endpoint="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["peer_endpoint"])' "$state_file")"
+          first_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["first_hex"])' "$state_file")"
+          seek_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["seek_hex"])' "$state_file")"
+
+          echo "MOVIEBOX_TEST_INFO_HASH=$info_hash" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_PEER=$peer_endpoint" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_FIRST_HEX=$first_hex" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_SEEK_HEX=$seek_hex" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_MP4_URL=http://10.0.2.2:18765/moviebox-ci-video.mp4" >> "$GITHUB_ENV"
+          cat "$state_file"
+          echo "Deterministic local torrent seeder is ready."
+
+      - name: Download already-published release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: MovieBox-Nexus-OS-APK
+          path: dist
+
+      - name: Reclaim runner disk space for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          # Release build has already completed. Remove large preinstalled tools
+          # that the Android emulator smoke test does not need.
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
+          sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          # Keep the preinstalled NDK/CMake: flutter test's Android debug
+          # build needs them. Removing them here forced a multi-minute NDK
+          # redownload alongside the emulator and contributed to runner loss.
+          sudo rm -rf "$android_sdk/system-images"
+          sudo apt-get clean
+          echo "Disk after cleanup:"
+          df -h /
+          available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          if [ "$available_kb" -lt 5000000 ]; then
+            echo "::error::Less than 5 GB is available for the Android emulator system image."
+            exit 1
+          fi
+
+      - name: Enable KVM for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android emulator integration and release APK smoke test
+        # This is a required CI gate. The release APK was already uploaded by
+        # android-release, but a failed emulator test must remain a visible failure.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            # Route emulator loopback peer traffic to the runner-host seeder.
+            adb reverse tcp:6881 tcp:6881
+            adb reverse --list
+            # Executes against an Android emulator: native MethodChannel init/stop,
+            # seven-tab navigation, Live TV filter visibility and tab retention.
+            # -d is a global Flutter CLI option; place it before the subcommand.
+            # Putting it after the test file made the device id look like a second
+            # test path, mixing integration_test/ with the default test/ suite.
+            set +e
+            flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart
+            integration_status=$?
+            set -e
+            if [ "$integration_status" -ne 0 ]; then
+              echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
+              adb logcat -d -v time > "$RUNNER_TEMP/moviebox-emulator-logcat.txt" || true
+              grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$RUNNER_TEMP/moviebox-emulator-logcat.txt" | tail -n 300 || true
+              echo "----- deterministic torrent seeder log -----"
+              cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
+              echo "----- direct MP4 range server log -----"
+              cat "$RUNNER_TEMP/moviebox-range-server.log" || true
+              exit "$integration_status"
+            fi
+
+            # Install the exact release APK already uploaded by android-release.
+            adb uninstall com.moviebox.nexus || true
+            adb install dist/MovieBox-Nexus-OS.apk
+            adb logcat -c
+            adb shell monkey -p com.moviebox.nexus 1
+            for attempt in $(seq 1 30); do
+              if adb shell pidof com.moviebox.nexus >/dev/null 2>&1; then
+                break
+              fi
+              sleep 2
+            done
+            adb shell pidof com.moviebox.nexus
+            sleep 8
+            if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
+              echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
+              exit 1
+            fi
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
+            echo "Android emulator integration, seeded magnet, byte-range seek, Media3 playback and release launch tests passed."
+
+            if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
+              kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
+            fi
+            if [ -f "$RUNNER_TEMP/moviebox-range-server.pid" ]; then
+              kill "$(cat "$RUNNER_TEMP/moviebox-range-server.pid")" 2>/dev/null || true
+            fi
+ "$RUNNER_TEMP/moviebox-video-probe.txt"
+          grep -qx 'width=640' "$RUNNER_TEMP/moviebox-video-probe.txt"
+          grep -qx 'height=360' "$RUNNER_TEMP/moviebox-video-probe.txt"
+          ffmpeg -hide_banner -v error -i "$seed_dir/moviebox-ci-video.mp4" -f null -
 
           test "$(stat -c %s "$seed_dir/moviebox-ci-video.mp4")" -gt 8388608
 
