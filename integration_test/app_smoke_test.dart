@@ -306,6 +306,18 @@ void main() {
 
         // Finally exercise the actual in-app Media3 player against the URL
         // returned by the magnet bridge—not a separate HTTP test server.
+        // Integration-test teardown can leave the test binding in a non-resumed
+        // lifecycle state between widget tests. BetterPlayer deliberately ignores
+        // play() unless the host app is resumed, so record and restore the real
+        // foreground state before exercising the torrent player.
+        debugPrint(
+          'MovieBox CI lifecycle before torrent player: ${tester.binding.lifecycleState}',
+        );
+        if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
+          tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+          await tester.pump();
+        }
+
         final prepared = Completer<Duration>();
         final media3Ready = Completer<BetterPlayerController>();
         await tester.pumpWidget(MaterialApp(
