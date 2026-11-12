@@ -165,6 +165,21 @@ jobs:
               println "[MovieBox CI] Plugin Portal + Maven mirrors + FrostWire repository configured before settings evaluation: ${settings.settingsDir}"
           }
 
+          // Kotlin Gradle Plugin may inherit JDK 21 as its default bytecode target,
+          // while Android JavaCompile tasks in Flutter plugins remain at Java 17.
+          // Align every KotlinCompile task (including third-party Flutter plugins)
+          // with Android's Java 17 baseline before Gradle builds the task graph.
+          gradle.projectsEvaluated {
+              rootProject.allprojects { project ->
+                  project.tasks.configureEach { task ->
+                      if (task.class.name.contains('KotlinCompile')) {
+                          task.kotlinOptions.jvmTarget = '17'
+                          println "[MovieBox CI] Kotlin JVM target 17: ${project.path}:${task.name}"
+                      }
+                  }
+              }
+          }
+
           // Do not mutate project repositories here. The Android and Flutter
           // included builds use PREFER_SETTINGS, so project-level repositories
           // would cause a repository-mode conflict. beforeSettings above applies
@@ -519,6 +534,8 @@ jobs:
           init_text = init_script.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in init_text:
               raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
+          if "task.kotlinOptions.jvmTarget = '17'" not in init_text:
+              raise SystemExit('Kotlin JVM target alignment is missing from the Gradle init script.')
           print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 in project and settings repositories (all ABIs, minSdk 26).')
           PY
 
@@ -744,6 +761,42 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
+
+      - name: Align Kotlin plugin targets with Android Java 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/moviebox-kotlin-target.init.gradle" <<'GRADLE_INIT'
+          gradle.projectsEvaluated {
+              rootProject.allprojects { project ->
+                  project.tasks.configureEach { task ->
+                      if (task.class.name.contains('KotlinCompile')) {
+                          task.kotlinOptions.jvmTarget = '17'
+                          println "[MovieBox CI] Kotlin JVM target 17: ${project.path}:${task.name}"
+                      }
+                  }
+              }
+          }
+          GRADLE_INIT
+          test -s "$RUNNER_TEMP/moviebox-kotlin-target.init.gradle"
+
+          # Flutter invokes android/gradlew. Preserve the generated wrapper and
+          # pass the same target-alignment init script to the emulator build.
+          mv android/gradlew android/gradlew-upstream
+          cat > android/gradlew <<'GRADLE_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required in GitHub Actions}"
+          INIT_SCRIPT="$RUNNER_TEMP/moviebox-kotlin-target.init.gradle"
+          test -s "$INIT_SCRIPT" || {
+            echo "ERROR: Kotlin target init script is missing: $INIT_SCRIPT" >&2
+            exit 1
+          }
+          exec "$(dirname "$0")/gradlew-upstream" --init-script "$INIT_SCRIPT" "$@"
+          GRADLE_SH
+          chmod +x android/gradlew
+          test -x android/gradlew-upstream
+          echo "Kotlin plugin bytecode target will match Android Java 17 in the emulator job."
 
       - name: Create a real MP4 and seed a deterministic local torrent
         shell: bash
