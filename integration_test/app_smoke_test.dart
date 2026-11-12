@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -233,7 +234,12 @@ void main() {
             'Torrent metadata did not resolve in 75 seconds.',
           ),
         );
-        expect(response.statusCode, HttpStatus.partialContent);
+        if (response.statusCode != HttpStatus.partialContent) {
+          final diagnostic = await response.transform(utf8.decoder).join();
+          fail(
+            'Torrent range $start-$end returned HTTP ${response.statusCode}: $diagnostic',
+          );
+        }
         expect(
           response.headers.value(HttpHeaders.contentRangeHeader),
           startsWith('bytes $start-$end/'),
