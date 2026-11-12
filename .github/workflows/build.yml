@@ -174,12 +174,12 @@ jobs:
           test -s "$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle"
           echo "Gradle init script created."
 
-      - name: Cache verified Gradle 9.3.1 distribution
+      - name: Cache verified Gradle 9.5.0 distribution
         id: gradle-dist-cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/gradle-9.3.1
-          key: gradle-9.3.1-bin-${{ runner.os }}-verified-v1
+          path: ${{ runner.temp }}/gradle-9.5.0
+          key: gradle-9.5.0-bin-${{ runner.os }}-verified-v1
 
       - name: Download and verify Gradle distribution with mirror fallback
         if: steps.gradle-dist-cache.outputs.cache-hit != 'true'
@@ -187,8 +187,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="9.3.1"
-          EXPECTED_SHA256="b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+          VERSION="9.5.0"
+          EXPECTED_SHA256="553c78f50dafcd54d65b9a444649057857469edf836431389695608536d6b746"
           ARCHIVE="$RUNNER_TEMP/gradle-${VERSION}-bin.zip"
           EXTRACT_DIR="$RUNNER_TEMP/gradle-extract"
           INSTALL_DIR="$RUNNER_TEMP/gradle-${VERSION}"
@@ -240,7 +240,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GRADLE_HOME="$RUNNER_TEMP/gradle-9.3.1"
+          GRADLE_HOME="$RUNNER_TEMP/gradle-9.5.0"
           test -x "$GRADLE_HOME/bin/gradle"
           echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
 
