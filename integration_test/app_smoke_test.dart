@@ -191,13 +191,13 @@ void main() {
       const infoHash = String.fromEnvironment('MOVIEBOX_TEST_INFO_HASH');
       const peerEndpoint = String.fromEnvironment(
         'MOVIEBOX_TEST_PEER',
-        defaultValue: '10.0.2.2:6881',
+        defaultValue: '127.0.0.1:6881',
       );
       const expectedFirstHex = String.fromEnvironment('MOVIEBOX_TEST_FIRST_HEX');
       const expectedSeekHex = String.fromEnvironment('MOVIEBOX_TEST_SEEK_HEX');
 
       expect(infoHash, matches(RegExp(r'^[a-f0-9]{40}$')));
-      expect(peerEndpoint, '10.0.2.2:6881');
+      expect(peerEndpoint, '127.0.0.1:6881');
       expect(expectedFirstHex, hasLength(32));
       expect(expectedSeekHex, hasLength(32));
 
@@ -205,6 +205,15 @@ void main() {
       await channel.invokeMethod<bool>('initialize').timeout(
         const Duration(seconds: 30),
       );
+
+      // Prove the emulator-to-runner TCP tunnel is reachable before asking
+      // libtorrent to fetch metadata from the deterministic local seeder.
+      final peerProbe = await Socket.connect(
+        '127.0.0.1',
+        6881,
+        timeout: const Duration(seconds: 8),
+      );
+      await peerProbe.close();
 
       final playerUrl = await channel
           .invokeMethod<String>(

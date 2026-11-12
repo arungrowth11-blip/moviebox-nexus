@@ -94,7 +94,7 @@ def main() -> int:
     seek_offset = 4 * 1024 * 1024
     state = {
         "info_hash": info_hash,
-        "peer_endpoint": f"10.0.2.2:{args.port}",
+        "peer_endpoint": f"127.0.0.1:{args.port}",
         "size_bytes": len(video_bytes),
         "first_hex": video_bytes[:16].hex(),
         "seek_offset": seek_offset,

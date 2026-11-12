@@ -1007,6 +1007,9 @@ jobs:
           disable-animations: true
           script: |
             set -euo pipefail
+            # Route emulator loopback peer traffic to the runner-host seeder.
+            adb reverse tcp:6881 tcp:6881
+            adb reverse --list
             # Executes against an Android emulator: native MethodChannel init/stop,
             # seven-tab navigation, Live TV filter visibility and tab retention.
             # -d is a global Flutter CLI option; place it before the subcommand.
