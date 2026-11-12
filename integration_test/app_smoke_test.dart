@@ -11,6 +11,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:moviebox_nexus/main.dart' as moviebox;
 
 Future<void> _waitUntil(
+  WidgetTester tester,
   bool Function() condition,
   String reason, {
   Duration timeout = const Duration(seconds: 15),
@@ -18,7 +19,12 @@ Future<void> _waitUntil(
   final stopwatch = Stopwatch()..start();
   while (stopwatch.elapsed < timeout) {
     if (condition()) return;
-    await Future<void>.delayed(const Duration(milliseconds: 200));
+    // VideoPlayerController polls native ExoPlayer position with a 300 ms
+    // Dart Timer. Integration tests run in a fake-async zone, so advancing
+    // real Future.delayed time alone never fires that polling timer. Pumping
+    // advances the test clock and lets the position value update.
+    await tester.pump(const Duration(milliseconds: 200));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
   }
   expect(condition(), isTrue, reason: reason);
 }
@@ -173,12 +179,14 @@ void main() {
         );
 
         await _waitUntil(
+          tester,
           () => controller.videoPlayerController?.value.isPlaying == true,
           'Media3 must start the generated MP4.',
           timeout: const Duration(seconds: 15),
         );
         final beforePlayback = controller.videoPlayerController!.value.position;
         await _waitUntil(
+          tester,
           () {
             final position = controller.videoPlayerController?.value.position;
             return position != null &&
@@ -336,12 +344,14 @@ void main() {
         );
 
         await _waitUntil(
+          tester,
           () => controller.videoPlayerController?.value.isPlaying == true,
           'Media3 must enter the playing state after initialization.',
           timeout: const Duration(seconds: 20),
         );
         final beforePlayback = controller.videoPlayerController!.value.position;
         await _waitUntil(
+          tester,
           () {
             final position = controller.videoPlayerController?.value.position;
             return position != null &&
@@ -361,6 +371,7 @@ void main() {
           ),
         );
         await _waitUntil(
+          tester,
           () {
             final position = controller.videoPlayerController?.value.position;
             return position != null &&
@@ -371,6 +382,7 @@ void main() {
           timeout: const Duration(seconds: 25),
         );
         await _waitUntil(
+          tester,
           () {
             final position = controller.videoPlayerController?.value.position;
             return position != null &&
