@@ -839,7 +839,7 @@ jobs:
                   start, end, status = 0, size - 1, 200
                   value = self.headers.get("Range")
                   if value:
-                      match = re.fullmatch(r"bytes=(\\d*)-(\\d*)", value.strip())
+                      match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
                       if not match:
                           self.send_response(416)
                           self.send_header("Content-Range", f"bytes */{size}")
