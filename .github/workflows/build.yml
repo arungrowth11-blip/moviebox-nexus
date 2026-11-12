@@ -914,12 +914,7 @@ jobs:
             # -d is a global Flutter CLI option; place it before the subcommand.
             # Putting it after the test file made the device id look like a second
             # test path, mixing integration_test/ with the default test/ suite.
-            flutter -d emulator-5554 test --no-pub \
-              --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" \
-              --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" \
-              --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" \
-              --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" \
-              integration_test/app_smoke_test.dart
+            flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" integration_test/app_smoke_test.dart
 
 
             # Install the exact release APK already uploaded by android-release.
