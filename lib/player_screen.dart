@@ -81,6 +81,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
   }
 
   BetterPlayerVideoFormat? _formatHint() {
+    // Embedded torrent URLs end in an opaque stream token rather than a file
+    // extension. better_player_plus 1.4.1's Android source resolver assumes
+    // every extensionless URL contains a dot and otherwise throws an
+    // IndexOutOfBoundsException before Media3 can prepare the progressive MP4.
+    if (_isEmbeddedTorrent) return BetterPlayerVideoFormat.other;
     final path = Uri.tryParse(widget.url)?.path.toLowerCase() ?? '';
     if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
     if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
