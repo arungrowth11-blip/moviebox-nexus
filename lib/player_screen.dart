@@ -220,7 +220,13 @@ class _PlayerScreenState extends State<PlayerScreen> {
         break;
       case BetterPlayerEventType.exception:
         final details = event.parameters?.toString() ?? 'Unsupported stream or network error';
-        unawaited(_switchToVlc('Media3 error: $details'));
+        // BetterPlayer dispatches events while iterating its listener list.
+        // Defer fallback/disposal until that iteration has completed.
+        scheduleMicrotask(() {
+          if (mounted && !_disposed) {
+            unawaited(_switchToVlc('Media3 error: $details'));
+          }
+        });
         break;
       case BetterPlayerEventType.finished:
         if (!_nextCalled && widget.onNext != null) {
@@ -887,7 +893,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
     final vlc = _vlc;
     if (vlc != null) {
       vlc.removeListener(_onVlcChanged);
-      unawaited(vlc.stop());
+      if (vlc.value.isInitialized) {
+        unawaited(vlc.stop());
+      }
       unawaited(vlc.dispose());
     }
 
