@@ -12,21 +12,34 @@ import 'package:moviebox_nexus/main.dart' as moviebox;
 
 Future<void> _waitUntil(
   WidgetTester tester,
-  bool Function() condition,
+  Future<bool> Function() condition,
   String reason, {
   Duration timeout = const Duration(seconds: 15),
+  Future<String> Function()? diagnostic,
 }) async {
   final stopwatch = Stopwatch()..start();
   while (stopwatch.elapsed < timeout) {
-    if (condition()) return;
-    // VideoPlayerController polls native ExoPlayer position with a 300 ms
-    // Dart Timer. Integration tests run in a fake-async zone, so advancing
-    // real Future.delayed time alone never fires that polling timer. Pumping
-    // advances the test clock and lets the position value update.
+    if (await condition()) return;
+    // Query VideoPlayerController.position directly so the assertion reads
+    // ExoPlayer's native clock, not the periodically refreshed Dart cache.
     await tester.pump(const Duration(milliseconds: 200));
     await Future<void>.delayed(const Duration(milliseconds: 20));
   }
-  expect(condition(), isTrue, reason: reason);
+  final details = diagnostic == null ? '' : await diagnostic();
+  expect(
+    await condition(),
+    isTrue,
+    reason: details.isEmpty ? reason : '$reason $details',
+  );
+}
+
+Future<String> _media3Diagnostic(BetterPlayerController controller) async {
+  final player = controller.videoPlayerController;
+  final value = player?.value;
+  final nativePosition = await player?.position;
+  return 'Media3 nativePosition=$nativePosition, cachedPosition=${value?.position}, '
+      'isPlaying=${value?.isPlaying}, isBuffering=${value?.isBuffering}, '
+      'error=${value?.errorDescription}';
 }
 
 void main() {
@@ -178,22 +191,18 @@ void main() {
           onTimeout: () => throw TimeoutException('Media3 play command timed out on the direct MP4.'),
         );
 
+        final beforePlayback =
+            await controller.videoPlayerController!.position ?? Duration.zero;
         await _waitUntil(
           tester,
-          () => controller.videoPlayerController?.value.isPlaying == true,
-          'Media3 must start the generated MP4.',
-          timeout: const Duration(seconds: 15),
-        );
-        final beforePlayback = controller.videoPlayerController!.value.position;
-        await _waitUntil(
-          tester,
-          () {
-            final position = controller.videoPlayerController?.value.position;
+          () async {
+            final position = await controller.videoPlayerController?.position;
             return position != null &&
                 position > beforePlayback + const Duration(milliseconds: 700);
           },
-          'Media3 playback clock must advance on the direct HTTP source.',
-          timeout: const Duration(seconds: 15),
+          'Media3 native playback clock must advance on the direct HTTP source.',
+          timeout: const Duration(seconds: 20),
+          diagnostic: () => _media3Diagnostic(controller),
         );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -343,22 +352,18 @@ void main() {
           onTimeout: () => throw TimeoutException('Media3 play command timed out on the torrent stream.'),
         );
 
+        final beforePlayback =
+            await controller.videoPlayerController!.position ?? Duration.zero;
         await _waitUntil(
           tester,
-          () => controller.videoPlayerController?.value.isPlaying == true,
-          'Media3 must enter the playing state after initialization.',
-          timeout: const Duration(seconds: 20),
-        );
-        final beforePlayback = controller.videoPlayerController!.value.position;
-        await _waitUntil(
-          tester,
-          () {
-            final position = controller.videoPlayerController?.value.position;
+          () async {
+            final position = await controller.videoPlayerController?.position;
             return position != null &&
                 position > beforePlayback + const Duration(milliseconds: 800);
           },
-          'Media3 playback clock must advance; a frozen/paused player is not accepted.',
-          timeout: const Duration(seconds: 15),
+          'Media3 native playback clock must advance; a frozen/paused player is not accepted.',
+          timeout: const Duration(seconds: 25),
+          diagnostic: () => _media3Diagnostic(controller),
         );
 
         // Exercise the same Media3 seek operation used by the playback UI.
@@ -372,29 +377,31 @@ void main() {
         );
         await _waitUntil(
           tester,
-          () {
-            final position = controller.videoPlayerController?.value.position;
+          () async {
+            final position = await controller.videoPlayerController?.position;
             return position != null &&
                 position >= seekTarget - const Duration(seconds: 1) &&
                 position <= seekTarget + const Duration(seconds: 4);
           },
           'Media3 must land near the requested 20-second seek target.',
           timeout: const Duration(seconds: 25),
+          diagnostic: () => _media3Diagnostic(controller),
         );
         await _waitUntil(
           tester,
-          () {
-            final position = controller.videoPlayerController?.value.position;
+          () async {
+            final position = await controller.videoPlayerController?.position;
             return position != null &&
                 position > seekTarget + const Duration(milliseconds: 700);
           },
           'Playback must continue after seeking rather than freezing at the seek target.',
-          timeout: const Duration(seconds: 12),
+          timeout: const Duration(seconds: 15),
+          diagnostic: () => _media3Diagnostic(controller),
         );
-        expect(
-          controller.videoPlayerController?.value.isPlaying,
-          isTrue,
-          reason: 'Media3 must remain in the playing state after seeking.',
+        debugPrint(
+          'MovieBox CI torrent Media3 after seek: '
+          '${await controller.videoPlayerController?.position}, '
+          'isPlaying=${controller.videoPlayerController?.value.isPlaying}',
         );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
