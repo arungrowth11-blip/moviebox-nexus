@@ -159,12 +159,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
-          return '\${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MiB/s';
+          return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MiB/s';
         }
         if (bytesPerSecond >= 1024) {
-          return '\${(bytesPerSecond / 1024).toStringAsFixed(0)} KiB/s';
+          return '${(bytesPerSecond / 1024).toStringAsFixed(0)} KiB/s';
         }
-        return '\${bytesPerSecond} B/s';
+        return '${bytesPerSecond} B/s';
       }
 
       String message;
@@ -181,7 +181,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           message = 'Discovering peers through DHT and public trackers…';
         }
       } else if (connectedPeers > 0) {
-        message = 'Metadata ready • $connectedPeers connected peers • \${formatRate(rate)}';
+        message = 'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
       } else if (knownPeers > 0) {
         message = 'Metadata ready • $knownPeers peers discovered • connecting…';
       } else {
