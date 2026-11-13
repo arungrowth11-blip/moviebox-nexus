@@ -119,7 +119,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     .map { it.trim() }
                     .filter { isSafeTracker(it) }
                     .distinct()
-                    .take(16)
+                    .take(32)
                 val magnet = buildString {
                     append("magnet:?xt=urn:btih:")
                     append(hashHex)
@@ -271,6 +271,60 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             fileOffset = selectedFileOffset,
             pieceLength = torrentInfo.pieceLength(),
             token = token
+        )
+    }
+
+    /**
+     * Lightweight live diagnostics for the currently starting/playing torrent.
+     * Counts come from libtorrent's local session state, not provider metadata.
+     */
+    fun statusSnapshot(): Map<String, Any> {
+        val pending = activePending ?: return mapOf("active" to false)
+        val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
+            runCatching {
+                it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+            }.getOrDefault(false)
+        }
+        if (handle == null) {
+            return mapOf(
+                "active" to true,
+                "metadataReady" to false,
+                "connectedPeers" to 0,
+                "connectedSeeds" to 0,
+                "knownPeers" to 0,
+                "knownSeeds" to 0,
+                "downloadRate" to 0,
+                "downloadedBytes" to 0L,
+                "currentTracker" to "",
+                "lastError" to (pending.error ?: "")
+            )
+        }
+        val status = runCatching { handle.status() }.getOrNull()
+        if (status == null) {
+            return mapOf(
+                "active" to true,
+                "metadataReady" to (pending.target != null),
+                "connectedPeers" to 0,
+                "connectedSeeds" to 0,
+                "knownPeers" to 0,
+                "knownSeeds" to 0,
+                "downloadRate" to 0,
+                "downloadedBytes" to 0L,
+                "currentTracker" to "",
+                "lastError" to (pending.error ?: "Torrent status is temporarily unavailable.")
+            )
+        }
+        return mapOf(
+            "active" to true,
+            "metadataReady" to (pending.target != null),
+            "connectedPeers" to status.numPeers(),
+            "connectedSeeds" to status.numSeeds(),
+            "knownPeers" to status.listPeers(),
+            "knownSeeds" to status.listSeeds(),
+            "downloadRate" to status.downloadRate(),
+            "downloadedBytes" to status.totalDone(),
+            "currentTracker" to status.currentTracker(),
+            "lastError" to (pending.error ?: "")
         )
     }
 
