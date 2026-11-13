@@ -43,6 +43,10 @@ const List<MapEntry<String, String>> liveTvPlaylistSources = [
   MapEntry('Movies', 'https://iptv-org.github.io/iptv/categories/movies.m3u'),
   MapEntry('Sports', 'https://iptv-org.github.io/iptv/categories/sports.m3u'),
   MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
+  // Independent index that publishes only streams passing its recent health checks.
+  MapEntry('Verified Global', 'https://dearbulut.github.io/iptv/playlists/online.m3u'),
+  // Curated free-to-air sources; this project explicitly excludes paid channels.
+  MapEntry('Curated Free TV', 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8'),
 ];
 
 bool shouldUseCachedLiveTvData({
@@ -760,19 +764,120 @@ class CatalogEngine {
     }).take(8).toList();
   }
 
-  /// Probe candidate HTTP URLs concurrently and return the first working feed
-  /// in playlist priority order. HTML error/expired pages are rejected.
+  Future<List<int>> _readResponsePrefix(
+    Stream<List<int>> stream, {
+    int maxBytes = 64 * 1024,
+  }) async {
+    final bytes = <int>[];
+    await for (final chunk in stream) {
+      final remaining = maxBytes - bytes.length;
+      if (remaining <= 0) break;
+      bytes.addAll(chunk.take(remaining));
+      if (bytes.length >= maxBytes) break;
+    }
+    return bytes;
+  }
+
+  /// Validate a Live TV URL at the media level. For HLS this follows a master
+  /// playlist to a media playlist, then fetches the first actual segment.
+  /// A reachable #EXTM3U manifest alone is not treated as a playable channel.
+  Future<bool> _probeLiveTvUrl(Uri uri, {int depth = 0}) async {
+    if (depth > 2 || !{'http', 'https'}.contains(uri.scheme)) return false;
+    try {
+      final request = http.Request('GET', uri)
+        ..headers['Range'] = 'bytes=0-65535'
+        ..headers['Accept'] = '*/*'
+        ..headers['User-Agent'] = 'MovieBoxNexus/1.1';
+      final response = await _client.send(request).timeout(
+        const Duration(seconds: 5),
+      );
+      if (response.statusCode != 200 && response.statusCode != 206) {
+        await response.stream.listen((_) {}).cancel();
+        return false;
+      }
+      final contentType = (response.headers['content-type'] ?? '').toLowerCase();
+      if (contentType.contains('text/html')) {
+        await response.stream.listen((_) {}).cancel();
+        return false;
+      }
+      final prefix = await _readResponsePrefix(response.stream).timeout(
+        const Duration(seconds: 5),
+      );
+      if (prefix.isEmpty) return false;
+
+      final text = utf8
+          .decode(prefix, allowMalformed: true)
+          .replaceFirst('\uFEFF', '')
+          .trimLeft();
+      final lower = text.toLowerCase();
+      if (lower.startsWith('<!doctype html') ||
+          lower.startsWith('<html') ||
+          lower.startsWith('{"error')) {
+        return false;
+      }
+
+      final isHls = lower.startsWith('#extm3u') ||
+          contentType.contains('mpegurl');
+      if (!isHls) return true;
+
+      final finalUri = response.request?.url ?? uri;
+      final lines = text
+          .split(RegExp(r'\r?\n'))
+          .map((line) => line.trim())
+          .toList();
+
+      // Master playlists identify video variants using STREAM-INF. Follow the
+      // first declared variant before checking its media segment.
+      String? variant;
+      for (var i = 0; i < lines.length; i++) {
+        if (!lines[i].toUpperCase().startsWith('#EXT-X-STREAM-INF')) continue;
+        for (var j = i + 1; j < lines.length; j++) {
+          if (lines[j].isEmpty || lines[j].startsWith('#')) continue;
+          variant = lines[j];
+          break;
+        }
+        if (variant != null) break;
+      }
+      if (variant != null) {
+        return _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1);
+      }
+
+      // Media playlists contain segment URIs as non-comment lines. For
+      // low-latency HLS, fall back to the first PART URI when needed.
+      String? segment = lines.where((line) =>
+          line.isNotEmpty && !line.startsWith('#')).firstOrNull;
+      if (segment == null) {
+        for (final line in lines) {
+          if (!line.toUpperCase().startsWith('#EXT-X-PART:')) continue;
+          final match = RegExp(r'URI="([^"]+)"').firstMatch(line);
+          if (match != null) {
+            segment = match.group(1);
+            break;
+          }
+        }
+      }
+      if (segment == null) return false;
+      return _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> _probeLiveTvSource(Map<String, String> item) async {
+    final rawUrl = (item['url'] ?? '').trim();
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null || !uri.hasAuthority) return false;
+    return _probeLiveTvUrl(uri);
+  }
+
+  /// Probe up to eight same-channel feeds concurrently. For HLS, the first
+  /// video segment must also return bytes before a source is selected.
   Future<Map<String, String>?> firstWorkingLiveTvSource(
     List<Map<String, String>> candidates,
   ) async {
     final bounded = candidates.take(8).toList();
     if (bounded.isEmpty) return null;
-    final checks = await Future.wait(bounded.map((item) {
-      return probeDirectStream(StreamLink(
-        url: item['url'] ?? '',
-        title: item['name'] ?? 'Live TV',
-      ));
-    }));
+    final checks = await Future.wait(bounded.map(_probeLiveTvSource));
     final index = checks.indexWhere((isWorking) => isWorking);
     return index < 0 ? null : bounded[index];
   }
@@ -3342,7 +3447,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 ),
                               ] else if (s.isTorrent)
                                 Text(
-                                  s.seeders == null ? 'TORRENT • SEEDERS UNKNOWN' : 'TORRENT • ${s.seeders} SEEDERS',
+                                  s.seeders == null ? 'TORRENT • SEEDERS UNREPORTED' : 'TORRENT • ${s.seeders} REPORTED SEEDERS',
                                   style: TextStyle(color: s.seeders == 0 ? Colors.orangeAccent : Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
                                 ),
                             ],
