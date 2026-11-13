@@ -1064,7 +1064,7 @@ jobs:
           arch: x86_64
           profile: pixel_2
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -memory 2048
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -memory 2048
           disable-animations: true
           # android-emulator-runner parses this input as one command per line.
           # Keep it to a single Bash invocation so loops/if blocks retain state.
