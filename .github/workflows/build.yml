@@ -1038,19 +1038,44 @@ jobs:
           adb install dist/MovieBox-Nexus-OS.apk
           adb logcat -c
           adb shell monkey -p com.moviebox.nexus 1
+          app_pid=""
           for attempt in $(seq 1 30); do
-            if adb shell pidof com.moviebox.nexus >/dev/null 2>&1; then
+            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\\r' || true)"
+            if [ -n "$app_pid" ]; then
               break
             fi
             sleep 2
           done
-          adb shell pidof com.moviebox.nexus
-          sleep 8
+          if [ -z "$app_pid" ]; then
+            echo "::error::Release APK process did not stay alive after launch."
+            adb shell dumpsys activity activities || true
+            adb logcat -d -v time | tail -n 250 || true
+            exit 1
+          fi
+          echo "Release APK process is alive: $app_pid"
+          sleep 5
           if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
             echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
             exit 1
           fi
-          adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -q 'com.moviebox.nexus'
+          # Android 15 emulator builds expose different activity/window fields.
+          # Capture both sources and accept the package in either actual resumed
+          # activity or current focused window; print them for any future diagnosis.
+          activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
+          window_dump="$(adb shell dumpsys window 2>&1 || true)"
+          resumed_line="$(printf '%s\\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
+          focus_line="$(printf '%s\\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
+          echo "Release APK resumed activity: ${resumed_line:-not reported by this Android build}"
+          echo "Release APK focused window: ${focus_line:-not reported by this Android build}"
+          if [[ "$resumed_line$focus_line" != *com.moviebox.nexus* ]]; then
+            echo "::error::Release APK process exists but Android does not report its activity/window as foreground."
+            echo "----- matching activity records -----"
+            printf '%s\\n' "$activity_dump" | grep -F 'com.moviebox.nexus' | tail -n 30 || true
+            echo "----- matching window records -----"
+            printf '%s\\n' "$window_dump" | grep -F 'com.moviebox.nexus' | tail -n 30 || true
+            adb logcat -d -v time | tail -n 250 || true
+            exit 1
+          fi
           echo "Android emulator integration, seeded magnet, byte-range seek, Media3 playback and release launch tests passed."
 
           if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
