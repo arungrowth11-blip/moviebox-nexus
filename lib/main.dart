@@ -766,7 +766,7 @@ class CatalogEngine {
         if (trackers.isEmpty) continue;
         try {
           await cacheFile.parent.create(recursive: true);
-          await cacheFile.writeAsString(trackers.join('\\n'), flush: true);
+          await cacheFile.writeAsString(trackers.join('\n'), flush: true);
         } catch (_) {}
         return trackers;
       } catch (_) {}
@@ -777,7 +777,7 @@ class CatalogEngine {
   List<String> _parsePublicTrackers(String body) {
     final trackers = <String>[];
     final seen = <String>{};
-    for (final raw in body.split(RegExp(r'\\r?\\n'))) {
+    for (final raw in body.split(RegExp(r'\r?\n'))) {
       final value = raw.trim();
       if (value.isEmpty || value.startsWith('#')) continue;
       final uri = Uri.tryParse(value);
