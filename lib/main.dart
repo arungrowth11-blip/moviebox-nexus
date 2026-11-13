@@ -839,7 +839,7 @@ class CatalogEngine {
         if (variant != null) break;
       }
       if (variant != null) {
-        return _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1);
+        return await _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1);
       }
 
       // Media playlists contain segment URIs as non-comment lines. For
@@ -862,7 +862,7 @@ class CatalogEngine {
         }
       }
       if (segment == null) return false;
-      return _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1);
+      return await _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1);
     } catch (_) {
       return false;
     }
