@@ -91,6 +91,17 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "getStatus" -> torrentExecutor.execute {
+                    val snapshot = runCatching {
+                        torrentEngine?.statusSnapshot() ?: mapOf("active" to false)
+                    }.getOrElse { error ->
+                        mapOf(
+                            "active" to false,
+                            "lastError" to (error.message ?: "Torrent diagnostics unavailable.")
+                        )
+                    }
+                    runOnUiThread { result.success(snapshot) }
+                }
                 "stopPlayback" -> torrentExecutor.execute {
                     try {
                         torrentEngine?.stopPlayback()
