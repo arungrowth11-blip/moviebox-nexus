@@ -23,6 +23,18 @@ void main() {
     expect(channels.single['group'], 'News');
   });
 
+  test('M3U parser preserves provider headers and health score metadata', () {
+    const playlist = '#EXTM3U\n'
+        '#EXTINF:-1 tvg-id="NDTV.in" nexus-score="93.5",NDTV India\n'
+        '#EXTVLCOPT:http-user-agent=MovieBoxLiveTest/1.0\n'
+        '#EXTVLCOPT:http-referrer=https://broadcaster.example/\n'
+        'https://cdn.example/live.m3u8\n';
+    final channel = parseM3uPlaylist(playlist).single;
+    expect(channel['healthScore'], '93.5');
+    expect(channel['userAgent'], 'MovieBoxLiveTest/1.0');
+    expect(channel['referrer'], 'https://broadcaster.example/');
+  });
+
   test('country and category filters combine without fuzzy metadata matching', () {
     final channels = <Map<String, String>>[
       {
@@ -198,9 +210,16 @@ void main() {
     expect(merged.first['source'], 'India');
     expect(merged.any((item) => item['name'] == 'Aaj Tak'), isTrue);
     expect(merged.any((item) => item['name'] == 'BBC News'), isTrue);
+    final ranked = mergeLiveTvPlaylists({
+      'Raw': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in",NDTV\nhttps://one.example/verified.m3u8\n',
+      'Verified': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" nexus-score="94.2",NDTV\nhttps://one.example/verified.m3u8\n',
+    });
+    expect(ranked, hasLength(1));
+    expect(ranked.single['source'], 'Verified');
+    expect(ranked.single['healthScore'], '94.2');
   });
 
-  test('Live TV failover selects an alternate only after its HLS segment responds', () async {
+  test('Live TV failover validates the HLS segment and forwards provider headers', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final baseUrl = 'http://127.0.0.1:' + server.port.toString();
     server.listen((request) async {
@@ -209,18 +228,29 @@ void main() {
         response.statusCode = HttpStatus.notFound;
         response.headers.contentType = ContentType.html;
         response.write('<html>not found</html>');
-      } else if (request.uri.path == '/good.m3u8') {
-        response.statusCode = HttpStatus.ok;
-        response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
-        response.write('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720\n/variant.m3u8\n');
-      } else if (request.uri.path == '/variant.m3u8') {
-        response.statusCode = HttpStatus.ok;
-        response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
-        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/segment.ts\n');
-      } else if (request.uri.path == '/segment.ts') {
-        response.statusCode = HttpStatus.ok;
-        response.headers.contentType = ContentType('video', 'mp2t');
-        response.add(List<int>.filled(188, 0x47));
+      } else if (request.uri.path == '/good.m3u8' ||
+          request.uri.path == '/variant.m3u8' ||
+          request.uri.path == '/segment.ts') {
+        final userAgent = request.headers.value(HttpHeaders.userAgentHeader);
+        final referer = request.headers.value(HttpHeaders.refererHeader);
+        if (userAgent != 'MovieBoxLiveTest/1.0' ||
+            referer != 'https://broadcaster.example/') {
+          response.statusCode = HttpStatus.forbidden;
+          response.headers.contentType = ContentType.html;
+          response.write('<html>required stream headers missing</html>');
+        } else if (request.uri.path == '/good.m3u8') {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
+          response.write('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720\n/variant.m3u8\n');
+        } else if (request.uri.path == '/variant.m3u8') {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
+          response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/segment.ts\n');
+        } else {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType('video', 'mp2t');
+          response.add(List<int>.filled(188, 0x47));
+        }
       } else {
         response.statusCode = HttpStatus.notFound;
       }
@@ -233,9 +263,13 @@ void main() {
       'url': baseUrl + '/dead.m3u8',
     };
     final alternate = <String, String>{
-      'id': 'NDTV.in',
-      'name': 'NDTV Hindi',
-      'url': baseUrl + '/good.m3u8',
+      ...parseM3uPlaylist(
+        '#EXTM3U\n'
+        '#EXTINF:-1 tvg-id="NDTV.in",NDTV Hindi\n'
+        '#EXTVLCOPT:http-user-agent=MovieBoxLiveTest/1.0\n'
+        '#EXTVLCOPT:http-referrer=https://broadcaster.example/\n'
+        '$baseUrl/good.m3u8\n',
+      ).single,
       'source': 'Hindi',
     };
     try {
@@ -244,6 +278,8 @@ void main() {
       final working = await engine.firstWorkingLiveTvSource(candidates);
       expect(working?['url'], alternate['url']);
       expect(working?['source'], 'Hindi');
+      expect(working?['userAgent'], 'MovieBoxLiveTest/1.0');
+      expect(working?['referrer'], 'https://broadcaster.example/');
     } finally {
       engine.close();
       await server.close(force: true);
