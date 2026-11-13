@@ -809,20 +809,28 @@ jobs:
           state_file="$RUNNER_TEMP/moviebox-local-seed.json"
           mkdir -p "$seed_dir"
 
-          # A real, playable, copyright-free MP4 bigger than the native
-          # engine's 8 MiB video-file selection threshold.
+          # Keep the CI fixture inside the emulator's default 320x240 H.264
+          # decoder configuration and omit audio so headless CI does not depend
+          # on a host audio device. CBR keeps the file above libtorrent's 8 MiB
+          # video-selection threshold while retaining real decodable video frames.
           ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i "testsrc2=size=640x360:rate=24" \
-            -f lavfi -i "sine=frequency=997:sample_rate=44100" \
-            -t 48 -c:v libx264 -preset ultrafast -profile:v baseline -level 3.0 -g 48 -bf 0 -b:v 1800k \
-            -maxrate 1800k -bufsize 3600k -pix_fmt yuv420p \
-            -c:a aac -b:a 96k -movflags +faststart \
-            "$seed_dir/moviebox-ci-video.mp4"
+            -f lavfi -i "testsrc2=size=320x240:rate=24" \
+            -t 48 -an -c:v libx264 -preset ultrafast -tune zerolatency \
+            -profile:v baseline -level 3.0 -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
+            -b:v 1800k -minrate 1800k -maxrate 1800k -bufsize 3600k \
+            -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p \
+            -movflags +faststart "$seed_dir/moviebox-ci-video.mp4"
 
           test "$(stat -c %s "$seed_dir/moviebox-ci-video.mp4")" -gt 8388608
-          ffprobe -v error -select_streams v:0 \
-            -show_entries stream=codec_name,profile,width,height \
-            -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4"
+          video_probe="$(ffprobe -v error -select_streams v:0 -count_frames \
+            -show_entries stream=codec_name,profile,width,height,nb_read_frames \
+            -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4")"
+          printf '%s\\n' "$video_probe"
+          video_frames="$(printf '%s\\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
+          test "${video_frames:-0}" -ge 1000
+          audio_codec="$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_name -of csv=p=0 "$seed_dir/moviebox-ci-video.mp4")"
+          test -z "$audio_codec"
           ffmpeg -hide_banner -v error -i "$seed_dir/moviebox-ci-video.mp4" -f null -
 
           # Serve the same known-good MP4 to Media3 over a real HTTP byte-range
