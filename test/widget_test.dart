@@ -200,8 +200,9 @@ void main() {
     expect(merged.any((item) => item['name'] == 'BBC News'), isTrue);
   });
 
-  test('Live TV failover selects a working alternate for the same channel ID', () async {
+  test('Live TV failover selects an alternate only after its HLS segment responds', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final baseUrl = 'http://127.0.0.1:' + server.port.toString();
     server.listen((request) async {
       final response = request.response;
       if (request.uri.path == '/dead.m3u8') {
@@ -211,7 +212,15 @@ void main() {
       } else if (request.uri.path == '/good.m3u8') {
         response.statusCode = HttpStatus.ok;
         response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
-        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\nhttps://cdn.example/segment.ts\n');
+        response.write('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=1280x720\n/variant.m3u8\n');
+      } else if (request.uri.path == '/variant.m3u8') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
+        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/segment.ts\n');
+      } else if (request.uri.path == '/segment.ts') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType('video', 'mp2t');
+        response.add(List<int>.filled(188, 0x47));
       } else {
         response.statusCode = HttpStatus.notFound;
       }
@@ -219,10 +228,14 @@ void main() {
     });
     final engine = CatalogEngine();
     final selected = <String, String>{
-      'id': 'NDTV.in', 'name': 'NDTV', 'url': 'http://127.0.0.1:${server.port}/dead.m3u8',
+      'id': 'NDTV.in',
+      'name': 'NDTV',
+      'url': baseUrl + '/dead.m3u8',
     };
     final alternate = <String, String>{
-      'id': 'NDTV.in', 'name': 'NDTV Hindi', 'url': 'http://127.0.0.1:${server.port}/good.m3u8',
+      'id': 'NDTV.in',
+      'name': 'NDTV Hindi',
+      'url': baseUrl + '/good.m3u8',
       'source': 'Hindi',
     };
     try {
@@ -231,6 +244,38 @@ void main() {
       final working = await engine.firstWorkingLiveTvSource(candidates);
       expect(working?['url'], alternate['url']);
       expect(working?['source'], 'Hindi');
+    } finally {
+      engine.close();
+      await server.close(force: true);
+    }
+  });
+
+  test('Live TV rejects a reachable HLS manifest when its first segment is offline', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final baseUrl = 'http://127.0.0.1:' + server.port.toString();
+    server.listen((request) async {
+      final response = request.response;
+      if (request.uri.path == '/channel.m3u8') {
+        response.statusCode = HttpStatus.ok;
+        response.headers.contentType = ContentType('application', 'vnd.apple.mpegurl');
+        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/offline.ts\n');
+      } else if (request.uri.path == '/offline.ts') {
+        response.statusCode = HttpStatus.forbidden;
+        response.headers.contentType = ContentType.html;
+        response.write('<html>segment blocked</html>');
+      } else {
+        response.statusCode = HttpStatus.notFound;
+      }
+      await response.close();
+    });
+    final engine = CatalogEngine();
+    try {
+      final selected = <String, String>{
+        'id': 'TestChannel.in',
+        'name': 'Test Channel',
+        'url': baseUrl + '/channel.m3u8',
+      };
+      expect(await engine.firstWorkingLiveTvSource([selected]), isNull);
     } finally {
       engine.close();
       await server.close(force: true);
