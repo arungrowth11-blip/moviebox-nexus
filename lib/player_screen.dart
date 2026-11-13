@@ -45,7 +45,7 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
   BetterPlayerController? _media3;
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
@@ -68,6 +68,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _pendingPositionMs = widget.initialMs;
     unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
       DeviceOrientation.landscapeLeft,
@@ -80,6 +81,47 @@ class _PlayerScreenState extends State<PlayerScreen> {
     });
   }
 
+
+  /// Own Media3 lifecycle handling instead of BetterPlayer's internal gate.
+  /// BetterPlayerController.play() is ignored unless its private lifecycle
+  /// state is resumed. In embedded/loopback playback that state can become
+  /// stale during Android activity/orientation transitions, leaving a READY
+  /// player permanently paused. Keep the controller's gate open and pause/
+  /// resume explicitly from this screen's actual Flutter lifecycle.
+  bool _resumeMedia3AfterLifecyclePause = false;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_disposed || _usingVlc) return;
+    final controller = _media3;
+    if (state == AppLifecycleState.resumed) {
+      if (_resumeMedia3AfterLifecyclePause && controller != null) {
+        _resumeMedia3AfterLifecyclePause = false;
+        unawaited(() async {
+          try {
+            await controller.play();
+          } catch (error) {
+            debugPrint('MovieBox Media3 resume failed: $error');
+          }
+        }());
+      }
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _resumeMedia3AfterLifecyclePause = controller?.isPlaying() == true;
+      if (_resumeMedia3AfterLifecyclePause && controller != null) {
+        unawaited(() async {
+          try {
+            await controller.pause();
+          } catch (error) {
+            debugPrint('MovieBox Media3 background pause failed: $error');
+          }
+        }());
+      }
+    }
+  }
   BetterPlayerVideoFormat? _formatHint() {
     // Embedded torrent URLs end in an opaque stream token rather than a file
     // extension. better_player_plus 1.4.1's Android source resolver assumes
@@ -196,7 +238,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       allowedScreenSleep: false,
       fullScreenByDefault: false,
       autoDetectFullscreenDeviceOrientation: true,
-      handleLifecycle: true,
+      // Lifecycle is handled by _PlayerScreenState below. BetterPlayer's
+      // private lifecycle gate can otherwise silently ignore play() after
+      // Android activity/orientation transitions on loopback torrent streams.
+      handleLifecycle: false,
+      playerVisibilityChangedBehavior: (_) {},
       autoDispose: false,
       controlsConfiguration: controls,
       eventListener: _onMedia3Event,
@@ -956,6 +1002,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     // Capture the last position synchronously before the disposed guard is set.
     unawaited(_savePosition());
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _media3Watchdog?.cancel();
     _media3?.dispose(forceDispose: true);
