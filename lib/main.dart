@@ -1213,7 +1213,6 @@ class _RootShellState extends State<RootShell> {
   
   int tab = 0;
   final Set<int> _visitedTabs = <int>{0};
-  bool tui = false;
   HttpServer? _server;
   String remoteUrl = '';
   String _remoteToken = '';
@@ -1472,12 +1471,21 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
   @override
   Widget build(BuildContext context) {
     final tabs = ['Home', 'Theaters', 'Anime', 'Mood', 'Live TV', 'OTT Hubs', 'Addons'];
+    const tabIcons = <IconData>[
+      Icons.home_rounded,
+      Icons.theaters_rounded,
+      Icons.animation_rounded,
+      Icons.mood_rounded,
+      Icons.live_tv_rounded,
+      Icons.apps_rounded,
+      Icons.extension_rounded,
+    ];
     return Scaffold(
       body: SafeArea(
         child: Column(
           children: [
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: const BoxDecoration(
                 color: _bg,
                 border: Border(bottom: BorderSide(color: Colors.white10)),
@@ -1486,78 +1494,79 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    const Text(
-                      'MOVIEBOX ',
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _red, letterSpacing: 1.5),
-                    ),
-                    const SizedBox(width: 24),
-                    for (var i = 0; i < tabs.length; i++)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 12),
-                        child: _FButton(
-                          label: tabs[i],
-                          active: tab == i,
-                          onTap: () => setState(() {
-                            tab = i;
-                            _visitedTabs.add(i);
-                          }),
-                        ),
-                      ),
-                    _FButton(
-                      label: 'Search',
-                      icon: Icons.search,
-                      onTap: () => showDialog(
-                        context: context,
-                        builder: (_) => SearchModal(engine: engine, onShowDetails: _openDetails),
-                      ),
-                    ),
+                    const Text('MOVIEBOX ', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _red, letterSpacing: 1.5)),
+                    const SizedBox(width: 12),
+                    _FButton(label: 'Search', icon: Icons.search, onTap: () => showDialog(context: context, builder: (_) => SearchModal(engine: engine, onShowDetails: _openDetails))),
+                    const SizedBox(width: 8),
+                    _FButton(label: 'Sync', icon: Icons.refresh, onTap: _sync),
                     const SizedBox(width: 8),
                     _FButton(
-                      label: 'Sync',
-                      icon: Icons.refresh,
-                      onTap: _sync,
-                    ),
-                    const SizedBox(width: 8),
-                    _FButton(
-                      label: 'QR',
-                      icon: Icons.qr_code_2,
+                      label: 'QR', icon: Icons.qr_code_2,
                       onTap: () => showDialog(
                         context: context,
                         builder: (_) => AlertDialog(
                           backgroundColor: _panel,
                           title: const Text('Scan Remote'),
-                          content: remoteUrl.isNotEmpty
-                              ? QrImageView(data: remoteUrl, size: 200, backgroundColor: Colors.white)
-                              : const Text('Starting...'),
+                          content: remoteUrl.isNotEmpty ? QrImageView(data: remoteUrl, size: 200, backgroundColor: Colors.white) : const Text('Starting...'),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    _FButton(
-                      label: tui ? 'Poster' : 'TUI',
-                      icon: Icons.terminal,
-                      onTap: () => setState(() => tui = !tui),
                     ),
                   ],
                 ),
               ),
             ),
             Expanded(
-              child: tui
-                  ? _TuiBody(
-                      tab: tab,
-                      addons: managedAddons.length,
-                      watchlist: watchlist.length,
-                      onExit: () => setState(() => tui = false),
-                    )
-                  : _buildBody(),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  if (constraints.maxWidth >= 360) {
+                    return Row(
+                      children: [
+                        NavigationRail(
+                          minWidth: 76,
+                          backgroundColor: _panel,
+                          selectedIndex: tab,
+                          labelType: NavigationRailLabelType.all,
+                          onDestinationSelected: (index) => setState(() { tab = index; _visitedTabs.add(index); }),
+                          destinations: [
+                            for (var i = 0; i < tabs.length; i++)
+                              NavigationRailDestination(
+                                icon: Icon(tabIcons[i], size: 20),
+                                selectedIcon: Icon(tabIcons[i], size: 22, color: _cyan),
+                                label: Text(tabs[i], style: const TextStyle(fontSize: 10)),
+                              ),
+                          ],
+                        ),
+                        const VerticalDivider(width: 1, color: Colors.white12),
+                        Expanded(child: _buildBody()),
+                      ],
+                    );
+                  }
+                  return Column(
+                    children: [
+                      SizedBox(
+                        height: 52,
+                        child: ListView(
+                          scrollDirection: Axis.horizontal,
+                          children: [
+                            for (var i = 0; i < tabs.length; i++)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: _FButton(label: tabs[i], active: tab == i, onTap: () => setState(() { tab = i; _visitedTabs.add(i); })),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Expanded(child: _buildBody()),
+                    ],
+                  );
+                },
+              ),
             ),
           ],
         ),
       ),
     );
   }
-
   Widget _buildBody() {
     // Preserve already visited tab state while lazily mounting screens.
     return IndexedStack(
@@ -3332,7 +3341,10 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                   ),
                                 ),
                               ] else if (s.isTorrent)
-                                const Text('BUILT-IN TORRENT • PLAY', style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text(
+                                  s.seeders == null ? 'TORRENT • SEEDERS UNKNOWN' : 'TORRENT • ${s.seeders} SEEDERS',
+                                  style: TextStyle(color: s.seeders == 0 ? Colors.orangeAccent : Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
+                                ),
                             ],
                           ),
                           if (s.title.isNotEmpty) ...[
@@ -3377,8 +3389,18 @@ class _DetailsSheetState extends State<DetailsSheet> {
       // seeders first and then quality. P2P startup remains swarm-dependent.
       final torrents = _streams.where((stream) => stream.isTorrent).toList()
         ..sort((a, b) => b.score.compareTo(a.score));
+      final reachableCandidates = torrents
+          .where((stream) => stream.seeders == null || stream.seeders! > 0)
+          .toList();
+      if (reachableCandidates.isNotEmpty && mounted) {
+        await _playTorrent(reachableCandidates.first);
+        return;
+      }
       if (torrents.isNotEmpty && mounted) {
-        await _playTorrent(torrents.first);
+        messenger.showSnackBar(const SnackBar(
+          content: Text('All torrent results report zero seeders. Choose another source; a zero-seeder swarm cannot provide the first video pieces.'),
+          duration: Duration(seconds: 8),
+        ));
         return;
       }
       if (mounted) {
@@ -3392,10 +3414,25 @@ class _DetailsSheetState extends State<DetailsSheet> {
   }
 
   Future<void> _playTorrent(StreamLink stream) async {
+    if (stream.seeders == 0) {
+      final continueAnyway = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: _panel,
+          title: const Text('No seeders reported'),
+          content: const Text('This provider reports zero seeders. The player can remain at 00:00 because no peer can send the first video pieces. Choose another source first, or try this swarm anyway.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Choose another source')),
+            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Try anyway')),
+          ],
+        ),
+      );
+      if (continueAnyway != true || !mounted) return;
+    }
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(const SnackBar(
-      content: Text('Opening player now. Peer discovery and torrent metadata continue in the background; P2P speed depends on seeders.'),
+      content: Text('Starting torrent playback. If no peers deliver the first pieces, the player will show an error so you can choose another source.'),
       duration: Duration(seconds: 8),
     ));
     try {
@@ -3620,51 +3657,6 @@ class _AddonPage extends StatelessWidget {
           ),
         )),
       ],
-    );
-  }
-}
-
-class _TuiBody extends StatelessWidget {
-  final int tab;
-  final int addons;
-  final int watchlist;
-  final VoidCallback onExit;
-  
-  const _TuiBody({
-    required this.tab, 
-    required this.addons, 
-    required this.watchlist, 
-    required this.onExit,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF1A0B2E),
-      padding: const EdgeInsets.all(24),
-      child: DefaultTextStyle(
-        style: const TextStyle(fontFamily: 'monospace', color: Color(0xFF00FFCC), fontSize: 14),
-        child: ListView(
-          children: [
-            const Text('MOVIEBOX-TUI v0.1.27 -> v5.5'),
-            const Text('===================================='),
-            Text('YEAR      : ${DateTime.now().year}'),
-            Text('ADDONS    : $addons installed'),
-            Text('WATCHLIST : $watchlist titles'),
-            Text('TAB       : $tab'),
-            const Text('===================================='),
-            const Text('> SYSTEM ONLINE'),
-            const Text('> RESOLVER: TORRSERVE + TORRENTIO'),
-            const Text('> ADDONS: SELF-HEALING ACTIVE'),
-            const SizedBox(height: 24),
-            _FButton(
-              label: '[Q] EXIT TUI MODE', 
-              primary: true, 
-              onTap: onExit,
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

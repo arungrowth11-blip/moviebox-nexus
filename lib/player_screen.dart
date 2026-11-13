@@ -97,6 +97,28 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _isLive => widget.isLive;
 
+  void _handleMedia3Problem(String reason) {
+    _media3Watchdog?.cancel();
+    if (_isEmbeddedTorrent) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _loading = false;
+        _engineLabel = 'Torrent source unavailable';
+        _error = '$reason. The local torrent stream did not deliver playable video. The swarm may have no reachable seeders or the peer connection may be blocked. Go back and choose a source with active seeders or a direct HTTP/HLS stream. Switching to VLC cannot repair an empty swarm.';
+      });
+      return;
+    }
+    unawaited(_switchToVlc(reason));
+  }
+
+  void _retryPlayback() {
+    if (_isEmbeddedTorrent) {
+      _startMedia3();
+    } else {
+      unawaited(_switchToVlc('Retrying with VLC compatibility engine'));
+    }
+  }
+
   void _reportPrepared() {
     if (_preparedReported || _disposed) return;
     _preparedReported = true;
@@ -180,7 +202,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       eventListener: _onMedia3Event,
       errorBuilder: (context, message) => _errorPanel(
         message ?? 'Media3 could not load this source.',
-        onRetry: () => _switchToVlc('Media3 reported a playback error'),
+        onRetry: _retryPlayback,
       ),
     );
 
@@ -196,11 +218,19 @@ class _PlayerScreenState extends State<PlayerScreen> {
           : const Duration(seconds: 35);
       _media3Watchdog = Timer(watchdogDelay, () {
         if (mounted && !_disposed && !_usingVlc && _loading) {
-          unawaited(_switchToVlc('Media3 initialization timed out'));
+          if (_isEmbeddedTorrent) {
+            _handleMedia3Problem('Torrent startup timed out after 105 seconds');
+          } else {
+            unawaited(_switchToVlc('Media3 initialization timed out'));
+          }
         }
       });
     } catch (error) {
-      unawaited(_switchToVlc('Media3 setup failed: $error'));
+      if (_isEmbeddedTorrent) {
+        _handleMedia3Problem('Media3 setup failed: $error');
+      } else {
+        unawaited(_switchToVlc('Media3 setup failed: $error'));
+      }
     }
   }
 
@@ -230,7 +260,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
         // Defer fallback/disposal until that iteration has completed.
         scheduleMicrotask(() {
           if (mounted && !_disposed) {
-            unawaited(_switchToVlc('Media3 error: $details'));
+            _handleMedia3Problem('Media3 error: $details');
           }
         });
         break;
@@ -247,6 +277,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
+    if (_isEmbeddedTorrent) {
+      _handleMedia3Problem(reason);
+      return;
+    }
     _media3Watchdog?.cancel();
 
     final unsupportedVlcHeaders = widget.headers.keys.where((key) {
@@ -998,7 +1032,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       child: const Padding(
                         padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         child: Text(
-                          'Finding peers and preparing the first verified video pieces. Playback speed depends on seeders and network availability.',
+                          'Waiting for torrent metadata and verified pieces. If no peers respond, playback will show a source error instead of spinning forever.',
                           textAlign: TextAlign.center,
                           style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
                         ),

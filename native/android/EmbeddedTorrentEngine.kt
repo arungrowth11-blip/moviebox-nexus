@@ -141,7 +141,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                 }
 
-                val flags = TorrentFlags.SEQUENTIAL_DOWNLOAD.or_(TorrentFlags.AUTO_MANAGED)
+                // Keep libtorrent auto-managed but do not force sequential mode:
+                // first-frame startup and distant seeks explicitly reprioritize
+                // the viewer's requested piece via piecePriority/deadlines below.
+                val flags = TorrentFlags.AUTO_MANAGED
                 manager.download(magnet, saveDir, flags)
 
                 val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
