@@ -50,6 +50,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
   Timer? _media3Watchdog;
+  Timer? _torrentStatusTimer;
+  String _torrentStatusMessage = '';
+  String _torrentTechnicalLine = '';
+  static const MethodChannel _torrentDiagnostics =
+      MethodChannel('moviebox_nexus/torrent');
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
@@ -76,6 +81,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     ]));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     _startMedia3();
+    _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_savePosition());
     });
@@ -122,6 +128,88 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
     }
   }
+  void _startTorrentStatusPolling() {
+    if (!_isEmbeddedTorrent) return;
+    _torrentStatusTimer?.cancel();
+    unawaited(_refreshTorrentStatus());
+    _torrentStatusTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_refreshTorrentStatus()),
+    );
+  }
+
+  Future<void> _refreshTorrentStatus() async {
+    if (!mounted || _disposed || !_isEmbeddedTorrent) return;
+    try {
+      final snapshot = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('getStatus')
+          .timeout(const Duration(seconds: 4));
+      if (!mounted || snapshot == null) return;
+      int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final active = snapshot['active'] == true;
+      final metadataReady = snapshot['metadataReady'] == true;
+      final connectedPeers = number('connectedPeers');
+      final connectedSeeds = number('connectedSeeds');
+      final knownPeers = number('knownPeers');
+      final knownSeeds = number('knownSeeds');
+      final rate = number('downloadRate');
+      final downloaded = number('downloadedBytes');
+      final tracker = (snapshot['currentTracker'] ?? '').toString();
+      final lastError = (snapshot['lastError'] ?? '').toString();
+
+      String formatRate(int bytesPerSecond) {
+        if (bytesPerSecond >= 1024 * 1024) {
+          return '\${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MiB/s';
+        }
+        if (bytesPerSecond >= 1024) {
+          return '\${(bytesPerSecond / 1024).toStringAsFixed(0)} KiB/s';
+        }
+        return '\${bytesPerSecond} B/s';
+      }
+
+      String message;
+      if (lastError.isNotEmpty) {
+        message = 'Torrent engine: $lastError';
+      } else if (!active) {
+        message = 'Starting the built-in torrent engine…';
+      } else if (!metadataReady) {
+        if (connectedPeers > 0) {
+          message = 'Connected to $connectedPeers peers; receiving torrent metadata…';
+        } else if (knownPeers > 0) {
+          message = 'Found $knownPeers peers; waiting for a metadata connection…';
+        } else {
+          message = 'Discovering peers through DHT and public trackers…';
+        }
+      } else if (connectedPeers > 0) {
+        message = 'Metadata ready • $connectedPeers connected peers • \${formatRate(rate)}';
+      } else if (knownPeers > 0) {
+        message = 'Metadata ready • $knownPeers peers discovered • connecting…';
+      } else {
+        message = 'Metadata ready • waiting for a reachable peer to send verified video pieces…';
+      }
+
+      final technical = <String>[
+        if (active) 'Connected: $connectedPeers peers / $connectedSeeds seeds',
+        if (active) 'Discovered: $knownPeers peers / $knownSeeds seeds',
+        if (active) 'Downloaded: $downloaded bytes',
+        if (tracker.isNotEmpty) 'Last working tracker: $tracker',
+      ].join(' • ');
+      if (message != _torrentStatusMessage || technical != _torrentTechnicalLine) {
+        setState(() {
+          _torrentStatusMessage = message;
+          _torrentTechnicalLine = technical;
+        });
+      }
+    } catch (error) {
+      if (!mounted || _disposed) return;
+      const message = 'Checking live peer status…';
+      if (message != _torrentStatusMessage) {
+        setState(() => _torrentStatusMessage = message);
+      }
+      debugPrint('MovieBox torrent status poll failed: $error');
+    }
+  }
+
   BetterPlayerVideoFormat? _formatHint() {
     // Embedded torrent URLs end in an opaque stream token rather than a file
     // extension. better_player_plus 1.4.1's Android source resolver assumes
@@ -146,7 +234,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       setState(() {
         _loading = false;
         _engineLabel = 'Torrent source unavailable';
-        _error = '$reason. The local torrent stream did not deliver playable video. The swarm may have no reachable seeders or the peer connection may be blocked. Go back and choose a source with active seeders or a direct HTTP/HLS stream. Switching to VLC cannot repair an empty swarm.';
+        _error = '$reason. $_torrentStatusMessage. The local torrent stream did not deliver playable video. Go back and choose a source with reachable peers or a direct HTTP/HLS stream. Switching to VLC cannot repair an unreachable swarm.';
       });
       return;
     }
@@ -1005,6 +1093,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _media3Watchdog?.cancel();
+    _torrentStatusTimer?.cancel();
     _media3?.dispose(forceDispose: true);
 
     final vlc = _vlc;
@@ -1076,12 +1165,27 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.white12),
                       ),
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        child: Text(
-                          'Waiting for torrent metadata and verified pieces. If no peers respond, playback will show a source error instead of spinning forever.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _torrentStatusMessage.isEmpty
+                                  ? 'Connecting to the real BitTorrent swarm…'
+                                  : _torrentStatusMessage,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                            ),
+                            if (_torrentTechnicalLine.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                _torrentTechnicalLine,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: Colors.white38, fontSize: 10, height: 1.3),
+                              ),
+                            ],
+                          ],
                         ),
                       ),
                     ),
