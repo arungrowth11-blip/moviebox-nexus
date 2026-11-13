@@ -844,8 +844,13 @@ class CatalogEngine {
 
       // Media playlists contain segment URIs as non-comment lines. For
       // low-latency HLS, fall back to the first PART URI when needed.
-      String? segment = lines.where((line) =>
-          line.isNotEmpty && !line.startsWith('#')).firstOrNull;
+      String? segment;
+      for (final line in lines) {
+        if (line.isNotEmpty && !line.startsWith('#')) {
+          segment = line;
+          break;
+        }
+      }
       if (segment == null) {
         for (final line in lines) {
           if (!line.toUpperCase().startsWith('#EXT-X-PART:')) continue;
