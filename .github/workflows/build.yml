@@ -825,8 +825,8 @@ jobs:
           video_probe="$(ffprobe -v error -select_streams v:0 -count_frames \
             -show_entries stream=codec_name,profile,width,height,nb_read_frames \
             -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4")"
-          printf '%s\\n' "$video_probe"
-          video_frames="$(printf '%s\\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
+          printf '%s\n' "$video_probe"
+          video_frames="$(printf '%s\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
           test "${video_frames:-0}" -ge 1000
           audio_codec="$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_name -of csv=p=0 "$seed_dir/moviebox-ci-video.mp4")"
