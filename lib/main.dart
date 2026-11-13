@@ -24,6 +24,34 @@ const _textPri = Color(0xFFFFFFFF);
 const _cinemeta = 'https://v3-cinemeta.strem.io';
 const _streamingCatalogs = 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
 
+/// Public, community-maintained IPTV-org lists. These are free-to-air
+/// candidates; individual broadcasters may still geoblock or take streams offline.
+const List<MapEntry<String, String>> liveTvPlaylistSources = [
+  MapEntry('India', 'https://iptv-org.github.io/iptv/countries/in.m3u'),
+  MapEntry('Hindi', 'https://iptv-org.github.io/iptv/languages/hin.m3u'),
+  MapEntry('Bengali', 'https://iptv-org.github.io/iptv/languages/ben.m3u'),
+  MapEntry('Punjabi', 'https://iptv-org.github.io/iptv/languages/pan.m3u'),
+  MapEntry('Tamil', 'https://iptv-org.github.io/iptv/languages/tam.m3u'),
+  MapEntry('Telugu', 'https://iptv-org.github.io/iptv/languages/tel.m3u'),
+  MapEntry('Malayalam', 'https://iptv-org.github.io/iptv/languages/mal.m3u'),
+  MapEntry('South Asia', 'https://iptv-org.github.io/iptv/regions/sas.m3u'),
+  MapEntry('Asia', 'https://iptv-org.github.io/iptv/regions/asia.m3u'),
+  MapEntry('Asia Pacific', 'https://iptv-org.github.io/iptv/regions/apac.m3u'),
+  MapEntry('News', 'https://iptv-org.github.io/iptv/categories/news.m3u'),
+  MapEntry('Public', 'https://iptv-org.github.io/iptv/categories/public.m3u'),
+  MapEntry('Entertainment', 'https://iptv-org.github.io/iptv/categories/entertainment.m3u'),
+  MapEntry('Movies', 'https://iptv-org.github.io/iptv/categories/movies.m3u'),
+  MapEntry('Sports', 'https://iptv-org.github.io/iptv/categories/sports.m3u'),
+  MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
+];
+
+bool shouldUseCachedLiveTvData({
+  required bool cacheExists,
+  required int parsedChannelCount,
+  required bool forceRefresh,
+}) =>
+    cacheExists && parsedChannelCount > 0 && !forceRefresh;
+
 
 /// Parses common M3U playlists, tolerating CRLF, BOM, blank lines and
 /// EXTVLCOPT/EXTGRP directives between EXTINF and the stream URL.
@@ -755,7 +783,7 @@ class CatalogEngine {
   /// Cached public IPTV playlist enriched with structured country/category data.
   Future<List<Map<String, String>>> fetchIptv({bool forceRefresh = false}) async {
     final support = await getApplicationSupportDirectory();
-    final cacheFile = File(support.path + '/live_tv_multi_source_v2.m3u');
+    final cacheFile = File(support.path + '/live_tv_multi_source_v3.m3u');
     String? cachedBody;
     DateTime? cacheTime;
     try {
@@ -765,39 +793,42 @@ class CatalogEngine {
       }
     } catch (_) {}
     final hasCache = cachedBody != null && cachedBody.isNotEmpty;
+    final cachedChannels = hasCache
+        ? _uniqueLiveChannels(parseM3uPlaylist(cachedBody))
+        : <Map<String, String>>[];
     final isFresh = cacheTime != null &&
         DateTime.now().difference(cacheTime) < const Duration(hours: 12);
-    if (hasCache && !forceRefresh) {
-      final parsed = _uniqueLiveChannels(parseM3uPlaylist(cachedBody));
+    if (shouldUseCachedLiveTvData(
+      cacheExists: hasCache,
+      parsedChannelCount: cachedChannels.length,
+      forceRefresh: forceRefresh,
+    )) {
       if (!isFresh) unawaited(_refreshIptvPlaylist(cacheFile));
       final metadata = await _loadLiveTvMetadata();
-      return enrichLiveTvChannels(parsed, metadata);
+      return enrichLiveTvChannels(cachedChannels, metadata);
     }
     final metadataFuture = _loadLiveTvMetadata(forceRefresh: forceRefresh);
     final channels = await _refreshIptvPlaylist(cacheFile);
     if (channels.isNotEmpty) {
       return enrichLiveTvChannels(channels, await metadataFuture);
     }
-    if (hasCache) {
+    // Preserve a previously parsed list during an upstream outage, never an empty cache.
+    if (cachedChannels.isNotEmpty) {
       final metadata = await _loadLiveTvMetadata();
-      return enrichLiveTvChannels(
-          _uniqueLiveChannels(parseM3uPlaylist(cachedBody)), metadata);
+      return enrichLiveTvChannels(cachedChannels, metadata);
     }
     return <Map<String, String>>[];
   }
 
   Future<List<Map<String, String>>> _refreshIptvPlaylist(File cacheFile) async {
-    const sources = <MapEntry<String, String>>[
-      MapEntry('India', 'https://iptv-org.github.io/iptv/countries/in.m3u'),
-      MapEntry('Hindi', 'https://iptv-org.github.io/iptv/languages/hin.m3u'),
-      MapEntry('Worldwide', 'https://iptv-org.github.io/iptv/index.m3u'),
-    ];
-    final responses = await Future.wait<MapEntry<String, String>?>(sources.map((source) async {
+    // Smaller country, language, region and category lists replace the giant index.
+    // Each request has its own timeout, so one slow source cannot block the others.
+    final responses = await Future.wait<MapEntry<String, String>?>(liveTvPlaylistSources.map((source) async {
       try {
         final response = await _client.get(
           Uri.parse(source.value),
-          headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': '*/*'},
-        ).timeout(const Duration(seconds: 20));
+          headers: const {'User-Agent': 'MovieBoxNexus/1.1', 'Accept': '*/*'},
+        ).timeout(const Duration(seconds: 12));
         if (response.statusCode != 200 || response.body.trim().isEmpty) return null;
         return MapEntry(source.key, response.body);
       } catch (_) {
@@ -2434,7 +2465,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + Hindi + worldwide public playlists • refresh every 6h; checked on play',
+              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + South Asia + Asia + language/category playlists • refresh every 6h; checked on play',
                   style: const TextStyle(color: _muted, fontSize: 12)),
             ),
           ),
