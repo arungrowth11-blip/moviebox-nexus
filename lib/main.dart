@@ -1362,7 +1362,7 @@ class EmbeddedTorrentService {
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
         if (fileIdx != null) 'fileIdx': fileIdx,
-        if (trackers.isNotEmpty) 'trackers': trackers.take(16).toList(),
+        if (trackers.isNotEmpty) 'trackers': trackers.take(24).toList(),
       },
     );
     final uri = Uri.tryParse(url ?? '');
@@ -1373,6 +1373,11 @@ class EmbeddedTorrentService {
       throw StateError('Built-in torrent engine returned an invalid loopback URL.');
     }
     return uri.toString();
+  }
+
+  Future<Map<String, dynamic>> getStatus() async {
+    final snapshot = await _channel.invokeMapMethod<String, dynamic>('getStatus');
+    return snapshot ?? <String, dynamic>{};
   }
 
   void dispose() {
@@ -3668,9 +3673,10 @@ class _DetailsSheetState extends State<DetailsSheet> {
     ));
     try {
       final supplementalTrackers = await widget.engine.fetchSupplementalTrackers();
+      // Trackerlist's daily health-ranked 20 lead; keep a few add-on hints too.
       final trackers = <String>{
-        ...stream.trackers,
-        ...supplementalTrackers,
+        ...supplementalTrackers.take(20),
+        ...stream.trackers.take(4),
       }.toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
