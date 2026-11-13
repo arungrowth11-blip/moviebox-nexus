@@ -27,6 +27,11 @@ const _streamingCatalogs = 'https://7a82163c306e-stremio-netflix-catalog-addon.b
 /// Public, community-maintained IPTV-org lists. These are free-to-air
 /// candidates; individual broadcasters may still geoblock or take streams offline.
 const List<MapEntry<String, String>> liveTvPlaylistSources = [
+  // Health-ranked sources first; raw lists remain available as fallback candidates.
+  MapEntry('Verified India', 'https://dearbulut.github.io/iptv/playlists/country/in.m3u'),
+  MapEntry('Verified Global', 'https://dearbulut.github.io/iptv/playlists/online.m3u'),
+  // Curated free-to-air sources only; paid/encrypted services are excluded.
+  MapEntry('Curated Free TV', 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8'),
   MapEntry('India', 'https://iptv-org.github.io/iptv/countries/in.m3u'),
   MapEntry('Hindi', 'https://iptv-org.github.io/iptv/languages/hin.m3u'),
   MapEntry('Bengali', 'https://iptv-org.github.io/iptv/languages/ben.m3u'),
@@ -43,10 +48,6 @@ const List<MapEntry<String, String>> liveTvPlaylistSources = [
   MapEntry('Movies', 'https://iptv-org.github.io/iptv/categories/movies.m3u'),
   MapEntry('Sports', 'https://iptv-org.github.io/iptv/categories/sports.m3u'),
   MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
-  // Independent index that publishes only streams passing its recent health checks.
-  MapEntry('Verified Global', 'https://dearbulut.github.io/iptv/playlists/online.m3u'),
-  // Curated free-to-air sources; this project explicitly excludes paid channels.
-  MapEntry('Curated Free TV', 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8'),
 ];
 
 bool shouldUseCachedLiveTvData({
@@ -67,6 +68,9 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
   var group = '';
   var country = '';
   var language = '';
+  var userAgent = '';
+  var referrer = '';
+  var healthScore = '';
   final lines = body.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
   for (final raw in lines) {
     final line = raw.trim();
@@ -81,6 +85,35 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
       group = RegExp(r'group-title="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       country = RegExp(r'tvg-country="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       language = RegExp(r'tvg-language="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      healthScore = RegExp(r'nexus-score="([0-9.]+)"').firstMatch(line)?.group(1) ?? '';
+      continue;
+    }
+    if (line.startsWith('#EXTVLCOPT:')) {
+      final option = line.substring('#EXTVLCOPT:'.length);
+      final separator = option.indexOf('=');
+      if (separator > 0) {
+        final key = option.substring(0, separator).trim().toLowerCase();
+        final value = option.substring(separator + 1).trim();
+        if (key == 'http-user-agent' && value.isNotEmpty) userAgent = value;
+        if ((key == 'http-referrer' || key == 'http-referer') && value.isNotEmpty) {
+          referrer = value;
+        }
+      }
+      continue;
+    }
+    if (line.startsWith('#EXTHTTP:')) {
+      try {
+        final decoded = jsonDecode(line.substring('#EXTHTTP:'.length).trim());
+        if (decoded is Map) {
+          for (final entry in decoded.entries) {
+            final key = entry.key.toString().toLowerCase();
+            final value = entry.value.toString().trim();
+            if (value.isEmpty) continue;
+            if (key == 'user-agent') userAgent = value;
+            if (key == 'referer' || key == 'referrer') referrer = value;
+          }
+        }
+      } catch (_) {}
       continue;
     }
     if (line.startsWith('#')) continue;
@@ -105,6 +138,9 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
         'country': countryCodeFromChannelId(id, explicitCountry: country),
         'countryRaw': country.trim(),
         'language': language,
+        'userAgent': userAgent,
+        'referrer': referrer,
+        if (healthScore.isNotEmpty) 'healthScore': healthScore,
       });
     }
     name = '';
@@ -113,6 +149,9 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
     group = '';
     country = '';
     language = '';
+    userAgent = '';
+    referrer = '';
+    healthScore = '';
   }
   return channels;
 }
@@ -125,7 +164,17 @@ List<Map<String, String>> mergeLiveTvPlaylists(Map<String, String> sourceBodies)
     for (final channel in parseM3uPlaylist(source.value)) {
       final url = (channel['url'] ?? '').trim();
       if (url.isEmpty) continue;
-      byUrl.putIfAbsent(url, () => <String, String>{...channel, 'source': source.key});
+      final incoming = <String, String>{...channel, 'source': source.key};
+      final existing = byUrl[url];
+      if (existing == null) {
+        byUrl[url] = incoming;
+        continue;
+      }
+      final existingScore = double.tryParse(existing['healthScore'] ?? '') ?? -1;
+      final incomingScore = double.tryParse(incoming['healthScore'] ?? '') ?? -1;
+      if (incomingScore > existingScore) {
+        byUrl[url] = <String, String>{...existing, ...incoming};
+      }
     }
   }
   return byUrl.values.toList();
@@ -686,6 +735,64 @@ class CatalogEngine {
     return ranked();
   }
 
+  /// Fetch the community-maintained best public tracker list. It is
+  /// cached for 24 hours so tracker discovery cannot stall every playback start.
+  Future<List<String>> fetchSupplementalTrackers({bool forceRefresh = false}) async {
+    final support = await getApplicationSupportDirectory();
+    final cacheFile = File(support.path + '/moviebox-trackers-best.txt');
+    try {
+      if (!forceRefresh && await cacheFile.exists()) {
+        final modified = await cacheFile.lastModified();
+        if (DateTime.now().difference(modified) < const Duration(hours: 24)) {
+          final cached = _parsePublicTrackers(await cacheFile.readAsString());
+          if (cached.isNotEmpty) return cached;
+        }
+      }
+    } catch (_) {}
+
+    const urls = <String>[
+      'https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt',
+      'https://ngosang.github.io/trackerslist/trackers_best.txt',
+      'https://cdn.jsdelivr.net/gh/ngosang/trackerslist@master/trackers_best.txt',
+    ];
+    for (final url in urls) {
+      try {
+        final response = await _client.get(
+          Uri.parse(url),
+          headers: const {'User-Agent': 'MovieBoxNexus/1.2', 'Accept': 'text/plain'},
+        ).timeout(const Duration(seconds: 5));
+        if (response.statusCode != 200) continue;
+        final trackers = _parsePublicTrackers(response.body);
+        if (trackers.isEmpty) continue;
+        try {
+          await cacheFile.parent.create(recursive: true);
+          await cacheFile.writeAsString(trackers.join('\\n'), flush: true);
+        } catch (_) {}
+        return trackers;
+      } catch (_) {}
+    }
+    return <String>[];
+  }
+
+  List<String> _parsePublicTrackers(String body) {
+    final trackers = <String>[];
+    final seen = <String>{};
+    for (final raw in body.split(RegExp(r'\\r?\\n'))) {
+      final value = raw.trim();
+      if (value.isEmpty || value.startsWith('#')) continue;
+      final uri = Uri.tryParse(value);
+      if (uri == null ||
+          uri.host.isEmpty ||
+          !{'udp', 'http', 'https'}.contains(uri.scheme) ||
+          !seen.add(uri.toString())) {
+        continue;
+      }
+      trackers.add(uri.toString());
+      if (trackers.length >= 24) break;
+    }
+    return trackers;
+  }
+
   /// Bounded GET-range probe for direct URLs. It reads at most the first
   /// response chunk and rejects expired/error HTML endpoints before Smart Play
   /// hands the URL to Media3. Provider headers are preserved.
@@ -781,13 +888,18 @@ class CatalogEngine {
   /// Validate a Live TV URL at the media level. For HLS this follows a master
   /// playlist to a media playlist, then fetches the first actual segment.
   /// A reachable #EXTM3U manifest alone is not treated as a playable channel.
-  Future<bool> _probeLiveTvUrl(Uri uri, {int depth = 0}) async {
+  Future<bool> _probeLiveTvUrl(
+    Uri uri, {
+    int depth = 0,
+    Map<String, String> headers = const <String, String>{},
+  }) async {
     if (depth > 2 || !{'http', 'https'}.contains(uri.scheme)) return false;
     try {
       final request = http.Request('GET', uri)
+        ..headers.addAll(headers)
         ..headers['Range'] = 'bytes=0-65535'
         ..headers['Accept'] = '*/*'
-        ..headers['User-Agent'] = 'MovieBoxNexus/1.1';
+        ..headers.putIfAbsent('User-Agent', () => 'MovieBoxNexus/1.2');
       final response = await _client.send(request).timeout(
         const Duration(seconds: 5),
       );
@@ -839,7 +951,7 @@ class CatalogEngine {
         if (variant != null) break;
       }
       if (variant != null) {
-        return await _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1);
+        return await _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1, headers: headers);
       }
 
       // Media playlists contain segment URIs as non-comment lines. For
@@ -862,7 +974,7 @@ class CatalogEngine {
         }
       }
       if (segment == null) return false;
-      return await _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1);
+      return await _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1, headers: headers);
     } catch (_) {
       return false;
     }
@@ -872,7 +984,11 @@ class CatalogEngine {
     final rawUrl = (item['url'] ?? '').trim();
     final uri = Uri.tryParse(rawUrl);
     if (uri == null || !uri.hasAuthority) return false;
-    return _probeLiveTvUrl(uri);
+    final headers = <String, String>{
+      if ((item['userAgent'] ?? '').isNotEmpty) 'User-Agent': item['userAgent']!,
+      if ((item['referrer'] ?? '').isNotEmpty) 'Referer': item['referrer']!,
+    };
+    return _probeLiveTvUrl(uri, headers: headers);
   }
 
   /// Probe up to eight same-channel feeds concurrently. For HLS, the first
@@ -2461,10 +2577,15 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
           duration: const Duration(seconds: 3),
         ));
       }
+      final headers = <String, String>{
+        if ((working['userAgent'] ?? '').isNotEmpty) 'User-Agent': working['userAgent']!,
+        if ((working['referrer'] ?? '').isNotEmpty) 'Referer': working['referrer']!,
+      };
       widget.onPlay(
         working['name'] ?? channel['name'] ?? 'Live TV',
         working['url'] ?? '',
         working['url'] ?? '',
+        headers: headers,
       );
     } catch (error) {
       if (!mounted) return;
@@ -3546,11 +3667,16 @@ class _DetailsSheetState extends State<DetailsSheet> {
       duration: Duration(seconds: 8),
     ));
     try {
+      final supplementalTrackers = await widget.engine.fetchSupplementalTrackers();
+      final trackers = <String>{
+        ...stream.trackers,
+        ...supplementalTrackers,
+      }.toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
         title: '${widget.meta.name} - $_targetLabel',
         fileIdx: stream.fileIdx,
-        trackers: stream.trackers,
+        trackers: trackers,
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
