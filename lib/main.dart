@@ -50,6 +50,127 @@ const List<MapEntry<String, String>> liveTvPlaylistSources = [
   MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
 ];
 
+class LiveTvSourceProbeResult {
+  final Map<String, String>? working;
+  final List<Map<String, String>> failed;
+
+  const LiveTvSourceProbeResult({
+    required this.working,
+    required this.failed,
+  });
+}
+
+/// Persistent per-feed quarantine. Failed URLs are hidden temporarily, then
+/// actively re-probed after expiry; the registry survives app restarts.
+class LiveTvHealthRegistry {
+  static const String _storageKey = 'moviebox_live_tv_health_v1';
+  static const int _maxEntries = 128;
+  final Map<String, _LiveTvHealthEntry> _entries =
+      <String, _LiveTvHealthEntry>{};
+
+  Future<void> load() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final raw = preferences.getString(_storageKey);
+      if (raw == null || raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      _entries.clear();
+      for (final item in decoded.entries) {
+        final url = item.key.toString();
+        if (url.isEmpty || item.value is! Map) continue;
+        final record = Map<String, dynamic>.from(item.value as Map);
+        final untilMs = record['untilMs'];
+        final channelValue = record['channel'];
+        if (untilMs is! num || channelValue is! Map) continue;
+        final channel = <String, String>{
+          for (final field in channelValue.entries)
+            field.key.toString(): field.value.toString(),
+          'url': url,
+        };
+        _entries[url] = _LiveTvHealthEntry(
+          channel,
+          DateTime.fromMillisecondsSinceEpoch(untilMs.toInt()),
+        );
+      }
+      _trim();
+    } catch (_) {
+      _entries.clear();
+    }
+  }
+
+  bool isQuarantined(String url) => _entries.containsKey(url);
+
+  List<Map<String, String>> dueForRecheck({
+    DateTime? now,
+    int limit = 6,
+  }) {
+    final current = now ?? DateTime.now();
+    final due = _entries.values
+        .where((entry) => !entry.unhealthyUntil.isAfter(current))
+        .toList()
+      ..sort((a, b) => a.unhealthyUntil.compareTo(b.unhealthyUntil));
+    return due
+        .take(limit)
+        .map((entry) => Map<String, String>.from(entry.channel))
+        .toList();
+  }
+
+  Future<void> quarantine(
+    Iterable<Map<String, String>> channels, {
+    Duration duration = const Duration(minutes: 20),
+  }) async {
+    final until = DateTime.now().add(duration);
+    for (final channel in channels) {
+      final url = (channel['url'] ?? '').trim();
+      if (url.isEmpty) continue;
+      _entries[url] = _LiveTvHealthEntry(
+        Map<String, String>.from(channel),
+        until,
+      );
+    }
+    _trim();
+    await _persist();
+  }
+
+  Future<void> markHealthy(String url) async {
+    if (_entries.remove(url) != null) await _persist();
+  }
+
+  void _trim() {
+    if (_entries.length <= _maxEntries) return;
+    final oldest = _entries.entries.toList()
+      ..sort((a, b) => a.value.unhealthyUntil.compareTo(b.value.unhealthyUntil));
+    for (final entry in oldest.take(_entries.length - _maxEntries)) {
+      _entries.remove(entry.key);
+    }
+  }
+
+  Future<void> _persist() async {
+    try {
+      final preferences = await SharedPreferences.getInstance();
+      final payload = <String, dynamic>{
+        for (final entry in _entries.entries)
+          entry.key: <String, dynamic>{
+            'untilMs': entry.value.unhealthyUntil.millisecondsSinceEpoch,
+            'channel': entry.value.channel,
+          },
+      };
+      await preferences.setString(_storageKey, jsonEncode(payload));
+    } catch (_) {
+      // Health checks must never prevent Live TV playback if storage is full
+      // or temporarily unavailable.
+    }
+  }
+}
+
+class _LiveTvHealthEntry {
+  final Map<String, String> channel;
+  final DateTime unhealthyUntil;
+
+  const _LiveTvHealthEntry(this.channel, this.unhealthyUntil);
+}
+
 bool shouldUseCachedLiveTvData({
   required bool cacheExists,
   required int parsedChannelCount,
@@ -991,17 +1112,38 @@ class CatalogEngine {
     return _probeLiveTvUrl(uri, headers: headers);
   }
 
-  /// Probe up to eight same-channel feeds concurrently. For HLS, the first
-  /// video segment must also return bytes before a source is selected.
-  Future<Map<String, String>?> firstWorkingLiveTvSource(
+  /// Expose one feed probe for the quarantine revalidation worker.
+  Future<bool> probeLiveTvSource(Map<String, String> item) =>
+      _probeLiveTvSource(item);
+
+  /// Probe up to eight same-channel feeds concurrently. Return both the first
+  /// playable source and every failed candidate so the UI can quarantine dead
+  /// alternates even when another feed succeeds.
+  Future<LiveTvSourceProbeResult> probeLiveTvSources(
     List<Map<String, String>> candidates,
   ) async {
     final bounded = candidates.take(8).toList();
-    if (bounded.isEmpty) return null;
+    if (bounded.isEmpty) {
+      return const LiveTvSourceProbeResult(
+        working: null,
+        failed: <Map<String, String>>[],
+      );
+    }
     final checks = await Future.wait(bounded.map(_probeLiveTvSource));
     final index = checks.indexWhere((isWorking) => isWorking);
-    return index < 0 ? null : bounded[index];
+    return LiveTvSourceProbeResult(
+      working: index < 0 ? null : bounded[index],
+      failed: <Map<String, String>>[
+        for (var i = 0; i < bounded.length; i++)
+          if (!checks[i]) bounded[i],
+      ],
+    );
   }
+
+  Future<Map<String, String>?> firstWorkingLiveTvSource(
+    List<Map<String, String>> candidates,
+  ) async =>
+      (await probeLiveTvSources(candidates)).working;
 
   void close() => _client.close();
 
@@ -2493,24 +2635,65 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   String _selectedCategory = '*';
   String? _error;
   final _search = TextEditingController();
-  final Map<String, DateTime> _unhealthyUntil = <String, DateTime>{};
+  final LiveTvHealthRegistry _health = LiveTvHealthRegistry();
+  late final Future<void> _healthReady;
   String? _checkingChannelUrl;
   Timer? _autoRefreshTimer;
+  Timer? _healthRevalidationTimer;
+  bool _revalidatingHealth = false;
 
   @override
   void initState() {
     super.initState();
+    _healthReady = _health.load();
+    unawaited(_healthReady.then((_) async {
+      if (!mounted) return;
+      setState(() {});
+      await _revalidateExpiredFeeds();
+    }));
     _load();
     _autoRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) {
       if (mounted && !_loading && !_refreshing) _load(forceRefresh: true);
+    });
+    _healthRevalidationTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+      unawaited(_revalidateExpiredFeeds());
     });
   }
 
   @override
   void dispose() {
     _autoRefreshTimer?.cancel();
+    _healthRevalidationTimer?.cancel();
     _search.dispose();
     super.dispose();
+  }
+
+  /// Revalidate a bounded batch of expired quarantines every five minutes.
+  /// A recovered feed is restored automatically; a still-dead feed gets a
+  /// fresh 20-minute quarantine rather than being retried on every tap.
+  Future<void> _revalidateExpiredFeeds() async {
+    await _healthReady;
+    if (!mounted || _revalidatingHealth) return;
+    final due = _health.dueForRecheck(limit: 6);
+    if (due.isEmpty) return;
+    _revalidatingHealth = true;
+    try {
+      final checks = await Future.wait(
+        due.map(widget.engine.probeLiveTvSource),
+      );
+      for (var i = 0; i < due.length; i++) {
+        final url = due[i]['url'] ?? '';
+        if (url.isEmpty) continue;
+        if (checks[i]) {
+          await _health.markHealthy(url);
+        } else {
+          await _health.quarantine([due[i]]);
+        }
+      }
+      if (mounted) setState(() {});
+    } finally {
+      _revalidatingHealth = false;
+    }
   }
 
   Future<void> _load({bool forceRefresh = false}) async {
@@ -2551,27 +2734,24 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
 
   Future<void> _playChannel(Map<String, String> channel) async {
     if (_checkingChannelUrl != null) return;
+    await _healthReady;
     final candidates = widget.engine.liveTvAlternates(channel, _channels);
     if (candidates.isEmpty) return;
     setState(() => _checkingChannelUrl = channel['url']);
     try {
-      final working = await widget.engine.firstWorkingLiveTvSource(candidates);
+      final probe = await widget.engine.probeLiveTvSources(candidates);
+      final working = probe.working;
+      // Quarantine every failed alternate, not only when all feeds fail. This
+      // prevents a known-dead primary URL from being offered repeatedly.
+      await _health.quarantine(probe.failed);
+      if (working != null) {
+        await _health.markHealthy(working['url'] ?? '');
+      }
       if (!mounted) return;
-      setState(() {
-        _checkingChannelUrl = null;
-        if (working == null) {
-          final until = DateTime.now().add(const Duration(minutes: 20));
-          for (final item in candidates) {
-            final url = item['url'] ?? '';
-            if (url.isNotEmpty) _unhealthyUntil[url] = until;
-          }
-        } else {
-          _unhealthyUntil.remove(working['url']);
-        }
-      });
+      setState(() => _checkingChannelUrl = null);
       if (working == null) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Is channel ke public feeds offline/blocked mile. Dead entries 20 minutes ke liye hide ki gayi hain; Refresh se latest playlist dobara fetch hogi.'),
+          content: Text('Is channel ke public feeds offline/blocked mile. Dead entries 20 minutes ke liye hide ki gayi hain; app unhe background me dobara check karegi.'),
           duration: Duration(seconds: 6),
         ));
         return;
@@ -2603,10 +2783,8 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
 
   @override
   Widget build(BuildContext context) {
-    _unhealthyUntil.removeWhere((_, until) => !until.isAfter(DateTime.now()));
     final healthyCandidates = _channels.where((channel) {
-      final until = _unhealthyUntil[channel['url'] ?? ''];
-      return until == null || !until.isAfter(DateTime.now());
+      return !_health.isQuarantined(channel['url'] ?? '');
     }).toList();
     final countryOptions = <String, String>{};
     final categoryOptions = <String, String>{};
@@ -2710,7 +2888,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + South Asia + Asia + language/category playlists • refresh every 6h; checked on play',
+              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + South Asia + Asia + language/category playlists • refresh every 6h; dead feeds rechecked every 5m',
                   style: const TextStyle(color: _muted, fontSize: 12)),
             ),
           ),
