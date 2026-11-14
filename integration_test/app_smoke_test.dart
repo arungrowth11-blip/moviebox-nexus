@@ -304,6 +304,40 @@ void main() {
         final seekRange = await fetchRange(seekOffset, seekOffset + 65535);
         expect(hex(seekRange.take(16).toList()), expectedSeekHex);
 
+        // A 206 response alone is not sufficient: verify native body-byte delivery.
+        final torrentStatus = await channel.invokeMapMethod<String, dynamic>(
+          'getStatus',
+        );
+        expect(
+          (torrentStatus?['httpRequestCount'] as num?)?.toInt() ?? 0,
+          greaterThanOrEqualTo(2),
+        );
+        expect(
+          (torrentStatus?['lastHttpStatus'] as num?)?.toInt(),
+          HttpStatus.partialContent,
+        );
+        expect(
+          (torrentStatus?['httpBytesSent'] as num?)?.toInt() ?? 0,
+          greaterThanOrEqualTo(firstRange.length + seekRange.length),
+        );
+        expect(
+          (torrentStatus?['lastRequestBytesSent'] as num?)?.toInt(),
+          seekRange.length,
+        );
+        expect(
+          (torrentStatus?['firstByteAtMs'] as num?)?.toInt() ?? 0,
+          greaterThan(0),
+        );
+        expect(
+          (torrentStatus?['lastHttpRangeStart'] as num?)?.toInt(),
+          seekOffset,
+        );
+        expect(
+          (torrentStatus?['lastHttpRangeEnd'] as num?)?.toInt(),
+          seekOffset + 65535,
+        );
+        debugPrint('MovieBox native torrent HTTP telemetry: $torrentStatus');
+
         // Finally exercise the actual in-app Media3 player against the URL
         // returned by the magnet bridge—not a separate HTTP test server.
         // Integration-test teardown can leave the test binding in a non-resumed
