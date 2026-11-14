@@ -1011,6 +1011,26 @@ jobs:
           set -euo pipefail
           cat > "$RUNNER_TEMP/moviebox-emulator-script.sh" <<'MOVIEBOX_EMULATOR_SCRIPT'
           set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-emulator-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          collect_moviebox_diagnostics() {
+            exit_code=$?
+            set +e
+            printf 'exit_code=%s\n' "$exit_code" > "$diagnostics_dir/run-summary.txt"
+            printf 'commit=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)" >> "$diagnostics_dir/run-summary.txt"
+            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
+            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
+            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
+            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
+            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
+            cp "$RUNNER_TEMP/moviebox-local-seed.log" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-range-server.log" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-local-seed.json" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-emulator-script.sh" "$diagnostics_dir/" 2>/dev/null || true
+            return 0
+          }
+          trap collect_moviebox_diagnostics EXIT
+
           # Route emulator loopback peer traffic to the runner-host seeder.
           adb reverse tcp:6881 tcp:6881
           adb reverse --list
@@ -1019,13 +1039,13 @@ jobs:
           # The emulator-runner action splits its "script" input into individual
           # lines, so control-flow blocks must live in a separate script file.
           set +e
-          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart
-          integration_status=$?
+          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart 2>&1 | tee "$diagnostics_dir/flutter-integration.log"
+          integration_status=${PIPESTATUS[0]}
           set -e
           if [ "$integration_status" -ne 0 ]; then
             echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
-            adb logcat -d -v time > "$RUNNER_TEMP/moviebox-emulator-logcat.txt" || true
-            grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$RUNNER_TEMP/moviebox-emulator-logcat.txt" | tail -n 300 || true
+            adb logcat -d -v time > "$diagnostics_dir/logcat-on-integration-failure.txt" || true
+            grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$diagnostics_dir/logcat-on-integration-failure.txt" | tail -n 300 || true
             echo "----- deterministic torrent seeder log -----"
             cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
             echo "----- direct MP4 range server log -----"
@@ -1102,3 +1122,12 @@ jobs:
           # android-emulator-runner parses this input as one command per line.
           # Keep it to a single Bash invocation so loops/if blocks retain state.
           script: bash "$RUNNER_TEMP/moviebox-emulator-script.sh"
+
+      - name: Upload emulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Emulator-Diagnostics
+          path: ${{ runner.temp }}/moviebox-emulator-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
