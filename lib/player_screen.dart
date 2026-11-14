@@ -4,6 +4,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 const Color _movieBoxRed = Color(0xFFE50914);
 const Color _movieBoxCyan = Color(0xFF20DDF2);
@@ -50,6 +51,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
   Timer? _media3Watchdog;
+  Timer? _media3PlaybackStartWatchdog;
   Timer? _torrentStatusTimer;
   String _torrentStatusMessage = '';
   String _torrentTechnicalLine = '';
@@ -156,6 +158,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       final downloaded = number('downloadedBytes');
       final tracker = (snapshot['currentTracker'] ?? '').toString();
       final lastError = (snapshot['lastError'] ?? '').toString();
+      final httpBytesSent = number('httpBytesSent');
+      final lastHttpStatus = number('lastHttpStatus');
+      final lastRangeStart = number('lastHttpRangeStart');
+      final lastRangeEnd = number('lastHttpRangeEnd');
+      final lastRequestBytesSent = number('lastRequestBytesSent');
+      final firstByteAtMs = number('firstByteAtMs');
+      final lastPieceIndex = number('lastPieceIndex');
+      final lastPieceWaitMs = number('lastPieceWaitMs');
+      final lastHttpError = (snapshot['lastHttpError'] ?? '').toString();
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
@@ -193,6 +204,13 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         if (active) 'Discovered: $knownPeers peers / $knownSeeds seeds',
         if (active) 'Downloaded: $downloaded bytes',
         if (tracker.isNotEmpty) 'Last working tracker: $tracker',
+        if (lastHttpStatus > 0) 'HTTP: $lastHttpStatus',
+        if (lastRangeStart >= 0) 'Last range: $lastRangeStart-$lastRangeEnd',
+        if (httpBytesSent > 0) 'Loopback body bytes sent: $httpBytesSent',
+        if (lastRequestBytesSent > 0) 'Last response bytes: $lastRequestBytesSent',
+        if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
+        if (lastPieceIndex >= 0) 'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
+        if (lastHttpError.isNotEmpty) 'HTTP/piece error: $lastHttpError',
       ].join(' • ');
       if (message != _torrentStatusMessage || technical != _torrentTechnicalLine) {
         setState(() {
@@ -229,6 +247,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
     // A connected BitTorrent swarm can still contain a codec/container that
     // Media3 cannot decode. Try the bundled VLC engine against the same
     // loopback HTTP stream before declaring the source unusable.
@@ -259,6 +278,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   void _startMedia3() {
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    _vlcInitStarted = false;
     _usingVlc = false;
     _loading = true;
     _error = null;
@@ -380,6 +401,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           _error = null;
           _engineLabel = 'Media3 / ExoPlayer';
         });
+        _startMedia3PlaybackStartWatchdog(initializedController);
+        // AutoPlay is configured on BetterPlayer; issue one explicit play
+        // command after initialization to recover a stale lifecycle play gate.
+        unawaited(initializedController.play().catchError((Object error) {
+          debugPrint('MovieBox Media3 initial play command failed: $error');
+        }));
         break;
       case BetterPlayerEventType.exception:
         final details = event.parameters?.toString() ?? 'Unsupported stream or network error';
@@ -403,9 +430,148 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
+  void _startMedia3PlaybackStartWatchdog(BetterPlayerController controller) {
+    _media3PlaybackStartWatchdog?.cancel();
+    final startedAt = DateTime.now();
+    final initialPosition =
+        controller.videoPlayerController?.value.position ?? Duration.zero;
+    var playRetryAttempted = false;
+    var resolving = false;
+
+    late final Timer watchdog;
+    watchdog = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted || _disposed || _usingVlc || !identical(_media3, controller)) {
+        watchdog.cancel();
+        return;
+      }
+      final value = controller.videoPlayerController?.value;
+      if (value == null || !value.initialized) return;
+      final elapsed = DateTime.now().difference(startedAt);
+      final decision = Media3StartupPolicy.evaluate(
+        isPlaying: value.isPlaying,
+        initialPosition: initialPosition,
+        currentPosition: value.position,
+        elapsed: elapsed,
+        isEmbeddedTorrent: _isEmbeddedTorrent,
+        httpBytesSent: 0,
+      );
+      if (decision == Media3StartupDecision.started) {
+        watchdog.cancel();
+        return;
+      }
+      if (!playRetryAttempted && elapsed >= const Duration(seconds: 4)) {
+        playRetryAttempted = true;
+        unawaited(controller.play().catchError((Object error) {
+          debugPrint('MovieBox Media3 playback-start retry failed: $error');
+        }));
+      }
+      if (elapsed < Media3StartupPolicy.startupTimeout || resolving) return;
+      resolving = true;
+      unawaited(_resolveMedia3StartupStall(
+        controller,
+        watchdog,
+        startedAt,
+        initialPosition,
+      ));
+    });
+    _media3PlaybackStartWatchdog = watchdog;
+  }
+
+  Future<void> _resolveMedia3StartupStall(
+    BetterPlayerController controller,
+    Timer watchdog,
+    DateTime startedAt,
+    Duration initialPosition,
+  ) async {
+    Map<String, dynamic> snapshot = <String, dynamic>{};
+    var nativeSnapshotAvailable = false;
+    if (_isEmbeddedTorrent) {
+      try {
+        final result = await _torrentDiagnostics
+            .invokeMapMethod<String, dynamic>('getStatus')
+            .timeout(const Duration(seconds: 4));
+        if (result != null) {
+          snapshot = result;
+          nativeSnapshotAvailable = true;
+        }
+      } catch (error) {
+        debugPrint('MovieBox first-byte diagnostics unavailable: $error');
+      }
+    }
+    if (!mounted || _disposed || _usingVlc || !identical(_media3, controller)) {
+      watchdog.cancel();
+      return;
+    }
+    final value = controller.videoPlayerController?.value;
+    if (value == null || !value.initialized) {
+      watchdog.cancel();
+      return;
+    }
+    if (_isEmbeddedTorrent && !nativeSnapshotAvailable) {
+      watchdog.cancel();
+      setState(() {
+        _loading = false;
+        _error = 'The torrent engine diagnostics could not be read. '
+            'MovieBox will not guess whether video bytes arrived or switch players without evidence.';
+      });
+      return;
+    }
+    final httpBytesSent = (snapshot['httpBytesSent'] as num?)?.toInt() ?? 0;
+    final decision = Media3StartupPolicy.evaluate(
+      isPlaying: value.isPlaying,
+      initialPosition: initialPosition,
+      currentPosition: value.position,
+      elapsed: DateTime.now().difference(startedAt),
+      isEmbeddedTorrent: _isEmbeddedTorrent,
+      httpBytesSent: httpBytesSent,
+    );
+    if (decision == Media3StartupDecision.started) {
+      watchdog.cancel();
+      return;
+    }
+    if (decision == Media3StartupDecision.wait) return;
+    watchdog.cancel();
+    if (decision == Media3StartupDecision.noTorrentBytes) {
+      int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final peers = number('connectedPeers');
+      final seeds = number('connectedSeeds');
+      final knownPeers = number('knownPeers');
+      final downloaded = number('downloadedBytes');
+      final status = number('lastHttpStatus');
+      final lastError = (snapshot['lastHttpError'] ?? '').toString();
+      final tracker = (snapshot['currentTracker'] ?? '').toString();
+      final details = <String>[
+        'HTTP status: ${status == 0 ? 'no response' : status}',
+        'loopback body bytes sent: 0',
+        'torrent downloaded bytes: $downloaded',
+        'connected peers/seeds: $peers/$seeds',
+        'discovered peers: $knownPeers',
+        if (tracker.isNotEmpty) 'tracker: $tracker',
+        if (lastError.isNotEmpty) 'last piece/HTTP error: $lastError',
+      ].join(' • ');
+      debugPrint('MovieBox torrent first-byte failure: $details');
+      setState(() {
+        _loading = false;
+        _torrentStatusMessage =
+            'Torrent metadata/player initialized, but no video body bytes were sent.';
+        _torrentTechnicalLine = details;
+        _error = 'No playable video bytes have been emitted by this torrent source yet. '
+            'Peer counts and HTTP response headers do not prove that the requested video pieces arrived. '
+            'Retry after the source or peer connection changes. $details';
+      });
+      return;
+    }
+    _handleMedia3Problem(
+      'Media3 initialized but its playback clock did not advance after '
+      '${Media3StartupPolicy.startupTimeout.inSeconds}s; '
+      'loopback body bytes sent=$httpBytesSent. Trying VLC compatibility playback.',
+    );
+  }
+
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
 
     final unsupportedVlcHeaders = widget.headers.keys.where((key) {
       final normalized = key.toLowerCase();
@@ -1092,6 +1258,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
     _torrentStatusTimer?.cancel();
     _media3?.dispose(forceDispose: true);
 
