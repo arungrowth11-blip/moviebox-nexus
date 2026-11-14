@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:moviebox_nexus/main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test('M3U parser extracts worldwide metadata and filters adult entries', () {
@@ -219,6 +220,33 @@ void main() {
     expect(ranked.single['healthScore'], '94.2');
   });
 
+  test('Live TV quarantine persists and returns expired feeds for revalidation', () async {
+    SharedPreferences.setMockInitialValues({});
+    final registry = LiveTvHealthRegistry();
+    await registry.load();
+    const url = 'https://example.test/channel.m3u8';
+    final channel = <String, String>{
+      'url': url,
+      'name': 'Test Channel',
+      'userAgent': 'MovieBoxTest/1.0',
+    };
+
+    await registry.quarantine([channel], duration: Duration.zero);
+    expect(registry.isQuarantined(url), isTrue);
+    expect(registry.dueForRecheck(limit: 6), hasLength(1));
+
+    final restored = LiveTvHealthRegistry();
+    await restored.load();
+    expect(restored.isQuarantined(url), isTrue);
+    final due = restored.dueForRecheck(limit: 6);
+    expect(due.single['url'], url);
+    expect(due.single['userAgent'], 'MovieBoxTest/1.0');
+
+    await restored.markHealthy(url);
+    expect(restored.isQuarantined(url), isFalse);
+    expect(restored.dueForRecheck(limit: 6), isEmpty);
+  });
+
   test('Live TV failover validates the HLS segment and forwards provider headers', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final baseUrl = 'http://127.0.0.1:' + server.port.toString();
@@ -275,9 +303,18 @@ void main() {
     try {
       final candidates = engine.liveTvAlternates(selected, [selected, alternate]);
       expect(candidates, hasLength(2));
-      final working = await engine.firstWorkingLiveTvSource(candidates);
+      final probe = await engine.probeLiveTvSources(candidates);
+      final working = probe.working;
       expect(working?['url'], alternate['url']);
+      expect(
+        probe.failed.map((item) => item['url']),
+        contains(selected['url']),
+      );
       expect(working?['source'], 'Hindi');
+      expect(
+        (await engine.firstWorkingLiveTvSource(candidates))?['url'],
+        alternate['url'],
+      );
       expect(working?['userAgent'], 'MovieBoxLiveTest/1.0');
       expect(working?['referrer'], 'https://broadcaster.example/');
     } finally {
