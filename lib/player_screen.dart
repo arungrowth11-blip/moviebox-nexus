@@ -229,15 +229,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
-    if (_isEmbeddedTorrent) {
-      if (!mounted || _disposed) return;
-      setState(() {
-        _loading = false;
-        _engineLabel = 'Torrent source unavailable';
-        _error = '$reason. $_torrentStatusMessage. The local torrent stream did not deliver playable video. Go back and choose a source with reachable peers or a direct HTTP/HLS stream. Switching to VLC cannot repair an unreachable swarm.';
-      });
-      return;
-    }
+    // A connected BitTorrent swarm can still contain a codec/container that
+    // Media3 cannot decode. Try the bundled VLC engine against the same
+    // loopback HTTP stream before declaring the source unusable.
     unawaited(_switchToVlc(reason));
   }
 
@@ -411,10 +405,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
-    if (_isEmbeddedTorrent) {
-      _handleMedia3Problem(reason);
-      return;
-    }
     _media3Watchdog?.cancel();
 
     final unsupportedVlcHeaders = widget.headers.keys.where((key) {
@@ -452,7 +442,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _usingVlc = true;
       _loading = true;
       _error = null;
-      _engineLabel = 'VLC compatibility engine';
+      _engineLabel = _isEmbeddedTorrent
+          ? 'VLC torrent compatibility fallback'
+          : 'VLC compatibility engine';
     });
 
     try {
@@ -499,7 +491,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Media3 and VLC could not start this stream: $error';
+        _error = _isEmbeddedTorrent
+            ? 'Media3 and VLC could not open this torrent stream: $error. '
+                '$_torrentStatusMessage. $_torrentTechnicalLine. '
+                'Peer count and download rate do not prove that the requested video pieces were delivered.'
+            : 'Media3 and VLC could not start this stream: $error';
       });
     }
   }
@@ -525,9 +521,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (value.hasError) {
       setState(() {
         _loading = false;
-        _error = value.errorDescription.isEmpty
+        final vlcReason = value.errorDescription.isEmpty
             ? 'VLC could not decode or open this stream.'
             : value.errorDescription;
+        _error = _isEmbeddedTorrent
+            ? '$vlcReason. $_torrentStatusMessage. $_torrentTechnicalLine'
+            : vlcReason;
       });
     }
 
