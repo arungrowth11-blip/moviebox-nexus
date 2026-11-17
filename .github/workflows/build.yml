@@ -624,8 +624,118 @@ jobs:
 
 
 
-  android-emulator-smoke:
-    name: Android emulator smoke test (independent)
+  release-apk-verify:
+    name: Install and launch the exact release APK
+    needs: [android-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download required release APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MovieBox-Nexus-OS-APK
+          path: dist
+
+      - name: Prepare release APK verification diagnostics and script
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          printf 'commit=%s\\n' "$GITHUB_SHA" > "$diagnostics_dir/preflight.txt"
+          cat > "$RUNNER_TEMP/moviebox-release-apk-verify.sh" <<'MOVIEBOX_RELEASE_VERIFY'
+          set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          collect_release_diagnostics() {
+            status=$?
+            set +e
+            printf 'exit_code=%s\\n' "$status" > "$diagnostics_dir/run-summary.txt"
+            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
+            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
+            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
+            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
+            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
+            cp dist/MovieBox-Nexus-OS.apk "$diagnostics_dir/" 2>/dev/null || true
+            sha256sum dist/MovieBox-Nexus-OS.apk > "$diagnostics_dir/apk-sha256.txt" 2>&1 || true
+            return 0
+          }
+          trap collect_release_diagnostics EXIT
+
+          apk="dist/MovieBox-Nexus-OS.apk"
+          test -s "$apk"
+          sha256sum "$apk" | tee "$diagnostics_dir/apk-sha256.txt"
+          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$aapt"
+          "$aapt" dump badging "$apk" | tee "$diagnostics_dir/apk-badging.txt"
+          grep -q "package: name='com.moviebox.nexus'" "$diagnostics_dir/apk-badging.txt"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
+
+          adb install -r "$apk"
+          adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"
+          adb logcat -c
+          start_output="$(adb shell am start -W -n com.moviebox.nexus/.MainActivity 2>&1)"
+          printf '%s\\n' "$start_output" | tee "$diagnostics_dir/activity-start.txt"
+          printf '%s' "$start_output" | grep -q 'Status: ok'
+
+          app_pid=""
+          for attempt in $(seq 1 30); do
+            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\\r' | awk '{print $1}' || true)"
+            if [ -n "$app_pid" ]; then break; fi
+            sleep 2
+          done
+          test -n "$app_pid" || { echo "::error::Release APK process did not stay alive after explicit launch."; exit 1; }
+          echo "Release APK process is alive: $app_pid"
+          sleep 5
+
+          activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
+          window_dump="$(adb shell dumpsys window 2>&1 || true)"
+          resumed_line="$(printf '%s\\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
+          focus_line="$(printf '%s\\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
+          echo "Resumed activity: ${resumed_line:-not reported}"
+          echo "Focused window: ${focus_line:-not reported}"
+          if [[ "$resumed_line$focus_line" != *com.moviebox.nexus* ]]; then
+            echo "::error::Installed APK process exists but app is not the foreground activity/window."
+            exit 1
+          fi
+
+          adb logcat -d --pid="$app_pid" -v brief > "$diagnostics_dir/app-logcat.txt" 2>&1 || true
+          if grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback' "$diagnostics_dir/app-logcat.txt"; then
+            echo "::error::Release APK emitted a fatal native/plugin startup error."
+            exit 1
+          fi
+          echo "Release APK install, process, native startup and foreground launch verified."
+          MOVIEBOX_RELEASE_VERIFY
+          chmod +x "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
+
+      - name: Run release APK emulator verification
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -memory 2048
+          disable-animations: true
+          script: bash "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
+
+      - name: Upload release APK verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Release-APK-Verification-Diagnostics
+          path: ${{ runner.temp }}/moviebox-release-apk-verify-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
+  integration-tests:
+    name: Android seeded-torrent and Media3 integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -996,13 +1106,6 @@ jobs:
           cat "$state_file"
           echo "Deterministic local torrent seeder is ready."
 
-      - name: Download already-published release APK (optional when release build succeeds)
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: MovieBox-Nexus-OS-APK
-          path: dist
-
       - name: Reclaim runner disk space for Android emulator
         shell: bash
         run: |
@@ -1083,54 +1186,7 @@ jobs:
             exit "$integration_status"
           fi
 
-          if [ -s dist/MovieBox-Nexus-OS.apk ]; then
-          # Install the exact release APK already uploaded by android-release.
-          adb uninstall com.moviebox.nexus || true
-          adb install dist/MovieBox-Nexus-OS.apk
-          adb logcat -c
-          adb shell monkey -p com.moviebox.nexus 1
-          app_pid=""
-          for attempt in $(seq 1 30); do
-            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\\r' || true)"
-            if [ -n "$app_pid" ]; then
-              break
-            fi
-            sleep 2
-          done
-          if [ -z "$app_pid" ]; then
-            echo "::error::Release APK process did not stay alive after launch."
-            adb shell dumpsys activity activities || true
-            adb logcat -d -v time | tail -n 250 || true
-            exit 1
-          fi
-          echo "Release APK process is alive: $app_pid"
-          sleep 5
-          if adb logcat -d -v brief | grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback'; then
-            echo "::error::Release APK emitted a fatal native/plugin startup error on Android emulator."
-            exit 1
-          fi
-          # Android 15 emulator builds expose different activity/window fields.
-          # Capture both sources and accept the package in either actual resumed
-          # activity or current focused window; print them for any future diagnosis.
-          activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
-          window_dump="$(adb shell dumpsys window 2>&1 || true)"
-          resumed_line="$(printf '%s\\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
-          focus_line="$(printf '%s\\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
-          echo "Release APK resumed activity: ${resumed_line:-not reported by this Android build}"
-          echo "Release APK focused window: ${focus_line:-not reported by this Android build}"
-          if [[ "$resumed_line$focus_line" != *com.moviebox.nexus* ]]; then
-            echo "::error::Release APK process exists but Android does not report its activity/window as foreground."
-            echo "----- matching activity records -----"
-            printf '%s\\n' "$activity_dump" | grep -F 'com.moviebox.nexus' | tail -n 30 || true
-            echo "----- matching window records -----"
-            printf '%s\\n' "$window_dump" | grep -F 'com.moviebox.nexus' | tail -n 30 || true
-            adb logcat -d -v time | tail -n 250 || true
-            exit 1
-          fi
-          else
-            echo "::warning::Release APK artifact is unavailable; seeded torrent and Media3 integration results are still reported independently."
-          fi
-          echo "Android emulator integration, seeded magnet, byte-range seek and Media3 playback tests completed; release APK launch is checked when its artifact exists."
+          echo "Android seeded torrent, byte-range seek and Media3 integration tests completed."
 
           if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
             kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
@@ -1141,9 +1197,15 @@ jobs:
           MOVIEBOX_EMULATOR_SCRIPT
           chmod +x "$RUNNER_TEMP/moviebox-emulator-script.sh"
 
-      - name: Android emulator integration and release APK smoke test
-        # This is a required CI gate. The release APK was already uploaded by
-        # android-release, but a failed emulator test must remain a visible failure.
+      - name: Prepare integration diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moviebox-emulator-diagnostics"
+          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
+
+      - name: Android emulator integration tests
+        # Independent of android-release so media regressions are still exercised
+        # when APK packaging or signing fails.
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
