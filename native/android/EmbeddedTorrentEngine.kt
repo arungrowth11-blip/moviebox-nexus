@@ -576,6 +576,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                                 requestCancelled
                             )
                         ) {
+                            if (requestCancelled.get() || pending.cancelled ||
+                                activePending !== pending || Thread.currentThread().isInterrupted
+                            ) {
+                                return
+                            }
                             throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
                         }
                         val globalOffset = target.fileOffset + position
