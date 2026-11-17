@@ -24,7 +24,6 @@ import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.min
 
 /**
  * One in-process libtorrent session and a localhost HTTP byte-range endpoint.
