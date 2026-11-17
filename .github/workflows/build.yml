@@ -636,6 +636,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Prepare release verification diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics/preflight.txt"
+
       - name: Download required release APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -744,6 +750,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Prepare integration diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moviebox-emulator-diagnostics"
+          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -1199,12 +1211,6 @@ jobs:
           fi
           MOVIEBOX_EMULATOR_SCRIPT
           chmod +x "$RUNNER_TEMP/moviebox-emulator-script.sh"
-
-      - name: Prepare integration diagnostics
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/moviebox-emulator-diagnostics"
-          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
 
       - name: Android emulator integration tests
         # Independent of android-release so media regressions are still exercised
