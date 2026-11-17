@@ -640,7 +640,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
-          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics/preflight.txt"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics/preflight.txt"
 
       - name: Download required release APK artifact
         uses: actions/download-artifact@v4
@@ -755,7 +755,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/moviebox-emulator-diagnostics"
-          printf 'commit=%s\\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
