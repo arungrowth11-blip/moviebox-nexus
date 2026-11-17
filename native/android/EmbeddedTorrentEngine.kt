@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
@@ -409,6 +410,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private fun serveRequest(socket: Socket, pending: PendingStream) {
         socket.use { client ->
+            val requestCancelled = AtomicBoolean(false)
             try {
                 client.soTimeout = 15_000
                 val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.US_ASCII))
@@ -430,6 +432,32 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             line.substring(separator + 1).trim()
                     }
                 }
+                // Watch the request side independently while a piece is pending.
+                // HTTP clients close the range socket when seeking/releasing a load;
+                // a short read timeout lets us detect that FIN without blocking the
+                // stream worker for the full piece deadline.
+                client.soTimeout = 250
+                val disconnectMonitor = Thread({
+                    try {
+                        while (!requestCancelled.get() && !client.isClosed) {
+                            if (reader.readLine() == null) {
+                                requestCancelled.set(true)
+                                break
+                            }
+                        }
+                    } catch (_: java.net.SocketTimeoutException) {
+                        // No pipelined request data; keep watching for a disconnect.
+                        if (!requestCancelled.get() && !client.isClosed) {
+                            runCatching { Thread.sleep(25) }
+                        }
+                    } catch (_: Exception) {
+                        requestCancelled.set(true)
+                    }
+                }, "moviebox-torrent-http-disconnect").apply {
+                    isDaemon = true
+                    start()
+                }
+
                 val requestedRange = headers["range"] ?: "none"
                 pending.httpRequestCount.incrementAndGet()
                 pending.lastRequestBytesSent = 0L
@@ -484,10 +512,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         pending,
                         target,
                         start,
-                        FIRST_RESPONSE_PIECE_WAIT_MS
+                        FIRST_RESPONSE_PIECE_WAIT_MS,
+                        requestCancelled
                     )
                 ) {
-                    if (pending.cancelled || activePending !== pending) return
+                    if (requestCancelled.get() || pending.cancelled || activePending !== pending) return
                     pending.lastHttpStatus = 503
                     pending.lastHttpError =
                         "First requested torrent piece was unavailable before HTTP headers."
@@ -540,7 +569,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     // GET already passed the pre-header piece gate above.
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
-                        if (!waitForPiece(pending, target, position, STREAM_PIECE_TIMEOUT_MS)) {
+                        if (!waitForPiece(
+                                pending,
+                                target,
+                                position,
+                                STREAM_PIECE_TIMEOUT_MS,
+                                requestCancelled
+                            )
+                        ) {
                             throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
                         }
                         val globalOffset = target.fileOffset + position
@@ -562,11 +598,20 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     Log.i(TAG, "HTTP response complete bytes=$bytesSent expected=$contentLength")
                 }
             } catch (error: Exception) {
-                // Player range requests can be cancelled during seeks; retain the
-                // reason in logcat so a genuine transport failure is distinguishable.
-                pending.lastHttpError = "${error.javaClass.simpleName}: ${error.message ?: "No error message."}".take(512)
+                // A timeout after headers are flushed cannot be converted to a new
+                // HTTP status. Abort the body and retain byte-count evidence.
+                pending.lastHttpError =
+                    "${error.javaClass.simpleName}: ${error.message ?: "No error message."}".take(512)
                 if (error is java.net.SocketException) {
                     Log.w(TAG, "HTTP client disconnected/cancelled: ${error.message}")
+                } else if (error is java.net.SocketTimeoutException && pending.lastHttpStatus in 200..206) {
+                    Log.e(
+                        TAG,
+                        "HTTP body aborted after committed status=${pending.lastHttpStatus}; " +
+                            "bodyBytesSent=${pending.lastRequestBytesSent}; " +
+                            "range=$requestedRange; detail=${pending.lastHttpError}",
+                        error
+                    )
                 } else {
                     Log.e(
                         TAG,
@@ -574,6 +619,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         error
                     )
                 }
+            } finally {
+                requestCancelled.set(true)
             }
         }
     }
@@ -582,7 +629,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         pending: PendingStream,
         target: StreamTarget,
         filePosition: Long,
-        timeoutMs: Long
+        timeoutMs: Long,
+        requestCancelled: AtomicBoolean
     ): Boolean {
         val globalOffset = target.fileOffset + filePosition
         val pieceIndex = (globalOffset / target.pieceLength).toInt()
@@ -594,7 +642,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         runCatching { target.handle.setPieceDeadline(pieceIndex, PIECE_REQUEST_DEADLINE_MS) }
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            if (pending.cancelled || activePending !== pending || Thread.currentThread().isInterrupted) {
+            if (requestCancelled.get() || pending.cancelled ||
+                activePending !== pending || Thread.currentThread().isInterrupted
+            ) {
                 pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
                 pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
                 return false
@@ -603,7 +653,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // Allow libtorrent's disk thread to flush the verified piece before reading.
                 Thread.sleep(80)
                 pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-                return !pending.cancelled &&
+                return !requestCancelled.get() &&
+                    !pending.cancelled &&
                     activePending === pending &&
                     !Thread.currentThread().isInterrupted
             }
