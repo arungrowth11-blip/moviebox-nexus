@@ -259,7 +259,7 @@ void main() {
             'etag',
           ]) {
             final values = upstreamResponse.headers[header];
-            if (values.isNotEmpty) {
+            if (values != null && values.isNotEmpty) {
               incoming.response.headers.set(header, values);
             }
           }

@@ -391,6 +391,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         final initializedController = _media3;
         if (initializedController != null) {
           widget.onMedia3ControllerReady?.call(initializedController);
+          _startMedia3PlaybackStartWatchdog(initializedController);
+          // AutoPlay is configured on BetterPlayer; issue one explicit play
+          // command after initialization to recover a stale lifecycle play gate.
+          unawaited(initializedController.play().catchError((Object error) {
+            debugPrint('MovieBox Media3 initial play command failed: $error');
+          }));
         }
         _reportPrepared();
         _preferredHindiAudioApplied = false;
@@ -401,12 +407,6 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           _error = null;
           _engineLabel = 'Media3 / ExoPlayer';
         });
-        _startMedia3PlaybackStartWatchdog(initializedController);
-        // AutoPlay is configured on BetterPlayer; issue one explicit play
-        // command after initialization to recover a stale lifecycle play gate.
-        unawaited(initializedController.play().catchError((Object error) {
-          debugPrint('MovieBox Media3 initial play command failed: $error');
-        }));
         break;
       case BetterPlayerEventType.exception:
         final details = event.parameters?.toString() ?? 'Unsupported stream or network error';

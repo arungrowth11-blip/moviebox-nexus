@@ -574,6 +574,29 @@ jobs:
       - name: Format Dart source
         run: dart format --output=none --set-exit-if-changed lib test integration_test
 
+      # Export the exact canonical Dart formatting patch for review when the
+      # non-mutating formatter gate detects an out-of-format source commit.
+      - name: Export Dart formatter patch for repair
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_dir="$RUNNER_TEMP/moviebox-dart-format-export"
+          mkdir -p "$export_dir"
+          dart format lib test integration_test
+          git diff --binary -- lib test integration_test > "$export_dir/dart-format.patch"
+          test -s "$export_dir/dart-format.patch"
+          git diff --stat -- lib test integration_test
+
+      - name: Upload Dart formatter patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Dart-Formatter-Patch
+          path: ${{ runner.temp }}/moviebox-dart-format-export/dart-format.patch
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Static analysis
         run: flutter analyze --no-pub --no-fatal-infos
 
@@ -617,7 +640,7 @@ jobs:
           test -s dist/MovieBox-Nexus-OS.apk
 
       - name: Upload APK artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: MovieBox-Nexus-OS-APK
