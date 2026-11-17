@@ -73,6 +73,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var lastPieceIndex = -1
         @Volatile var lastPieceWaitMs = 0L
         @Volatile var lastHttpError = ""
+        @Volatile var cancelled = false
     }
 
     fun initialize() {
@@ -349,6 +350,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             startupTask?.cancel(true)
             startupTask = null
             pending?.error = "Playback was stopped."
+            pending?.cancelled = true
             pending?.ready?.countDown()
             stopHttpServer()
 
@@ -474,9 +476,35 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 pending.lastHttpRangeStart = start
                 pending.lastHttpRangeEnd = end
 
-                // Send headers immediately so the in-app player can open its
-                // stream and show its own buffering state instead of waiting on
-                // a blocking MethodChannel call before playback navigation.
+                // HEAD is metadata-only and must never wait for a torrent piece.
+                // For GET, keep the HTTP status uncommitted until the first requested
+                // piece is verified and flushed by libtorrent. This prevents a 206
+                // response followed by an empty body when the swarm is still starting.
+                if (method == "GET" && !waitForPiece(
+                        pending,
+                        target,
+                        start,
+                        FIRST_RESPONSE_PIECE_WAIT_MS
+                    )
+                ) {
+                    if (pending.cancelled || activePending !== pending) return
+                    pending.lastHttpStatus = 503
+                    pending.lastHttpError =
+                        "First requested torrent piece was unavailable before HTTP headers."
+                    Log.w(
+                        TAG,
+                        "Returning HTTP 503 before committing stream headers; " +
+                            "range=$requestedRange timeoutMs=$FIRST_RESPONSE_PIECE_WAIT_MS"
+                    )
+                    writeSimpleResponse(
+                        client,
+                        503,
+                        "Service Unavailable",
+                        "Retry-After: 1\\r\\n",
+                        "First requested torrent piece is not ready. Retry shortly."
+                    )
+                    return
+                }
 
                 val extension = target.file.extension.lowercase(Locale.US)
                 val contentType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
@@ -509,7 +537,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 RandomAccessFile(target.file, "r").use { media ->
                     var position = start
                     var bytesSent = 0L
-                    var firstRequestedPiece = true
+                    // GET already passed the pre-header piece gate above.
+                    var firstRequestedPiece = false
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
                         val pieceWaitMs = if (firstRequestedPiece) FIRST_STREAM_PIECE_TIMEOUT_MS else STREAM_PIECE_TIMEOUT_MS
@@ -568,13 +597,20 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         runCatching { target.handle.setPieceDeadline(pieceIndex, PIECE_REQUEST_DEADLINE_MS) }
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
+            if (pending.cancelled || activePending !== pending || Thread.currentThread().isInterrupted) {
+                pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
+                pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
+                return false
+            }
             if (runCatching { target.handle.havePiece(pieceIndex) }.getOrDefault(false)) {
                 // Allow libtorrent's disk thread to flush the verified piece before reading.
                 Thread.sleep(80)
                 pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-                return true
+                return !pending.cancelled &&
+                    activePending === pending &&
+                    !Thread.currentThread().isInterrupted
             }
-            Thread.sleep(200)
+            Thread.sleep(minOf(200L, (deadline - System.currentTimeMillis()).coerceAtLeast(1L)))
         }
         pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
         pending.lastHttpError = "Timed out waiting for torrent piece=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
@@ -665,6 +701,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
+        private const val FIRST_RESPONSE_PIECE_WAIT_MS = 4_000L
         private const val FIRST_STREAM_PIECE_TIMEOUT_MS = 90_000L
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
