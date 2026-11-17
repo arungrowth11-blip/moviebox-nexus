@@ -99,7 +99,10 @@ jobs:
             mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
             cp "$backup_dir/native-android/MainActivity.kt" android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
             cp "$backup_dir/native-android/EmbeddedTorrentEngine.kt" android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+            cp "$backup_dir/native-android/HttpPieceWaiter.kt" android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
           fi
+          mkdir -p android/app/src/test/kotlin/com/moviebox/nexus
+          cp native/android-test/HttpPieceWaiterTest.kt android/app/src/test/kotlin/com/moviebox/nexus/HttpPieceWaiterTest.kt
 
           if [ -s "$backup_dir/tv_banner/tv_banner.png" ]; then
             mkdir -p android/app/src/main/res/drawable
@@ -542,6 +545,26 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Configure JUnit for native JVM tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle = Path("android/app/build.gradle.kts")
+          source = gradle.read_text(encoding="utf-8")
+          dependency = 'testImplementation("junit:junit:4.13.2")'
+          if dependency not in source:
+              source += f"\\n\\ndependencies {{\\n    {dependency}\\n}}\\n"
+              gradle.write_text(source, encoding="utf-8")
+          if dependency not in gradle.read_text(encoding="utf-8"):
+              raise SystemExit("JUnit 4 dependency was not configured.")
+          PY
+
+      - name: Run deterministic native JVM tests
+        run: ./android/gradlew -p android testDebugUnitTest
+
       - name: Format Dart source
         run: dart format --output=none --set-exit-if-changed lib test integration_test
 
@@ -672,6 +695,7 @@ jobs:
           mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
           cp native/android/MainActivity.kt android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
           cp native/android/EmbeddedTorrentEngine.kt android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+          cp native/android/HttpPieceWaiter.kt android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
 
           python3 - <<'PY'
           from pathlib import Path
