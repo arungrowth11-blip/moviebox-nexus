@@ -411,6 +411,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private fun serveRequest(socket: Socket, pending: PendingStream) {
         socket.use { client ->
             val requestCancelled = AtomicBoolean(false)
+            var requestedRange = "none"
             try {
                 client.soTimeout = 15_000
                 val reader = BufferedReader(InputStreamReader(client.getInputStream(), Charsets.US_ASCII))
@@ -456,7 +457,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     start()
                 }
 
-                val requestedRange = headers["range"] ?: "none"
+                requestedRange = headers["range"] ?: "none"
                 pending.httpRequestCount.incrementAndGet()
                 pending.lastRequestBytesSent = 0L
                 pending.lastHttpError = ""
