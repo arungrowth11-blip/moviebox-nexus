@@ -535,7 +535,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         client,
                         503,
                         "Service Unavailable",
-                        "Retry-After: ${HttpRangePolicy.RETRY_AFTER_SECONDS}\r\n",
+                        HttpRangePolicy.retryAfterHeader(),
                         "First requested torrent piece is not ready. Retry shortly."
                     )
                     return
