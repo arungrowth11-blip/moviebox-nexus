@@ -556,7 +556,7 @@ jobs:
           source = gradle.read_text(encoding="utf-8")
           dependency = 'testImplementation("junit:junit:4.13.2")'
           if dependency not in source:
-              source += f"\\n\\ndependencies {{\\n    {dependency}\\n}}\\n"
+              source += f"\n\ndependencies {{\n    {dependency}\n}}\n"
               gradle.write_text(source, encoding="utf-8")
           if dependency not in gradle.read_text(encoding="utf-8"):
               raise SystemExit("JUnit 4 dependency was not configured.")
