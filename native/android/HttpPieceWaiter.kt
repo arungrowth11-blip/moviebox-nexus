@@ -46,6 +46,13 @@ internal enum class HttpPieceDecision {
 }
 
 /** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
+internal data class HttpByteRange(
+    val start: Long,
+    val end: Long,
+    val partial: Boolean
+)
+
+/** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
 internal object HttpRangePolicy {
     const val RETRY_AFTER_SECONDS = 1
 
@@ -75,6 +82,46 @@ internal object HttpRangePolicy {
         }
 
     fun retryAfterHeader(): String = "Retry-After: $RETRY_AFTER_SECONDS\r\n"
+
+    /**
+     * Parse one byte range. Unsupported/malformed Range fields are ignored and
+     * return the full representation; syntactically valid but unsatisfiable
+     * byte ranges return null so the HTTP layer can answer 416. Multipart ranges
+     * are deliberately not partially served: fall back to a full 200 response.
+     */
+    fun parseRange(header: String?, size: Long): HttpByteRange? {
+        if (size <= 0L) return null
+        fun fullResponse() = HttpByteRange(0L, size - 1L, partial = false)
+
+        val value = header?.trim().orEmpty()
+        if (value.isEmpty() || !value.startsWith("bytes=", ignoreCase = true)) {
+            return fullResponse()
+        }
+        val spec = value.substringAfter('=', "").trim()
+        if (spec.contains(',')) return fullResponse()
+        val dash = spec.indexOf('-')
+        if (dash < 0 || dash != spec.lastIndexOf('-')) return fullResponse()
+
+        val first = spec.substring(0, dash).trim()
+        val last = spec.substring(dash + 1).trim()
+        if (first.isEmpty() && last.isEmpty()) return fullResponse()
+
+        if (first.isEmpty()) {
+            val suffixLength = last.toLongOrNull() ?: return fullResponse()
+            if (suffixLength <= 0L) return null
+            return HttpByteRange(
+                start = (size - suffixLength).coerceAtLeast(0L),
+                end = size - 1L,
+                partial = true
+            )
+        }
+
+        val start = first.toLongOrNull() ?: return fullResponse()
+        if (start < 0L || start >= size) return null
+        val requestedEnd = if (last.isEmpty()) size - 1L else last.toLongOrNull() ?: return fullResponse()
+        if (requestedEnd < start) return null
+        return HttpByteRange(start, min(requestedEnd, size - 1L), partial = true)
+    }
 
     fun bytesToPieceEnd(
         globalOffset: Long,

@@ -105,4 +105,45 @@ class HttpPieceWaiterTest {
             HttpRangePolicy.afterHeaders(pieceReady = false, cancelled = true)
         )
     }
+    @Test
+    fun closedByteRangeIsParsedExactly() {
+        assertEquals(HttpByteRange(10L, 19L, true), HttpRangePolicy.parseRange("bytes=10-19", 100L))
+    }
+
+    @Test
+    fun openEndedByteRangeExtendsToEndOfFile() {
+        assertEquals(HttpByteRange(10L, 99L, true), HttpRangePolicy.parseRange("bytes=10-", 100L))
+    }
+
+    @Test
+    fun suffixByteRangeSelectsLastBytes() {
+        assertEquals(HttpByteRange(68L, 99L, true), HttpRangePolicy.parseRange("bytes=-32", 100L))
+        assertEquals(HttpByteRange(0L, 99L, true), HttpRangePolicy.parseRange("bytes=-500", 100L))
+    }
+
+    @Test
+    fun oversizedRangeEndIsClampedToFileEnd() {
+        assertEquals(HttpByteRange(90L, 99L, true), HttpRangePolicy.parseRange("bytes=90-500", 100L))
+    }
+
+    @Test
+    fun multipartRangesFallBackToFullResponseInsteadOfSilentlyDroppingParts() {
+        assertEquals(HttpByteRange(0L, 99L, false), HttpRangePolicy.parseRange("bytes=0-9,20-29", 100L))
+    }
+
+    @Test
+    fun unsupportedOrMalformedRangeUnitsFallBackToFullResponse() {
+        assertEquals(HttpByteRange(0L, 99L, false), HttpRangePolicy.parseRange("items=0-9", 100L))
+        assertEquals(HttpByteRange(0L, 99L, false), HttpRangePolicy.parseRange("bytes=abc-def", 100L))
+        assertEquals(HttpByteRange(0L, 99L, false), HttpRangePolicy.parseRange("bytes=-", 100L))
+    }
+
+    @Test
+    fun unsatisfiableByteRangesAreRejected() {
+        assertEquals(null, HttpRangePolicy.parseRange("bytes=100-", 100L))
+        assertEquals(null, HttpRangePolicy.parseRange("bytes=30-20", 100L))
+        assertEquals(null, HttpRangePolicy.parseRange("bytes=-0", 100L))
+        assertEquals(null, HttpRangePolicy.parseRange("bytes=0-1", 0L))
+    }
+
 }

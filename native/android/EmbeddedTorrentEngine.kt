@@ -689,30 +689,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         return available
     }
 
-    private fun parseRange(header: String?, size: Long): Triple<Long, Long, Boolean>? {
-        if (size <= 0L) return null
-        if (header.isNullOrBlank()) return Triple(0L, size - 1, false)
-        if (!header.startsWith("bytes=", ignoreCase = true)) return null
-        val pieces = header.substringAfter('=').substringBefore(',').split('-', limit = 2)
-        if (pieces.size != 2) return null
-        return try {
-            val start: Long
-            val end: Long
-            if (pieces[0].isBlank()) {
-                val suffix = pieces[1].toLong()
-                if (suffix <= 0) return null
-                start = (size - suffix).coerceAtLeast(0)
-                end = size - 1
-            } else {
-                start = pieces[0].toLong()
-                end = if (pieces[1].isBlank()) size - 1 else pieces[1].toLong()
-            }
-            if (start < 0 || start >= size || end < start) null
-            else Triple(start, end.coerceAtMost(size - 1), true)
-        } catch (_: NumberFormatException) {
-            null
-        }
-    }
+    private fun parseRange(header: String?, size: Long): HttpByteRange? =
+        HttpRangePolicy.parseRange(header, size)
 
     private fun writeSimpleResponse(
         socket: Socket,
