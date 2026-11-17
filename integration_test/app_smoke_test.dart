@@ -267,8 +267,8 @@ void main() {
           debugPrint('MovieBox 503 retry proxy error: $error\\n$stack');
           if (!incoming.response.headersSent) {
             incoming.response.statusCode = HttpStatus.badGateway;
-            await incoming.response.close();
           }
+          await incoming.response.close();
         }
       });
 
