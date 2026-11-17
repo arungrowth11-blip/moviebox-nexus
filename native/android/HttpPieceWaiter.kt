@@ -74,7 +74,7 @@ internal object HttpRangePolicy {
             HttpPieceDecision.CANCELLED -> null
         }
 
-    fun retryAfterHeader(): String = "Retry-After: $RETRY_AFTER_SECONDS\\r\\n"
+    fun retryAfterHeader(): String = "Retry-After: $RETRY_AFTER_SECONDS\r\n"
 
     fun bytesToPieceEnd(
         globalOffset: Long,
