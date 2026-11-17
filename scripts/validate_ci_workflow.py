@@ -10,7 +10,7 @@ WORKFLOW = Path(".github/workflows/build.yml")
 
 def job_block(source: str, name: str) -> str:
     pattern = re.compile(
-        rf"^  {re.escape(name)}:\\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\\n|\\Z)",
+        rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
         re.MULTILINE | re.DOTALL,
     )
     match = pattern.search(source)
@@ -29,7 +29,7 @@ def main() -> int:
         raise SystemExit("android-release must run independently.")
     if re.search(r"^    needs:", integration, re.MULTILINE):
         raise SystemExit("integration-tests must run independently of the release build.")
-    if not re.search(r"^    needs:\\s*\\[android-release\\]", verify, re.MULTILINE):
+    if not re.search(r"^    needs:\s*\[android-release\]", verify, re.MULTILINE):
         raise SystemExit("release-apk-verify must depend on android-release.")
     if "MovieBox-Nexus-OS-APK" not in release:
         raise SystemExit("android-release does not publish the expected APK artifact.")
