@@ -645,7 +645,7 @@ jobs:
           set -euo pipefail
           diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
           mkdir -p "$diagnostics_dir"
-          printf 'commit=%s\\n' "$GITHUB_SHA" > "$diagnostics_dir/preflight.txt"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$diagnostics_dir/preflight.txt"
           cat > "$RUNNER_TEMP/moviebox-release-apk-verify.sh" <<'MOVIEBOX_RELEASE_VERIFY'
           set -euo pipefail
           diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
@@ -653,7 +653,7 @@ jobs:
           collect_release_diagnostics() {
             status=$?
             set +e
-            printf 'exit_code=%s\\n' "$status" > "$diagnostics_dir/run-summary.txt"
+            printf 'exit_code=%s\n' "$status" > "$diagnostics_dir/run-summary.txt"
             adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
             adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
             adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
@@ -680,12 +680,12 @@ jobs:
           adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"
           adb logcat -c
           start_output="$(adb shell am start -W -n com.moviebox.nexus/.MainActivity 2>&1)"
-          printf '%s\\n' "$start_output" | tee "$diagnostics_dir/activity-start.txt"
+          printf '%s\n' "$start_output" | tee "$diagnostics_dir/activity-start.txt"
           printf '%s' "$start_output" | grep -q 'Status: ok'
 
           app_pid=""
           for attempt in $(seq 1 30); do
-            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\\r' | awk '{print $1}' || true)"
+            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
             if [ -n "$app_pid" ]; then break; fi
             sleep 2
           done
@@ -695,8 +695,8 @@ jobs:
 
           activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
           window_dump="$(adb shell dumpsys window 2>&1 || true)"
-          resumed_line="$(printf '%s\\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
-          focus_line="$(printf '%s\\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
+          resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
+          focus_line="$(printf '%s\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
           echo "Resumed activity: ${resumed_line:-not reported}"
           echo "Focused window: ${focus_line:-not reported}"
           if [[ "$resumed_line$focus_line" != *com.moviebox.nexus* ]]; then
