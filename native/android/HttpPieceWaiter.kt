@@ -66,6 +66,16 @@ internal object HttpRangePolicy {
             else -> HttpPieceDecision.ABORT
         }
 
+    fun statusCode(decision: HttpPieceDecision): Int? =
+        when (decision) {
+            HttpPieceDecision.READY -> 206
+            HttpPieceDecision.RETRY -> 503
+            HttpPieceDecision.ABORT,
+            HttpPieceDecision.CANCELLED -> null
+        }
+
+    fun retryAfterHeader(): String = "Retry-After: $RETRY_AFTER_SECONDS\\r\\n"
+
     fun bytesToPieceEnd(
         globalOffset: Long,
         pieceLength: Int,
