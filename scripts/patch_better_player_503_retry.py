@@ -73,17 +73,17 @@ def patch_source(source: str) -> str:
     import_text = "".join(item + "\n" for item in IMPORTS if item not in source)
     source = source[:package_match.end()] + import_text + source[package_match.end():]
 
-    class_match = re.search(r"^(?:internal\\s+)?class BetterPlayer\\s*\\(", source, re.MULTILINE)
+    class_match = re.search(r"^(?:internal\s+)?class BetterPlayer\s*\(", source, re.MULTILINE)
     if class_match is None:
         raise SystemExit("Could not locate BetterPlayer class declaration.")
     source = source[:class_match.start()] + POLICY_CLASS + "\n" + source[class_match.start():]
 
     factory_pattern = re.compile(
-        r"(C\\.CONTENT_TYPE_OTHER\\s*->\\s*ProgressiveMediaSource\\.Factory\\([\\s\\S]*?\\)\\.apply\\s*\\{)",
+        r"(C\.CONTENT_TYPE_OTHER\s*->\s*ProgressiveMediaSource\.Factory\([\s\S]*?\)\.apply\s*\{)",
         re.MULTILINE,
     )
     source, count = factory_pattern.subn(
-        r"\\1\n                setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())",
+        r"\1\n                setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())",
         source,
         count=1,
     )
