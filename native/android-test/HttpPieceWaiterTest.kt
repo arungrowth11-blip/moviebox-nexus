@@ -25,7 +25,7 @@ class HttpPieceWaiterTest {
         val decision = HttpRangePolicy.beforeHeaders(pieceReady = false, cancelled = false)
         assertEquals(HttpPieceDecision.RETRY, decision)
         assertEquals(503, HttpRangePolicy.statusCode(decision))
-        assertEquals("Retry-After: 1\\r\\n", HttpRangePolicy.retryAfterHeader())
+        assertEquals("Retry-After: 1\r\n", HttpRangePolicy.retryAfterHeader())
         assertEquals(1, HttpRangePolicy.RETRY_AFTER_SECONDS)
     }
 
