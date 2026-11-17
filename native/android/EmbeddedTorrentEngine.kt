@@ -522,7 +522,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         HttpPieceDecision.RETRY -> Unit
                         else -> return
                     }
-                    pending.lastHttpStatus = 503
+                    pending.lastHttpStatus =
+                        HttpRangePolicy.statusCode(HttpPieceDecision.RETRY) ?: return
                     pending.lastHttpError =
                         "First requested torrent piece was unavailable before HTTP headers."
                     Log.w(
