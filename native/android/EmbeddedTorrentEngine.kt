@@ -538,14 +538,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     var position = start
                     var bytesSent = 0L
                     // GET already passed the pre-header piece gate above.
-                    var firstRequestedPiece = false
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
-                        val pieceWaitMs = if (firstRequestedPiece) FIRST_STREAM_PIECE_TIMEOUT_MS else STREAM_PIECE_TIMEOUT_MS
-                        if (!waitForPiece(pending, target, position, pieceWaitMs)) {
+                        if (!waitForPiece(pending, target, position, STREAM_PIECE_TIMEOUT_MS)) {
                             throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
                         }
-                        firstRequestedPiece = false
                         val globalOffset = target.fileOffset + position
                         val bytesToPieceEnd = target.pieceLength - (globalOffset % target.pieceLength)
                         val amount = min(min(end - position + 1, bytesToPieceEnd), buffer.size.toLong()).toInt()
@@ -702,7 +699,6 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
         private const val FIRST_RESPONSE_PIECE_WAIT_MS = 4_000L
-        private const val FIRST_STREAM_PIECE_TIMEOUT_MS = 90_000L
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12
