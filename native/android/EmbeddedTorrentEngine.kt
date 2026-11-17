@@ -500,7 +500,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         client,
                         503,
                         "Service Unavailable",
-                        "Retry-After: 1\\r\\n",
+                        "Retry-After: 1\r\n",
                         "First requested torrent piece is not ready. Retry shortly."
                     )
                     return
