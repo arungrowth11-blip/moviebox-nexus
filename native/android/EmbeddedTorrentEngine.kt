@@ -437,21 +437,19 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // a short read timeout lets us detect that FIN without blocking the
                 // stream worker for the full piece deadline.
                 client.soTimeout = 250
-                val disconnectMonitor = Thread({
-                    try {
-                        while (!requestCancelled.get() && !client.isClosed) {
+                Thread({
+                    while (!requestCancelled.get() && !client.isClosed) {
+                        try {
                             if (reader.readLine() == null) {
                                 requestCancelled.set(true)
                                 break
                             }
+                        } catch (_: java.net.SocketTimeoutException) {
+                            // No pipelined request data; continue watching for FIN.
+                        } catch (_: Exception) {
+                            requestCancelled.set(true)
+                            break
                         }
-                    } catch (_: java.net.SocketTimeoutException) {
-                        // No pipelined request data; keep watching for a disconnect.
-                        if (!requestCancelled.get() && !client.isClosed) {
-                            runCatching { Thread.sleep(25) }
-                        }
-                    } catch (_: Exception) {
-                        requestCancelled.set(true)
                     }
                 }, "moviebox-torrent-http-disconnect").apply {
                     isDaemon = true
