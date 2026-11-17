@@ -212,6 +212,133 @@ void main() {
   );
 
   testWidgets(
+    'Media3 retries two bounded HTTP 503 responses and then plays valid 206 bytes',
+    (tester) async {
+      const mediaUrl = String.fromEnvironment('MOVIEBOX_TEST_MP4_URL');
+      final sourceUri = Uri.tryParse(mediaUrl);
+      expect(sourceUri, isNotNull);
+      expect(sourceUri!.host, '10.0.2.2');
+
+      final upstreamClient = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
+      final retryStatuses = <int>[];
+      var getRequests = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((incoming) async {
+        try {
+          if (incoming.method == 'GET') {
+            getRequests++;
+            if (getRequests <= 2) {
+              retryStatuses.add(HttpStatus.serviceUnavailable);
+              incoming.response.statusCode = HttpStatus.serviceUnavailable;
+              incoming.response.headers.set(HttpHeaders.retryAfterHeader, '1');
+              incoming.response.headers.contentLength = 0;
+              await incoming.response.close();
+              return;
+            }
+          }
+
+          final upstreamRequest =
+              await upstreamClient.openUrl(incoming.method, sourceUri);
+          final range = incoming.headers.value(HttpHeaders.rangeHeader);
+          if (range != null) {
+            upstreamRequest.headers.set(HttpHeaders.rangeHeader, range);
+          }
+          final upstreamResponse = await upstreamRequest.close();
+          if (incoming.method == 'GET') {
+            retryStatuses.add(upstreamResponse.statusCode);
+          }
+          incoming.response.statusCode = upstreamResponse.statusCode;
+          for (final header in <String>[
+            'content-type',
+            'content-length',
+            'content-range',
+            'accept-ranges',
+            'last-modified',
+            'etag',
+          ]) {
+            final values = upstreamResponse.headers[header];
+            if (values.isNotEmpty) {
+              incoming.response.headers.set(header, values);
+            }
+          }
+          await upstreamResponse.pipe(incoming.response);
+        } catch (error, stack) {
+          debugPrint('MovieBox 503 retry proxy error: $error\\n$stack');
+          if (!incoming.response.headersSent) {
+            incoming.response.statusCode = HttpStatus.badGateway;
+            await incoming.response.close();
+          }
+        }
+      });
+
+      final retryUrl = Uri(
+        scheme: 'http',
+        host: '127.0.0.1',
+        port: server.port,
+        path: '/retry.mp4',
+      ).toString();
+      final prepared = Completer<Duration>();
+      final media3Ready = Completer<BetterPlayerController>();
+      try {
+        await tester.pumpWidget(MaterialApp(
+          home: PlayerScreen(
+            title: 'MovieBox Media3 bounded 503 retry QA',
+            url: retryUrl,
+            onSave: (_) async {},
+            onPrepared: (elapsed) {
+              if (!prepared.isCompleted) prepared.complete(elapsed);
+            },
+            onMedia3ControllerReady: (controller) {
+              if (!media3Ready.isCompleted) media3Ready.complete(controller);
+            },
+          ),
+        ));
+
+        await prepared.future.timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => throw TimeoutException(
+            'Media3 did not recover from two HTTP 503 responses within 60 seconds.',
+          ),
+        );
+        final controller = await media3Ready.future.timeout(
+          const Duration(seconds: 10),
+        );
+        final value = controller.videoPlayerController?.value;
+        expect(value, isNotNull);
+        expect(value!.size?.width ?? 0, greaterThan(0));
+        expect(value.size?.height ?? 0, greaterThan(0));
+        expect(retryStatuses.take(3).toList(), <int>[
+          HttpStatus.serviceUnavailable,
+          HttpStatus.serviceUnavailable,
+          HttpStatus.partialContent,
+        ]);
+
+        await controller.play().timeout(const Duration(seconds: 10));
+        final beforePlayback =
+            await controller.videoPlayerController!.position ?? Duration.zero;
+        await _waitUntil(
+          tester,
+          () async {
+            final position = await controller.videoPlayerController?.position;
+            return position != null &&
+                position > beforePlayback + const Duration(milliseconds: 700);
+          },
+          'Media3 clock must advance after two Retry-After: 1 responses and a valid 206.',
+          timeout: const Duration(seconds: 25),
+          diagnostic: () => _media3Diagnostic(controller),
+        );
+        expect(getRequests, greaterThanOrEqualTo(3));
+      } finally {
+        await tester.pumpWidget(const SizedBox.shrink());
+        await server.close(force: true);
+        upstreamClient.close(force: true);
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  testWidgets(
     'real seeded magnet resolves metadata, streams pieces, serves seek ranges and prepares in Media3',
     (tester) async {
       const infoHash = String.fromEnvironment('MOVIEBOX_TEST_INFO_HASH');
