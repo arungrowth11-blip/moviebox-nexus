@@ -545,6 +545,9 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Install bounded Media3 503 retry policy
+        run: python3 scripts/patch_better_player_503_retry.py
+
       - name: Configure JUnit for native JVM tests
         shell: bash
         run: |
@@ -643,6 +646,9 @@ jobs:
 
       - name: Resolve dependencies for integration test
         run: flutter pub get
+
+      - name: Install bounded Media3 503 retry policy
+        run: python3 scripts/patch_better_player_503_retry.py
 
       - name: Prepare Android scaffold and FrostWire bridge for emulator test
         shell: bash
