@@ -215,9 +215,10 @@ void main() {
     'Media3 retries two bounded HTTP 503 responses and then plays valid 206 bytes',
     (tester) async {
       const mediaUrl = String.fromEnvironment('MOVIEBOX_TEST_MP4_URL');
-      final sourceUri = Uri.tryParse(mediaUrl);
-      expect(sourceUri, isNotNull);
-      expect(sourceUri!.host, '10.0.2.2');
+      final parsedSourceUri = Uri.tryParse(mediaUrl);
+      expect(parsedSourceUri, isNotNull);
+      final sourceUri = parsedSourceUri!;
+      expect(sourceUri.host, '10.0.2.2');
 
       final upstreamClient = HttpClient()
         ..connectionTimeout = const Duration(seconds: 15);
@@ -231,7 +232,7 @@ void main() {
             if (getRequests <= 2) {
               retryStatuses.add(HttpStatus.serviceUnavailable);
               incoming.response.statusCode = HttpStatus.serviceUnavailable;
-              incoming.response.headers.set(HttpHeaders.retryAfterHeader, '1');
+              incoming.response.headers.set('Retry-After', '1');
               incoming.response.headers.contentLength = 0;
               await incoming.response.close();
               return;
@@ -265,10 +266,16 @@ void main() {
           await upstreamResponse.pipe(incoming.response);
         } catch (error, stack) {
           debugPrint('MovieBox 503 retry proxy error: $error\\n$stack');
-          if (!incoming.response.headersSent) {
+          try {
             incoming.response.statusCode = HttpStatus.badGateway;
+          } catch (_) {
+            // Headers may already have been committed by the upstream pipe.
           }
-          await incoming.response.close();
+          try {
+            await incoming.response.close();
+          } catch (_) {
+            // The peer may have disconnected while the upstream body was copied.
+          }
         }
       });
 
