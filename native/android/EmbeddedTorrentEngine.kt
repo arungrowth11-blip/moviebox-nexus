@@ -507,7 +507,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // For GET, keep the HTTP status uncommitted until the first requested
                 // piece is verified and flushed by libtorrent. This prevents a 206
                 // response followed by an empty body when the swarm is still starting.
-                if (method == "GET" && !waitForPiece(
+                if (HttpRangePolicy.shouldWaitForFirstPiece(method) && !waitForPiece(
                         pending,
                         target,
                         start,
@@ -515,7 +515,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         requestCancelled
                     )
                 ) {
-                    if (requestCancelled.get() || pending.cancelled || activePending !== pending) return
+                    when (HttpRangePolicy.beforeHeaders(
+                        pieceReady = false,
+                        cancelled = requestCancelled.get() || pending.cancelled || activePending !== pending
+                    )) {
+                        HttpPieceDecision.CANCELLED -> return
+                        HttpPieceDecision.RETRY -> Unit
+                        else -> return
+                    }
                     pending.lastHttpStatus = 503
                     pending.lastHttpError =
                         "First requested torrent piece was unavailable before HTTP headers."
@@ -528,7 +535,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         client,
                         503,
                         "Service Unavailable",
-                        "Retry-After: 1\r\n",
+                        "Retry-After: ${HttpRangePolicy.RETRY_AFTER_SECONDS}\r\n",
                         "First requested torrent piece is not ready. Retry shortly."
                     )
                     return
@@ -576,16 +583,24 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                                 requestCancelled
                             )
                         ) {
-                            if (requestCancelled.get() || pending.cancelled ||
-                                activePending !== pending || Thread.currentThread().isInterrupted
-                            ) {
-                                return
+                            when (HttpRangePolicy.afterHeaders(
+                                pieceReady = false,
+                                cancelled = requestCancelled.get() || pending.cancelled ||
+                                    activePending !== pending || Thread.currentThread().isInterrupted
+                            )) {
+                                HttpPieceDecision.CANCELLED -> return
+                                HttpPieceDecision.ABORT ->
+                                    throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
+                                else -> return
                             }
-                            throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
                         }
                         val globalOffset = target.fileOffset + position
-                        val bytesToPieceEnd = target.pieceLength - (globalOffset % target.pieceLength)
-                        val amount = min(min(end - position + 1, bytesToPieceEnd), buffer.size.toLong()).toInt()
+                        val amount = HttpRangePolicy.bytesToPieceEnd(
+                            globalOffset = globalOffset,
+                            pieceLength = target.pieceLength,
+                            remainingBytes = end - position + 1,
+                            maxBufferBytes = buffer.size
+                        )
                         media.seek(position)
                         media.readFully(buffer, 0, amount)
                         output.write(buffer, 0, amount)
@@ -644,33 +659,34 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         // being requested so a distant seek is not stuck behind sequential data.
         runCatching { target.handle.piecePriority(pieceIndex, Priority.SEVEN) }
         runCatching { target.handle.setPieceDeadline(pieceIndex, PIECE_REQUEST_DEADLINE_MS) }
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
-            if (requestCancelled.get() || pending.cancelled ||
-                activePending !== pending || Thread.currentThread().isInterrupted
-            ) {
-                pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-                pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
-                return false
+
+        val waiter = HttpPieceWaiter(
+            hasPiece = { index ->
+                runCatching { target.handle.havePiece(index) }.getOrDefault(false)
             }
-            if (runCatching { target.handle.havePiece(pieceIndex) }.getOrDefault(false)) {
-                // Allow libtorrent's disk thread to flush the verified piece before reading.
-                Thread.sleep(80)
-                pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-                return !requestCancelled.get() &&
-                    !pending.cancelled &&
-                    activePending === pending &&
-                    !Thread.currentThread().isInterrupted
-            }
-            Thread.sleep(minOf(200L, (deadline - System.currentTimeMillis()).coerceAtLeast(1L)))
-        }
-        pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-        pending.lastHttpError = "Timed out waiting for torrent piece=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
-        Log.w(
-            TAG,
-            "Timed out waiting for torrent piece=$pieceIndex filePosition=$filePosition timeoutMs=$timeoutMs"
         )
-        return false
+        val available = waiter.await(
+            pieceIndex = pieceIndex,
+            timeoutMs = timeoutMs,
+            isCancelled = {
+                requestCancelled.get() ||
+                    pending.cancelled ||
+                    activePending !== pending ||
+                    Thread.currentThread().isInterrupted
+            }
+        )
+        pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
+        if (!available && !requestCancelled.get() && !pending.cancelled && activePending === pending) {
+            pending.lastHttpError =
+                "Timed out waiting for torrent piece=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
+            Log.w(
+                TAG,
+                "Timed out waiting for torrent piece=$pieceIndex filePosition=$filePosition timeoutMs=$timeoutMs"
+            )
+        } else if (!available) {
+            pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
+        }
+        return available
     }
 
     private fun parseRange(header: String?, size: Long): Triple<Long, Long, Boolean>? {
