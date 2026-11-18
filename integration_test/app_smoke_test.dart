@@ -579,7 +579,17 @@ void main() {
           },
           'Media3 native playback clock must advance; a frozen/paused player is not accepted.',
           timeout: const Duration(seconds: 25),
-          diagnostic: () => _media3Diagnostic(controller),
+          diagnostic: () async {
+            final player = await _media3Diagnostic(controller);
+            try {
+              final torrent = await channel
+                  .invokeMapMethod<String, dynamic>('getStatus')
+                  .timeout(const Duration(seconds: 4));
+              return '$player nativeTorrentAfterMedia3Play=$torrent';
+            } catch (error) {
+              return '$player nativeTorrentAfterMedia3PlayUnavailable=$error';
+            }
+          },
         );
 
         // Exercise the same Media3 seek operation used by the playback UI.
