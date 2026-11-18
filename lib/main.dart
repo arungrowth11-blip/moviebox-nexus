@@ -5112,7 +5112,9 @@ class _BrandTileState extends State<_BrandTile> {
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         width: 180,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        // Brand tiles are placed in compact horizontal rails on small screens.
+        // Keep the two-line label within the parent tile's fixed height.
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: [
@@ -5137,11 +5139,14 @@ class _BrandTileState extends State<_BrandTile> {
               : [],
         ),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
               widget.brand.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: active ? Colors.white : widget.brand.color,
                 fontWeight: FontWeight.w900,
@@ -5154,6 +5159,8 @@ class _BrandTileState extends State<_BrandTile> {
               widget.brand.hasCatalog
                   ? 'Movies & Series'
                   : 'Catalog addon required',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 color: _muted,
                 fontSize: 11,
