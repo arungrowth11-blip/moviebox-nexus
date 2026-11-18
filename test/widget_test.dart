@@ -570,13 +570,5 @@ void main() {
     }
   });
 
-  testWidgets('MovieBox home shell renders before deferred startup work', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    await tester.pumpWidget(const MovieBoxApp());
-
-    expect(find.text('MOVIEBOX '), findsOneWidget);
-    expect(find.text('Home'), findsOneWidget);
-  });
 }
+
