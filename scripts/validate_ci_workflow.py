@@ -50,7 +50,9 @@ def main() -> int:
     required_verify = (
         "adb install -r",
         "pidof com.moviebox.nexus",
-        "am start -W -n com.moviebox.nexus/.MainActivity",
+        "adb shell am start -n com.moviebox.nexus/.MainActivity",
+        "firstWindowDrawn=true",
+        "mFocusedApp=",
         "Upload release APK verification diagnostics",
         "MovieBox-Release-APK-Verification-Diagnostics",
     )
