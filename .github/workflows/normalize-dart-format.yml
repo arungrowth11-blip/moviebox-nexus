@@ -1,0 +1,57 @@
+name: Normalize Dart formatting
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: moviebox-format-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: true
+
+      - name: Set up Flutter 3.50.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+
+      - name: Apply canonical Dart formatting and commit once
+        id: dart-format
+        shell: bash
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          dart format lib test integration_test
+          if git diff --quiet -- lib test integration_test; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'Dart sources already match the pinned formatter.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add lib test integration_test
+          git commit -m 'style: apply canonical Dart formatting'
+          git push origin "HEAD:${HEAD_REF}"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch exact-head validation after formatting commit
+        if: steps.dart-format.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/dispatches" -f ref="${HEAD_REF}"

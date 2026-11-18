@@ -224,6 +224,9 @@ void main() {
         ..connectionTimeout = const Duration(seconds: 15);
       final retryStatuses = <int>[];
       var getRequests = 0;
+      String? successful206ContentRange;
+      var successful206BodyBytes = 0;
+      final first206BodyBytes = <int>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((incoming) async {
         try {
@@ -263,7 +266,21 @@ void main() {
               incoming.response.headers.set(header, values);
             }
           }
-          await upstreamResponse.pipe(incoming.response);
+          if (upstreamResponse.statusCode == HttpStatus.partialContent) {
+            successful206ContentRange =
+                upstreamResponse.headers.value(HttpHeaders.contentRangeHeader);
+          }
+          await for (final chunk in upstreamResponse) {
+            if (upstreamResponse.statusCode == HttpStatus.partialContent) {
+              successful206BodyBytes += chunk.length;
+              final remaining = 16 - first206BodyBytes.length;
+              if (remaining > 0) {
+                first206BodyBytes.addAll(chunk.take(remaining));
+              }
+            }
+            incoming.response.add(chunk);
+          }
+          await incoming.response.close();
         } catch (error, stack) {
           debugPrint('MovieBox 503 retry proxy error: $error\\n$stack');
           try {
@@ -292,6 +309,7 @@ void main() {
           home: PlayerScreen(
             title: 'MovieBox Media3 bounded 503 retry QA',
             url: retryUrl,
+            headers: const <String, String>{'Range': 'bytes=0-'},
             onSave: (_) async {},
             onPrepared: (elapsed) {
               if (!prepared.isCompleted) prepared.complete(elapsed);
@@ -320,6 +338,9 @@ void main() {
           HttpStatus.serviceUnavailable,
           HttpStatus.partialContent,
         ]);
+        expect(successful206ContentRange, startsWith('bytes 0-'));
+        expect(successful206BodyBytes, greaterThan(0));
+        expect(first206BodyBytes, hasLength(16));
 
         await controller.play().timeout(const Duration(seconds: 10));
         final beforePlayback =
