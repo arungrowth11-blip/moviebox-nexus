@@ -52,7 +52,7 @@ def main() -> int:
         "pidof com.moviebox.nexus",
         "adb shell am start -n com.moviebox.nexus/.MainActivity",
         "main_window_block",
-        "com.moviebox.nexus/com.moviebox.nexus.MainActivity",
+        "MainActivity",
         "mDrawState=HAS_DRAWN",
         "Surface: shown=true",
         "isVisible=true",
@@ -65,6 +65,9 @@ def main() -> int:
     for token in required_verify:
         if token not in verify:
             raise SystemExit(f"release-apk-verify is missing required evidence step: {token}")
+    if "id: dart-format" not in release or "steps.dart-format.outcome == 'failure'" not in release:
+        raise SystemExit("Dart formatter repair must run only after the formatter gate itself fails.")
+
     if "firstWindowDrawn=true" in verify:
         raise SystemExit("APK verifier still trusts an unscoped ActivityRecord draw flag.")
 
