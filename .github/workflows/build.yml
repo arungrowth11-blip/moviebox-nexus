@@ -585,8 +585,11 @@ jobs:
           mkdir -p "$export_dir"
           dart format lib test integration_test
           git diff --binary -- lib test integration_test > "$export_dir/dart-format.patch"
-          test -s "$export_dir/dart-format.patch"
-          git diff --stat -- lib test integration_test
+          if [ -s "$export_dir/dart-format.patch" ]; then
+            git diff --stat -- lib test integration_test
+          else
+            echo "No formatter changes to export; source is already canonical."
+          fi
 
       - name: Upload Dart formatter patch
         if: always()
