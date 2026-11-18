@@ -615,41 +615,71 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
+          phase="required secret validation"
+          trap 'status=$?; echo "::error::Release signing setup failed during phase: ${phase} (exit ${status})."; exit "$status"' ERR
           : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 repository secret}"
           : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD repository secret}"
           : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS repository secret}"
           : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD repository secret}"
+          echo "Release signing secrets are present; values remain masked."
 
+          phase="PKCS12 base64 decode"
           keystore="$RUNNER_TEMP/moviebox-release.p12"
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
-          test -s "$keystore"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not valid Base64."
+            exit 1
+          fi
+          if [ ! -s "$keystore" ]; then
+            echo "::error::Decoded release keystore is empty."
+            exit 1
+          fi
           chmod 600 "$keystore"
+          echo "Decoded PKCS12 keystore size: $(wc -c < "$keystore") bytes."
 
+          phase="PKCS12 alias/password inspection"
           certificate_info="$RUNNER_TEMP/moviebox-release-certificate.txt"
-          keytool -list -v -storetype PKCS12 \
+          keytool_error="$RUNNER_TEMP/moviebox-release-keytool-error.txt"
+          if ! keytool -list -v -storetype PKCS12 \
             -keystore "$keystore" \
             -storepass "$ANDROID_KEYSTORE_PASSWORD" \
-            -alias "$ANDROID_KEY_ALIAS" > "$certificate_info"
-
-          expected_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
-          actual_sha256="$(awk '/SHA256:/{print $2; exit}' "$certificate_info" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
-          test -n "$actual_sha256" || {
-            echo "::error::Could not read the PKCS12 SHA-256 certificate fingerprint."
+            -alias "$ANDROID_KEY_ALIAS" > "$certificate_info" 2> "$keytool_error"; then
+            echo "::error::keytool could not open the PKCS12 keystore with the configured password and alias."
+            sed -n '1,12p' "$keytool_error"
             exit 1
-          }
+          fi
+          entry_type="$(sed -n 's/^Entry type: //p' "$certificate_info" | head -n 1)"
+          owner="$(sed -n 's/^Owner: //p' "$certificate_info" | head -n 1)"
+          actual_sha256="$(awk 'toupper($1) == "SHA256:" {gsub(":", "", $2); print tolower($2); exit}' "$certificate_info")"
+          echo "Keystore entry type: ${entry_type:-unreported}"
+          echo "Keystore certificate owner: ${owner:-unreported}"
+          echo "Keystore certificate SHA-256: ${actual_sha256:-unreported}"
+          if [ "$entry_type" != "PrivateKeyEntry" ]; then
+            echo "::error::Release keystore alias is not a PrivateKeyEntry."
+            exit 1
+          fi
+          if [ -z "$actual_sha256" ]; then
+            echo "::error::Could not parse the PKCS12 SHA-256 certificate fingerprint."
+            exit 1
+          fi
+
+          phase="pinned certificate identity verification"
+          expected_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
           if [ "$actual_sha256" != "$expected_sha256" ]; then
             echo "::error::Release keystore fingerprint does not match the pinned MovieBox certificate."
             exit 1
           fi
-          grep -Fq 'Owner: CN=MovieBox Nexus Release, OU=Android, O=MovieBox Nexus, L=Palwal, ST=Haryana, C=IN' "$certificate_info" || {
-            echo "::error::Release signing certificate subject does not match the expected identity."
-            exit 1
-          }
+          case "$owner" in
+            *"CN=MovieBox Nexus Release"*"C=IN"*) ;;
+            *)
+              echo "::error::Release signing certificate subject does not match the expected MovieBox identity."
+              exit 1
+              ;;
+          esac
+          echo "Release PKCS12 key, alias, subject and pinned SHA-256 fingerprint verified."
 
+          phase="Gradle release signing configuration"
           echo "MOVIEBOX_RELEASE_KEYSTORE=$keystore" >> "$GITHUB_ENV"
-          echo "Release PKCS12 keystore, alias, subject and pinned SHA-256 fingerprint verified."
-
           python3 - <<'PY_SIGNING'
           from pathlib import Path
 
@@ -678,7 +708,7 @@ jobs:
               }
           }
           '''
-          gradle_file.write_text(source.rstrip() + "\n\n" + signing_block.lstrip(), encoding="utf-8")
+          gradle_file.write_text(source.rstrip() + "\\n\\n" + signing_block.lstrip(), encoding="utf-8")
           final_source = gradle_file.read_text(encoding="utf-8")
           for required in (
               marker,
@@ -690,6 +720,8 @@ jobs:
                   raise SystemExit(f"Release signing configuration missing: {required}")
           print("Release build now uses the validated MovieBox PKCS12 signing identity.")
           PY_SIGNING
+          echo "Release signing configuration completed."
+
 
       - name: Build release APK (retry transient network failures)
         shell: bash
@@ -749,7 +781,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/moviebox-release.p12" "$RUNNER_TEMP/moviebox-release-certificate.txt"
+          rm -f "$RUNNER_TEMP/moviebox-release.p12" "$RUNNER_TEMP/moviebox-release-certificate.txt" "$RUNNER_TEMP/moviebox-release-keytool-error.txt"
 
       - name: Stage APK
         shell: bash
