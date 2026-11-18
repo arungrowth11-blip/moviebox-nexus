@@ -607,8 +607,96 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub
 
+      - name: Configure and validate release APK signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 repository secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD repository secret}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS repository secret}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD repository secret}"
+
+          keystore="$RUNNER_TEMP/moviebox-release.p12"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+          chmod 600 "$keystore"
+
+          certificate_info="$RUNNER_TEMP/moviebox-release-certificate.txt"
+          keytool -list -v -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > "$certificate_info"
+
+          expected_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
+          actual_sha256="$(awk '/SHA256:/{print $2; exit}' "$certificate_info" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_sha256" || {
+            echo "::error::Could not read the PKCS12 SHA-256 certificate fingerprint."
+            exit 1
+          }
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "::error::Release keystore fingerprint does not match the pinned MovieBox certificate."
+            exit 1
+          fi
+          grep -Fq 'Owner: CN=MovieBox Nexus Release, OU=Android, O=MovieBox Nexus, L=Palwal, ST=Haryana, C=IN' "$certificate_info" || {
+            echo "::error::Release signing certificate subject does not match the expected identity."
+            exit 1
+          }
+
+          echo "MOVIEBOX_RELEASE_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+          echo "Release PKCS12 keystore, alias, subject and pinned SHA-256 fingerprint verified."
+
+          python3 - <<'PY_SIGNING'
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle.kts")
+          source = gradle_file.read_text(encoding="utf-8")
+          marker = "// MOVIEBOX_RELEASE_SIGNING_CONFIG"
+          if marker in source:
+              raise SystemExit("Release signing configuration marker already exists; refusing duplicate injection.")
+
+          signing_block = r'''
+          // MOVIEBOX_RELEASE_SIGNING_CONFIG
+          android {
+              signingConfigs {
+                  create("movieboxRelease") {
+                      storeFile = file(System.getenv("MOVIEBOX_RELEASE_KEYSTORE") ?: error("MOVIEBOX_RELEASE_KEYSTORE is missing"))
+                      storeType = "PKCS12"
+                      storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: error("ANDROID_KEYSTORE_PASSWORD is missing")
+                      keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: error("ANDROID_KEY_ALIAS is missing")
+                      keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: error("ANDROID_KEY_PASSWORD is missing")
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("movieboxRelease")
+                  }
+              }
+          }
+          '''
+          gradle_file.write_text(source.rstrip() + "\n\n" + signing_block.lstrip(), encoding="utf-8")
+          final_source = gradle_file.read_text(encoding="utf-8")
+          for required in (
+              marker,
+              'create("movieboxRelease")',
+              'storeType = "PKCS12"',
+              'signingConfig = signingConfigs.getByName("movieboxRelease")',
+          ):
+              if required not in final_source:
+                  raise SystemExit(f"Release signing configuration missing: {required}")
+          print("Release build now uses the validated MovieBox PKCS12 signing identity.")
+          PY_SIGNING
+
       - name: Build release APK (retry transient network failures)
         shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -uo pipefail
           log_file="$(mktemp)"
@@ -634,6 +722,34 @@ jobs:
           done
           echo 'Gradle/build downloads still failing after three attempts.'
           exit 1
+
+      - name: Verify release APK certificate fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          signature_output="$RUNNER_TEMP/moviebox-release-apksigner.txt"
+          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$signature_output"
+          expected_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
+          actual_sha256="$(sed -n 's/^[[:space:]]*Signer #1 certificate SHA-256 digest: *//p' "$signature_output" | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_sha256" || {
+            echo "::error::APK signer SHA-256 fingerprint was not reported."
+            exit 1
+          }
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "::error::APK was not signed by the pinned MovieBox release certificate."
+            exit 1
+          fi
+          echo "APK signature is valid and matches the pinned MovieBox release certificate."
+
+      - name: Remove temporary release signing key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/moviebox-release.p12" "$RUNNER_TEMP/moviebox-release-certificate.txt"
 
       - name: Stage APK
         shell: bash
@@ -711,6 +827,17 @@ jobs:
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
           "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
+          expected_cert_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
+          actual_cert_sha256="$(sed -n 's/^[[:space:]]*Signer #1 certificate SHA-256 digest: *//p' "$diagnostics_dir/apksigner.txt" | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_cert_sha256" || {
+            echo "::error::Release APK signer SHA-256 fingerprint was not reported."
+            exit 1
+          }
+          if [ "$actual_cert_sha256" != "$expected_cert_sha256" ]; then
+            echo "::error::Installed APK artifact does not match the pinned MovieBox release certificate."
+            exit 1
+          fi
+          echo "Release APK certificate fingerprint independently verified."
 
           adb install -r "$apk"
           adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"

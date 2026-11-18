@@ -47,6 +47,26 @@ def main() -> int:
     if "Download already-published release APK" in integration:
         raise SystemExit("Release APK download is still coupled to integration-tests.")
 
+    expected_signing_sha256 = "6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
+    required_signing = (
+        "ANDROID_KEYSTORE_BASE64",
+        "ANDROID_KEYSTORE_PASSWORD",
+        "ANDROID_KEY_ALIAS",
+        "ANDROID_KEY_PASSWORD",
+        "MOVIEBOX_RELEASE_KEYSTORE",
+        "keytool -list -v",
+        'create("movieboxRelease")',
+        'storeType = "PKCS12"',
+        'signingConfig = signingConfigs.getByName("movieboxRelease")',
+        "Verify release APK certificate fingerprint",
+        expected_signing_sha256,
+    )
+    for token in required_signing:
+        if token not in release:
+            raise SystemExit(f"android-release is missing release-signing control: {token}")
+    if expected_signing_sha256 not in verify or "actual_cert_sha256" not in verify:
+        raise SystemExit("release-apk-verify does not enforce the pinned release certificate fingerprint.")
+
     required_verify = (
         "adb install -r",
         "pidof com.moviebox.nexus",
