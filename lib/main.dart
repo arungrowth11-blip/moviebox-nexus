@@ -1823,8 +1823,14 @@ class _RootShellState extends State<RootShell> {
   @override
   void initState() {
     super.initState();
-    _load().then((_) => _sync());
-    _startRemote();
+    // Keep first-frame rendering independent from preferences, addon probes,
+    // and the optional LAN remote server. These tasks are not required to paint
+    // the home shell and can otherwise compete with Flutter's startup frame.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(_load().then((_) => _sync()));
+      unawaited(_startRemote());
+    });
   }
 
   Future<void> _load() async {
@@ -2387,7 +2393,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadAll();
+    // Catalog requests fan out across several remote providers. Start them
+    // only after the first frame so a cold launch paints the shell first.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(_loadAll());
+    });
   }
 
   @override

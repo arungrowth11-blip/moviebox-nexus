@@ -51,14 +51,23 @@ def main() -> int:
         "adb install -r",
         "pidof com.moviebox.nexus",
         "adb shell am start -n com.moviebox.nexus/.MainActivity",
-        "firstWindowDrawn=true",
+        "main_window_block",
+        "com.moviebox.nexus/com.moviebox.nexus.MainActivity",
+        "mDrawState=HAS_DRAWN",
+        "Surface: shown=true",
+        "isVisible=true",
+        "isOnScreen=true",
         "mFocusedApp=",
+        "--print-certs",
         "Upload release APK verification diagnostics",
         "MovieBox-Release-APK-Verification-Diagnostics",
     )
     for token in required_verify:
         if token not in verify:
             raise SystemExit(f"release-apk-verify is missing required evidence step: {token}")
+    if "firstWindowDrawn=true" in verify:
+        raise SystemExit("APK verifier still trusts an unscoped ActivityRecord draw flag.")
+
     for name, block, upload_name in (
         ("integration-tests", integration, "MovieBox-Emulator-Diagnostics"),
         ("release-apk-verify", verify, "MovieBox-Release-APK-Verification-Diagnostics"),

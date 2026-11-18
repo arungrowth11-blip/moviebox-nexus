@@ -709,7 +709,7 @@ jobs:
           grep -q "package: name='com.moviebox.nexus'" "$diagnostics_dir/apk-badging.txt"
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
-          "$apksigner" verify --verbose "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
+          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
 
           adb install -r "$apk"
           adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"
@@ -728,12 +728,23 @@ jobs:
             window_dump="$(adb shell dumpsys window 2>&1 || true)"
             resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
             focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
-            first_window_drawn="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'firstWindowDrawn=true' || true)"
-            echo "Launch poll ${attempt}/60: pid=${app_pid:-missing}; resumed=${resumed_line:-missing}; focusedApp=${focused_app_line:-missing}; firstFrame=${first_window_drawn:-pending}"
+            main_window_block="$(printf '%s\n' "$window_dump" | awk '
+              /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
+              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+              capture {print}
+            ')"
+            main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
+            main_window_surface="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'Surface: shown=true' || true)"
+            main_window_visible="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isVisible=true' || true)"
+            main_window_on_screen="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isOnScreen=true' || true)"
+            echo "Launch poll ${attempt}/60: pid=${app_pid:-missing}; resumed=${resumed_line:-missing}; focusedApp=${focused_app_line:-missing}; mainWindowDrawn=${main_window_drawn:-pending}; surface=${main_window_surface:-pending}; visible=${main_window_visible:-pending}; onScreen=${main_window_on_screen:-pending}"
             if [ -n "$app_pid" ] && \
                [[ "$resumed_line" == *com.moviebox.nexus* ]] && \
                [[ "$focused_app_line" == *com.moviebox.nexus* ]] && \
-               [ -n "$first_window_drawn" ]; then
+               [ -n "$main_window_drawn" ] && \
+               [ -n "$main_window_surface" ] && \
+               [ -n "$main_window_visible" ] && \
+               [ -n "$main_window_on_screen" ]; then
               first_frame_verified=1
               break
             fi
@@ -752,13 +763,27 @@ jobs:
           window_dump="$(adb shell dumpsys window 2>&1 || true)"
           resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
           focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
-          first_window_drawn="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'firstWindowDrawn=true' || true)"
+          main_window_block="$(printf '%s\n' "$window_dump" | awk '
+            /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
+            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+            capture {print}
+          ')"
+          main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
+          main_window_surface="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'Surface: shown=true' || true)"
+          main_window_visible="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isVisible=true' || true)"
+          main_window_on_screen="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isOnScreen=true' || true)"
           echo "Final resumed activity: ${resumed_line:-not reported}"
           echo "Final focused app: ${focused_app_line:-not reported}"
-          echo "Final first-window state: ${first_window_drawn:-not drawn}"
+          echo "Final MainActivity window draw state: ${main_window_drawn:-not drawn}"
+          echo "Final MainActivity surface: ${main_window_surface:-not shown}"
+          echo "Final MainActivity visibility: ${main_window_visible:-not visible}"
+          echo "Final MainActivity screen state: ${main_window_on_screen:-not on screen}"
           if [[ "$resumed_line" != *com.moviebox.nexus* ]] || \
              [[ "$focused_app_line" != *com.moviebox.nexus* ]] || \
-             [ -z "$first_window_drawn" ]; then
+             [ -z "$main_window_drawn" ] || \
+             [ -z "$main_window_surface" ] || \
+             [ -z "$main_window_visible" ] || \
+             [ -z "$main_window_on_screen" ]; then
             echo "::error::Installed APK did not keep its first Flutter window in the foreground."
             exit 1
           fi
