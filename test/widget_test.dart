@@ -234,27 +234,29 @@ void main() {
     expect(enriched[6]['countryCode'], '');
   });
 
-  test(
-    'multiple IPTV feeds are merged while exact duplicate URLs are removed',
-    () {
-      final merged = mergeLiveTvPlaylists({
-        'India': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV\nhttps://one.example/ndtv.m3u8\n',
-        'Hindi': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV Hindi\nhttps://one.example/ndtv.m3u8\n#EXTINF:-1 tvg-id="AajTak.in",Aaj Tak\nhttps://two.example/aajtak.m3u8\n',
-        'Worldwide': '#EXTM3U\n#EXTINF:-1 tvg-id="BBCNews.uk",BBC News\nhttps://bbc.example/live.m3u8\n',
-      });
-      expect(merged, hasLength(3));
-      expect(merged.first['source'], 'India');
-      expect(merged.any((item) => item['name'] == 'Aaj Tak'), isTrue);
-      expect(merged.any((item) => item['name'] == 'BBC News'), isTrue);
-      final ranked = mergeLiveTvPlaylists({
-        'Raw': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in",NDTV\nhttps://one.example/verified.m3u8\n',
-        'Verified': '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" nexus-score="94.2",NDTV\nhttps://one.example/verified.m3u8\n',
-      });
-      expect(ranked, hasLength(1));
-      expect(ranked.single['source'], 'Verified');
-      expect(ranked.single['healthScore'], '94.2');
-    },
-  );
+  test('multiple IPTV feeds are merged while exact duplicate URLs are removed', () {
+    final merged = mergeLiveTvPlaylists({
+      'India':
+          '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV\nhttps://one.example/ndtv.m3u8\n',
+      'Hindi':
+          '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" group-title="News",NDTV Hindi\nhttps://one.example/ndtv.m3u8\n#EXTINF:-1 tvg-id="AajTak.in",Aaj Tak\nhttps://two.example/aajtak.m3u8\n',
+      'Worldwide':
+          '#EXTM3U\n#EXTINF:-1 tvg-id="BBCNews.uk",BBC News\nhttps://bbc.example/live.m3u8\n',
+    });
+    expect(merged, hasLength(3));
+    expect(merged.first['source'], 'India');
+    expect(merged.any((item) => item['name'] == 'Aaj Tak'), isTrue);
+    expect(merged.any((item) => item['name'] == 'BBC News'), isTrue);
+    final ranked = mergeLiveTvPlaylists({
+      'Raw':
+          '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in",NDTV\nhttps://one.example/verified.m3u8\n',
+      'Verified':
+          '#EXTM3U\n#EXTINF:-1 tvg-id="NDTV.in" nexus-score="94.2",NDTV\nhttps://one.example/verified.m3u8\n',
+    });
+    expect(ranked, hasLength(1));
+    expect(ranked.single['source'], 'Verified');
+    expect(ranked.single['healthScore'], '94.2');
+  });
 
   test(
     'Live TV quarantine persists and returns expired feeds for revalidation',
@@ -378,40 +380,45 @@ void main() {
     },
   );
 
-  test('Live TV rejects a reachable HLS manifest when its first segment is offline', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final baseUrl = 'http://127.0.0.1:' + server.port.toString();
-    server.listen((request) async {
-      final response = request.response;
-      if (request.uri.path == '/channel.m3u8') {
-        response.statusCode = HttpStatus.ok;
-        response.headers.contentType = ContentType(
-          'application',
-          'vnd.apple.mpegurl',
-        );
-        response.write('#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/offline.ts\n');
-      } else if (request.uri.path == '/offline.ts') {
-        response.statusCode = HttpStatus.forbidden;
-        response.headers.contentType = ContentType.html;
-        response.write('<html>segment blocked</html>');
-      } else {
-        response.statusCode = HttpStatus.notFound;
+  test(
+    'Live TV rejects a reachable HLS manifest when its first segment is offline',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final baseUrl = 'http://127.0.0.1:' + server.port.toString();
+      server.listen((request) async {
+        final response = request.response;
+        if (request.uri.path == '/channel.m3u8') {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType(
+            'application',
+            'vnd.apple.mpegurl',
+          );
+          response.write(
+            '#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:8,\n/offline.ts\n',
+          );
+        } else if (request.uri.path == '/offline.ts') {
+          response.statusCode = HttpStatus.forbidden;
+          response.headers.contentType = ContentType.html;
+          response.write('<html>segment blocked</html>');
+        } else {
+          response.statusCode = HttpStatus.notFound;
+        }
+        await response.close();
+      });
+      final engine = CatalogEngine();
+      try {
+        final selected = <String, String>{
+          'id': 'TestChannel.in',
+          'name': 'Test Channel',
+          'url': baseUrl + '/channel.m3u8',
+        };
+        expect(await engine.firstWorkingLiveTvSource([selected]), isNull);
+      } finally {
+        engine.close();
+        await server.close(force: true);
       }
-      await response.close();
-    });
-    final engine = CatalogEngine();
-    try {
-      final selected = <String, String>{
-        'id': 'TestChannel.in',
-        'name': 'Test Channel',
-        'url': baseUrl + '/channel.m3u8',
-      };
-      expect(await engine.firstWorkingLiveTvSource([selected]), isNull);
-    } finally {
-      engine.close();
-      await server.close(force: true);
-    }
-  });
+    },
+  );
 
   test(
     'direct stream probe accepts HLS and rejects blocked HTML endpoints',

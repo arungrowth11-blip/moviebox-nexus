@@ -45,33 +45,39 @@ void main() {
       );
     });
 
-    test('reports no torrent first byte rather than switching player blindly', () {
-      expect(
-        Media3StartupPolicy.evaluate(
-          isPlaying: false,
-          initialPosition: Duration.zero,
-          currentPosition: Duration.zero,
-          elapsed: const Duration(seconds: 25),
-          isEmbeddedTorrent: true,
-          httpBytesSent: 0,
-        ),
-        Media3StartupDecision.noTorrentBytes,
-      );
-    });
+    test(
+      'reports no torrent first byte rather than switching player blindly',
+      () {
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: false,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: const Duration(seconds: 25),
+            isEmbeddedTorrent: true,
+            httpBytesSent: 0,
+          ),
+          Media3StartupDecision.noTorrentBytes,
+        );
+      },
+    );
 
-    test('uses compatibility player when torrent bytes exist but clock is frozen', () {
-      expect(
-        Media3StartupPolicy.evaluate(
-          isPlaying: false,
-          initialPosition: Duration.zero,
-          currentPosition: Duration.zero,
-          elapsed: const Duration(seconds: 25),
-          isEmbeddedTorrent: true,
-          httpBytesSent: 65536,
-        ),
-        Media3StartupDecision.useCompatibilityPlayer,
-      );
-    });
+    test(
+      'uses compatibility player when torrent bytes exist but clock is frozen',
+      () {
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: false,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: const Duration(seconds: 25),
+            isEmbeddedTorrent: true,
+            httpBytesSent: 65536,
+          ),
+          Media3StartupDecision.useCompatibilityPlayer,
+        );
+      },
+    );
 
     test('uses compatibility player for a stalled non-torrent source', () {
       expect(
