@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 import 'player_screen.dart';
 
 const _bg = Color(0xFF0A0B10);
@@ -22,16 +23,26 @@ const _muted = Color(0xFF9E9EA7);
 const _textPri = Color(0xFFFFFFFF);
 
 const _cinemeta = 'https://v3-cinemeta.strem.io';
-const _streamingCatalogs = 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
+const _streamingCatalogs =
+    'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club';
 
 /// Public, community-maintained IPTV-org lists. These are free-to-air
 /// candidates; individual broadcasters may still geoblock or take streams offline.
 const List<MapEntry<String, String>> liveTvPlaylistSources = [
   // Health-ranked sources first; raw lists remain available as fallback candidates.
-  MapEntry('Verified India', 'https://dearbulut.github.io/iptv/playlists/country/in.m3u'),
-  MapEntry('Verified Global', 'https://dearbulut.github.io/iptv/playlists/online.m3u'),
+  MapEntry(
+    'Verified India',
+    'https://dearbulut.github.io/iptv/playlists/country/in.m3u',
+  ),
+  MapEntry(
+    'Verified Global',
+    'https://dearbulut.github.io/iptv/playlists/online.m3u',
+  ),
   // Curated free-to-air sources only; paid/encrypted services are excluded.
-  MapEntry('Curated Free TV', 'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8'),
+  MapEntry(
+    'Curated Free TV',
+    'https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8',
+  ),
   MapEntry('India', 'https://iptv-org.github.io/iptv/countries/in.m3u'),
   MapEntry('Hindi', 'https://iptv-org.github.io/iptv/languages/hin.m3u'),
   MapEntry('Bengali', 'https://iptv-org.github.io/iptv/languages/ben.m3u'),
@@ -44,7 +55,10 @@ const List<MapEntry<String, String>> liveTvPlaylistSources = [
   MapEntry('Asia Pacific', 'https://iptv-org.github.io/iptv/regions/apac.m3u'),
   MapEntry('News', 'https://iptv-org.github.io/iptv/categories/news.m3u'),
   MapEntry('Public', 'https://iptv-org.github.io/iptv/categories/public.m3u'),
-  MapEntry('Entertainment', 'https://iptv-org.github.io/iptv/categories/entertainment.m3u'),
+  MapEntry(
+    'Entertainment',
+    'https://iptv-org.github.io/iptv/categories/entertainment.m3u',
+  ),
   MapEntry('Movies', 'https://iptv-org.github.io/iptv/categories/movies.m3u'),
   MapEntry('Sports', 'https://iptv-org.github.io/iptv/categories/sports.m3u'),
   MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
@@ -54,10 +68,7 @@ class LiveTvSourceProbeResult {
   final Map<String, String>? working;
   final List<Map<String, String>> failed;
 
-  const LiveTvSourceProbeResult({
-    required this.working,
-    required this.failed,
-  });
+  const LiveTvSourceProbeResult({required this.working, required this.failed});
 }
 
 /// Persistent per-feed quarantine. Failed URLs are hidden temporarily, then
@@ -101,15 +112,13 @@ class LiveTvHealthRegistry {
 
   bool isQuarantined(String url) => _entries.containsKey(url);
 
-  List<Map<String, String>> dueForRecheck({
-    DateTime? now,
-    int limit = 6,
-  }) {
+  List<Map<String, String>> dueForRecheck({DateTime? now, int limit = 6}) {
     final current = now ?? DateTime.now();
-    final due = _entries.values
-        .where((entry) => !entry.unhealthyUntil.isAfter(current))
-        .toList()
-      ..sort((a, b) => a.unhealthyUntil.compareTo(b.unhealthyUntil));
+    final due =
+        _entries.values
+            .where((entry) => !entry.unhealthyUntil.isAfter(current))
+            .toList()
+          ..sort((a, b) => a.unhealthyUntil.compareTo(b.unhealthyUntil));
     return due
         .take(limit)
         .map((entry) => Map<String, String>.from(entry.channel))
@@ -140,7 +149,9 @@ class LiveTvHealthRegistry {
   void _trim() {
     if (_entries.length <= _maxEntries) return;
     final oldest = _entries.entries.toList()
-      ..sort((a, b) => a.value.unhealthyUntil.compareTo(b.value.unhealthyUntil));
+      ..sort(
+        (a, b) => a.value.unhealthyUntil.compareTo(b.value.unhealthyUntil),
+      );
     for (final entry in oldest.take(_entries.length - _maxEntries)) {
       _entries.remove(entry.key);
     }
@@ -175,9 +186,7 @@ bool shouldUseCachedLiveTvData({
   required bool cacheExists,
   required int parsedChannelCount,
   required bool forceRefresh,
-}) =>
-    cacheExists && parsedChannelCount > 0 && !forceRefresh;
-
+}) => cacheExists && parsedChannelCount > 0 && !forceRefresh;
 
 /// Parses common M3U playlists, tolerating CRLF, BOM, blank lines and
 /// EXTVLCOPT/EXTGRP directives between EXTINF and the stream URL.
@@ -204,9 +213,12 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
       id = RegExp(r'tvg-id="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       logo = RegExp(r'tvg-logo="([^"]*)"').firstMatch(line)?.group(1) ?? '';
       group = RegExp(r'group-title="([^"]*)"').firstMatch(line)?.group(1) ?? '';
-      country = RegExp(r'tvg-country="([^"]*)"').firstMatch(line)?.group(1) ?? '';
-      language = RegExp(r'tvg-language="([^"]*)"').firstMatch(line)?.group(1) ?? '';
-      healthScore = RegExp(r'nexus-score="([0-9.]+)"').firstMatch(line)?.group(1) ?? '';
+      country =
+          RegExp(r'tvg-country="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      language =
+          RegExp(r'tvg-language="([^"]*)"').firstMatch(line)?.group(1) ?? '';
+      healthScore =
+          RegExp(r'nexus-score="([0-9.]+)"').firstMatch(line)?.group(1) ?? '';
       continue;
     }
     if (line.startsWith('#EXTVLCOPT:')) {
@@ -216,7 +228,8 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
         final key = option.substring(0, separator).trim().toLowerCase();
         final value = option.substring(separator + 1).trim();
         if (key == 'http-user-agent' && value.isNotEmpty) userAgent = value;
-        if ((key == 'http-referrer' || key == 'http-referer') && value.isNotEmpty) {
+        if ((key == 'http-referrer' || key == 'http-referer') &&
+            value.isNotEmpty) {
           referrer = value;
         }
       }
@@ -239,15 +252,20 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
     }
     if (line.startsWith('#')) continue;
     final uri = Uri.tryParse(line);
-    if (uri == null || !uri.hasScheme ||
-        !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
+    if (uri == null ||
+        !uri.hasScheme ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
       continue;
     }
     final lowerGroup = group.toLowerCase();
     final lowerName = name.toLowerCase();
-    final restricted = lowerGroup.contains('xxx') ||
-        lowerGroup.contains('adult') || lowerName.contains('xxx') ||
-        lowerName.contains('18+') || lowerName.contains('adult only');
+    final restricted =
+        lowerGroup.contains('xxx') ||
+        lowerGroup.contains('adult') ||
+        lowerName.contains('xxx') ||
+        lowerName.contains('18+') ||
+        lowerName.contains('adult only');
     if (name.isNotEmpty && !restricted) {
       channels.add({
         'id': normalizeIptvChannelId(id),
@@ -279,7 +297,9 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
 
 /// Combines independently maintained public M3U feeds without discarding
 /// alternate URLs for the same channel. Exact duplicate stream URLs are removed.
-List<Map<String, String>> mergeLiveTvPlaylists(Map<String, String> sourceBodies) {
+List<Map<String, String>> mergeLiveTvPlaylists(
+  Map<String, String> sourceBodies,
+) {
   final byUrl = <String, Map<String, String>>{};
   for (final source in sourceBodies.entries) {
     for (final channel in parseM3uPlaylist(source.value)) {
@@ -291,8 +311,10 @@ List<Map<String, String>> mergeLiveTvPlaylists(Map<String, String> sourceBodies)
         byUrl[url] = incoming;
         continue;
       }
-      final existingScore = double.tryParse(existing['healthScore'] ?? '') ?? -1;
-      final incomingScore = double.tryParse(incoming['healthScore'] ?? '') ?? -1;
+      final existingScore =
+          double.tryParse(existing['healthScore'] ?? '') ?? -1;
+      final incomingScore =
+          double.tryParse(incoming['healthScore'] ?? '') ?? -1;
       if (incomingScore > existingScore) {
         byUrl[url] = <String, String>{...existing, ...incoming};
       }
@@ -308,10 +330,7 @@ String normalizeCountryCode(String raw) {
   final code = raw.trim().toUpperCase();
   // IPTV sources often use these two-letter placeholders for unassigned data.
   if (code == 'XX' || code == 'ZZ' || code == 'UN') return '';
-  const aliases = <String, String>{
-    'UK': 'GB',
-    'EL': 'GR',
-  };
+  const aliases = <String, String>{'UK': 'GB', 'EL': 'GR'};
   return aliases[code] ?? code;
 }
 
@@ -324,7 +343,10 @@ String countryCodeFromChannelId(String id, {String explicitCountry = ''}) {
   final explicit = normalizeCountryCode(explicitCountry);
   if (RegExp(r'^[A-Z]{2}$').hasMatch(explicit)) return explicit;
   final baseId = normalizeIptvChannelId(id);
-  final match = RegExp(r'\.([a-z]{2})$', caseSensitive: false).firstMatch(baseId);
+  final match = RegExp(
+    r'\.([a-z]{2})$',
+    caseSensitive: false,
+  ).firstMatch(baseId);
   return match == null ? '' : normalizeCountryCode(match.group(1)!);
 }
 
@@ -335,30 +357,48 @@ String _normalizeChannelName(String value) =>
 /// suffixes, e.g. "3ABN English (720p)" -> "3abn". Exact names are always
 /// preferred; canonical collisions are marked ambiguous rather than guessed.
 String _normalizeChannelMatchName(String value) {
-  var normalized = _normalizeChannelName(
-    value.replaceAll(RegExp(r'\([^)]*\)'), ' '),
-  ).replaceAll(
-    RegExp(r'\b(?:2160p?|1080p?|720p?|576p?|480p?|360p?|4k|8k|hd|fhd|uhd|sd|hevc|h265|h264|avc|aac)\b'),
-    ' ',
-  ).trim();
+  var normalized =
+      _normalizeChannelName(value.replaceAll(RegExp(r'\([^)]*\)'), ' '))
+          .replaceAll(
+            RegExp(
+              r'\b(?:2160p?|1080p?|720p?|576p?|480p?|360p?|4k|8k|hd|fhd|uhd|sd|hevc|h265|h264|avc|aac)\b',
+            ),
+            ' ',
+          )
+          .trim();
   const trailingLanguages = <String>{
-    'english', 'french', 'hindi', 'arabic', 'russian', 'ukrainian',
-    'spanish', 'portuguese', 'german', 'italian', 'turkish', 'chinese',
-    'korean', 'japanese', 'bengali', 'urdu', 'tamil', 'telugu',
-    'punjabi', 'malayalam',
+    'english',
+    'french',
+    'hindi',
+    'arabic',
+    'russian',
+    'ukrainian',
+    'spanish',
+    'portuguese',
+    'german',
+    'italian',
+    'turkish',
+    'chinese',
+    'korean',
+    'japanese',
+    'bengali',
+    'urdu',
+    'tamil',
+    'telugu',
+    'punjabi',
+    'malayalam',
   };
   while (normalized.isNotEmpty) {
     final lastWord = normalized.split(' ').last;
     if (!trailingLanguages.contains(lastWord)) break;
-    normalized = normalized.substring(0, normalized.length - lastWord.length).trim();
+    normalized = normalized
+        .substring(0, normalized.length - lastWord.length)
+        .trim();
   }
   return normalized;
 }
 
-String _countryCodeFromName(
-  String value,
-  Map<String, dynamic> countries,
-) {
+String _countryCodeFromName(String value, Map<String, dynamic> countries) {
   final normalized = _normalizeChannelName(value);
   if (normalized.isEmpty) return '';
   final upper = normalizeCountryCode(value);
@@ -382,20 +422,23 @@ List<Map<String, String>> filterLiveTvChannels(
   String query = '',
 }) {
   final q = query.trim().toLowerCase();
-  return channels.where((channel) {
-    final categories = (channel['categoryIds'] ?? '').split('|');
-    final searchable = [
-      channel['name'] ?? '',
-      channel['group'] ?? '',
-      channel['countryName'] ?? '',
-      channel['countryCode'] ?? '',
-      channel['language'] ?? '',
-      channel['categoryNames'] ?? '',
-    ].join(' ').toLowerCase();
-    return (countryCode == '*' || (channel['countryCode'] ?? '') == countryCode) &&
-        (categoryId == '*' || categories.contains(categoryId)) &&
-        (q.isEmpty || searchable.contains(q));
-  }).toList(growable: false);
+  return channels
+      .where((channel) {
+        final categories = (channel['categoryIds'] ?? '').split('|');
+        final searchable = [
+          channel['name'] ?? '',
+          channel['group'] ?? '',
+          channel['countryName'] ?? '',
+          channel['countryCode'] ?? '',
+          channel['language'] ?? '',
+          channel['categoryNames'] ?? '',
+        ].join(' ').toLowerCase();
+        return (countryCode == '*' ||
+                (channel['countryCode'] ?? '') == countryCode) &&
+            (categoryId == '*' || categories.contains(categoryId)) &&
+            (q.isEmpty || searchable.contains(q));
+      })
+      .toList(growable: false);
 }
 
 class Meta {
@@ -485,8 +528,8 @@ class StreamLink {
       final adaptive = s.contains('.m3u8') || s.contains('hls')
           ? 2000
           : s.contains('.mpd') || s.contains('dash')
-              ? 1500
-              : 500;
+          ? 1500
+          : 500;
       return 100000 + adaptive + quality;
     }
 
@@ -517,14 +560,59 @@ class OttBrand {
 // Streaming Catalogs instance. OTT Hubs discovers any additional configured
 // provider catalogs dynamically from each addon's manifest.
 const List<OttBrand> _brands = [
-  OttBrand(name: 'NETFLIX', shortId: 'nfx', color: Color(0xFFE50914), fallbackGenre: 'Thriller', hasCatalog: true),
-  OttBrand(name: 'PRIME VIDEO', shortId: 'amp', color: Color(0xFF00A8E1), fallbackGenre: 'Action', hasCatalog: true),
-  OttBrand(name: 'DISNEY+ HOTSTAR', shortId: 'dnp', color: Color(0xFF113CCF), fallbackGenre: 'Adventure', hasCatalog: true),
-  OttBrand(name: 'HBO MAX', shortId: 'hbm', color: Color(0xFF991EEB), fallbackGenre: 'Drama', hasCatalog: true),
-  OttBrand(name: 'APPLE TV+', shortId: 'atp', color: Color(0xFFE2E8F0), fallbackGenre: 'Sci-Fi', hasCatalog: true),
-  OttBrand(name: 'SONYLIV', shortId: 'sonyliv', color: Color(0xFF0057B7), fallbackGenre: 'Comedy'),
-  OttBrand(name: 'ZEE5', shortId: 'zee', color: Color(0xFF8230C6), fallbackGenre: 'Mystery'),
-  OttBrand(name: 'JIOHOTSTAR', shortId: 'jhs', color: Color(0xFFE5005C), fallbackGenre: 'Action'),
+  OttBrand(
+    name: 'NETFLIX',
+    shortId: 'nfx',
+    color: Color(0xFFE50914),
+    fallbackGenre: 'Thriller',
+    hasCatalog: true,
+  ),
+  OttBrand(
+    name: 'PRIME VIDEO',
+    shortId: 'amp',
+    color: Color(0xFF00A8E1),
+    fallbackGenre: 'Action',
+    hasCatalog: true,
+  ),
+  OttBrand(
+    name: 'DISNEY+ HOTSTAR',
+    shortId: 'dnp',
+    color: Color(0xFF113CCF),
+    fallbackGenre: 'Adventure',
+    hasCatalog: true,
+  ),
+  OttBrand(
+    name: 'HBO MAX',
+    shortId: 'hbm',
+    color: Color(0xFF991EEB),
+    fallbackGenre: 'Drama',
+    hasCatalog: true,
+  ),
+  OttBrand(
+    name: 'APPLE TV+',
+    shortId: 'atp',
+    color: Color(0xFFE2E8F0),
+    fallbackGenre: 'Sci-Fi',
+    hasCatalog: true,
+  ),
+  OttBrand(
+    name: 'SONYLIV',
+    shortId: 'sonyliv',
+    color: Color(0xFF0057B7),
+    fallbackGenre: 'Comedy',
+  ),
+  OttBrand(
+    name: 'ZEE5',
+    shortId: 'zee',
+    color: Color(0xFF8230C6),
+    fallbackGenre: 'Mystery',
+  ),
+  OttBrand(
+    name: 'JIOHOTSTAR',
+    shortId: 'jhs',
+    color: Color(0xFFE5005C),
+    fallbackGenre: 'Action',
+  ),
 ];
 
 class ManagedAddon {
@@ -539,16 +627,16 @@ class ManagedAddon {
   });
 
   Map<String, dynamic> toJson() => {
-        'name': name,
-        'manifestUrl': manifestUrl,
-        'baseUrl': baseUrl,
-      };
+    'name': name,
+    'manifestUrl': manifestUrl,
+    'baseUrl': baseUrl,
+  };
 
   factory ManagedAddon.fromJson(Map<String, dynamic> j) => ManagedAddon(
-        name: (j['name'] ?? 'Addon').toString(),
-        manifestUrl: (j['manifestUrl'] ?? '').toString(),
-        baseUrl: (j['baseUrl'] ?? '').toString(),
-      );
+    name: (j['name'] ?? 'Addon').toString(),
+    manifestUrl: (j['manifestUrl'] ?? '').toString(),
+    baseUrl: (j['baseUrl'] ?? '').toString(),
+  );
 }
 
 class AddonManager {
@@ -564,32 +652,45 @@ class AddonManager {
 
   Future<bool> isAlive(String manifestUrl) async {
     try {
-      final r = await _client.get(Uri.parse(manifestUrl)).timeout(const Duration(seconds: 6));
+      final r = await _client
+          .get(Uri.parse(manifestUrl))
+          .timeout(const Duration(seconds: 6));
       return r.statusCode == 200 && jsonDecode(r.body) is Map;
     } catch (_) {
       return false;
     }
   }
 
-  Future<List<ManagedAddon>> sync(List<ManagedAddon> current, SharedPreferences prefs) async {
+  Future<List<ManagedAddon>> sync(
+    List<ManagedAddon> current,
+    SharedPreferences prefs,
+  ) async {
     // Keep configured addons even when temporarily unreachable. Network failures
     // must never silently erase a user's configuration.
     final merged = <String, ManagedAddon>{};
     for (final addon in current) {
-      if (addon.manifestUrl.trim().isNotEmpty) merged[addon.manifestUrl] = addon;
+      if (addon.manifestUrl.trim().isNotEmpty)
+        merged[addon.manifestUrl] = addon;
     }
-    final disabled = (prefs.getStringList('disabled_addons') ?? <String>[]).toSet();
+    final disabled = (prefs.getStringList('disabled_addons') ?? <String>[])
+        .toSet();
     for (final entry in _seedAddons.entries) {
       if (!disabled.contains(entry.value)) {
-        merged.putIfAbsent(entry.value, () => ManagedAddon(
-          name: entry.key,
-          manifestUrl: entry.value,
-          baseUrl: entry.value.replaceFirst(RegExp(r'/manifest\.json$'), ''),
-        ));
+        merged.putIfAbsent(
+          entry.value,
+          () => ManagedAddon(
+            name: entry.key,
+            manifestUrl: entry.value,
+            baseUrl: entry.value.replaceFirst(RegExp(r'/manifest\.json$'), ''),
+          ),
+        );
       }
     }
     final retained = merged.values.toList();
-    await prefs.setStringList('managed_addons', retained.map((a) => jsonEncode(a.toJson())).toList());
+    await prefs.setStringList(
+      'managed_addons',
+      retained.map((a) => jsonEncode(a.toJson())).toList(),
+    );
     return retained;
   }
 
@@ -615,10 +716,16 @@ class AddonCatalog {
 class CatalogEngine {
   final http.Client _client = http.Client();
 
-  Future<List<Meta>> fetchRow(String primary, String? fallback, {String type = 'movie'}) async {
+  Future<List<Meta>> fetchRow(
+    String primary,
+    String? fallback, {
+    String type = 'movie',
+  }) async {
     for (final u in [primary, if (fallback != null) fallback]) {
       try {
-        final r = await _client.get(Uri.parse(u)).timeout(const Duration(seconds: 8));
+        final r = await _client
+            .get(Uri.parse(u))
+            .timeout(const Duration(seconds: 8));
         if (r.statusCode == 200) {
           final metas = (jsonDecode(r.body) as Map)['metas'];
           if (metas is List && metas.isNotEmpty) {
@@ -646,11 +753,13 @@ class CatalogEngine {
       final manifest = Map<String, dynamic>.from(decoded);
       final resources = manifest['resources'];
       if (resources is List &&
-          !resources.any((resource) =>
-              resource == 'catalog' ||
-              (resource is Map &&
-                  (resource['name'] == 'catalog' ||
-                      resource['resource'] == 'catalog')))) {
+          !resources.any(
+            (resource) =>
+                resource == 'catalog' ||
+                (resource is Map &&
+                    (resource['name'] == 'catalog' ||
+                        resource['resource'] == 'catalog')),
+          )) {
         return <AddonCatalog>[];
       }
       final declaredCatalogs = manifest['catalogs'];
@@ -685,14 +794,20 @@ class CatalogEngine {
     if (query.trim().isEmpty) return [];
     final q = Uri.encodeComponent(query.trim());
     final out = <Meta>[];
-    
+
     for (final type in ['movie', 'series']) {
       try {
-        final r = await _client.get(Uri.parse('$_cinemeta/catalog/$type/top/search=$q.json')).timeout(const Duration(seconds: 6));
+        final r = await _client
+            .get(Uri.parse('$_cinemeta/catalog/$type/top/search=$q.json'))
+            .timeout(const Duration(seconds: 6));
         if (r.statusCode == 200) {
           final metas = (jsonDecode(r.body) as Map)['metas'];
           if (metas is List) {
-            out.addAll(metas.whereType<Map>().map((m) => Meta.fromJson(Map<String, dynamic>.from(m))));
+            out.addAll(
+              metas.whereType<Map>().map(
+                (m) => Meta.fromJson(Map<String, dynamic>.from(m)),
+              ),
+            );
           }
         }
       } catch (_) {}
@@ -702,11 +817,16 @@ class CatalogEngine {
 
   Future<List<Map<String, dynamic>>> fetchEpisodes(String id) async {
     try {
-      final r = await _client.get(Uri.parse('$_cinemeta/meta/series/$id.json')).timeout(const Duration(seconds: 6));
+      final r = await _client
+          .get(Uri.parse('$_cinemeta/meta/series/$id.json'))
+          .timeout(const Duration(seconds: 6));
       if (r.statusCode == 200) {
         final videos = (jsonDecode(r.body) as Map)['meta']?['videos'];
         if (videos is List) {
-          return videos.whereType<Map>().map((v) => Map<String, dynamic>.from(v)).toList();
+          return videos
+              .whereType<Map>()
+              .map((v) => Map<String, dynamic>.from(v))
+              .toList();
         }
       }
     } catch (_) {}
@@ -733,108 +853,137 @@ class CatalogEngine {
 
     Future<List<StreamLink>> resolveAddon(ManagedAddon addon) async {
       try {
-        final endpoint = '${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json';
-        final response = await _client.get(Uri.parse(endpoint))
+        final endpoint =
+            '${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json';
+        final response = await _client
+            .get(Uri.parse(endpoint))
             .timeout(const Duration(seconds: 5));
         if (response.statusCode != 200) return <StreamLink>[];
         final decoded = jsonDecode(response.body);
         final rawStreams = decoded is Map ? decoded['streams'] : null;
         if (rawStreams is! List) return <StreamLink>[];
-        return rawStreams.whereType<Map>().map((raw) {
-          final item = Map<String, dynamic>.from(raw);
-          final rawUrl = (item['url'] ?? '').toString().trim();
-          var rawHash = (item['infoHash'] ?? '').toString().trim();
-          final uri = Uri.tryParse(rawUrl);
-          if (rawHash.isEmpty && uri?.scheme == 'magnet') {
-            final xt = uri?.queryParameters['xt'] ?? '';
-            rawHash = xt.replaceFirst(
-              RegExp(r'^urn:btih:', caseSensitive: false),
-              '',
-            ).trim();
-          }
-          rawHash = rawHash.replaceFirst(
-            RegExp(r'^urn:btih:', caseSensitive: false),
-            '',
-          );
-          final rawFileIdx = item['fileIdx'];
-          final parsedFileIdx = rawFileIdx is num
-              ? rawFileIdx.toInt()
-              : int.tryParse(rawFileIdx?.toString() ?? '');
-          final fileIdx = parsedFileIdx != null && parsedFileIdx >= 0
-              ? parsedFileIdx
-              : null;
-          final directUrl = uri != null && uri.hasScheme &&
-                  {'http', 'https'}.contains(uri.scheme) && uri.host.isNotEmpty
-              ? uri.toString()
-              : null;
-          // Preserve tracker hints supplied by Stremio magnets and the
-          // addon's "tracker:" sources. Dropping these can strand a valid
-          // swarm even though the infoHash itself is correct.
-          final trackerCandidates = <String>[
-            if (uri?.scheme == 'magnet')
-              ...(uri!.queryParametersAll['tr'] ?? const <String>[]),
-            if (item['sources'] is List)
-              ...(item['sources'] as List)
-                  .map((value) => value.toString().trim())
-                  .where((value) => value.toLowerCase().startsWith('tracker:'))
-                  .map((value) => value.substring('tracker:'.length)),
-          ];
-          final trackerUrls = trackerCandidates
-              .map((value) => value.trim())
-              .where((value) {
-                final tracker = Uri.tryParse(value);
-                return tracker != null &&
-                    tracker.host.isNotEmpty &&
-                    {'udp', 'http', 'https'}.contains(tracker.scheme);
-              })
-              .toSet()
-              .take(16)
-              .toList(growable: false);
-          if (directUrl == null && rawHash.isEmpty) return null;
-          final title = (item['title'] ?? item['description'] ?? item['name'] ?? 'Stream')
-              .toString().replaceAll('\n', ' ').trim();
-          final behaviorHints = item['behaviorHints'];
-          final rawSeeders = item['seeders'] ??
-              (behaviorHints is Map ? behaviorHints['seeders'] : null);
-          final titleSeeders = RegExp(r'(?:👤|👥)\s*(\d{1,5})')
-              .firstMatch(title);
-          final seeders = rawSeeders is num
-              ? rawSeeders.toInt()
-              : int.tryParse(rawSeeders?.toString() ?? '') ??
-                  int.tryParse(titleSeeders?.group(1) ?? '');
-          final proxyHeaders = behaviorHints is Map ? behaviorHints['proxyHeaders'] : null;
-          final requestHeaders = proxyHeaders is Map ? proxyHeaders['request'] : null;
-          final rawHeaders = requestHeaders is Map
-              ? requestHeaders
-              : (item['headers'] is Map ? item['headers'] : const <String, dynamic>{});
-          final streamHeaders = <String, String>{};
-          if (rawHeaders is Map) {
-            for (final entry in rawHeaders.entries) {
-              final key = entry.key.toString().trim();
-              final value = entry.value.toString().trim();
-              if (key.isNotEmpty && value.isNotEmpty) streamHeaders[key] = value;
-            }
-          }
-          final probe = '$title ${directUrl ?? ''}'.toLowerCase();
-          final badge = probe.contains('2160') || probe.contains('4k')
-              ? '4K UHD'
-              : probe.contains('1080')
+        return rawStreams
+            .whereType<Map>()
+            .map((raw) {
+              final item = Map<String, dynamic>.from(raw);
+              final rawUrl = (item['url'] ?? '').toString().trim();
+              var rawHash = (item['infoHash'] ?? '').toString().trim();
+              final uri = Uri.tryParse(rawUrl);
+              if (rawHash.isEmpty && uri?.scheme == 'magnet') {
+                final xt = uri?.queryParameters['xt'] ?? '';
+                rawHash = xt
+                    .replaceFirst(
+                      RegExp(r'^urn:btih:', caseSensitive: false),
+                      '',
+                    )
+                    .trim();
+              }
+              rawHash = rawHash.replaceFirst(
+                RegExp(r'^urn:btih:', caseSensitive: false),
+                '',
+              );
+              final rawFileIdx = item['fileIdx'];
+              final parsedFileIdx = rawFileIdx is num
+                  ? rawFileIdx.toInt()
+                  : int.tryParse(rawFileIdx?.toString() ?? '');
+              final fileIdx = parsedFileIdx != null && parsedFileIdx >= 0
+                  ? parsedFileIdx
+                  : null;
+              final directUrl =
+                  uri != null &&
+                      uri.hasScheme &&
+                      {'http', 'https'}.contains(uri.scheme) &&
+                      uri.host.isNotEmpty
+                  ? uri.toString()
+                  : null;
+              // Preserve tracker hints supplied by Stremio magnets and the
+              // addon's "tracker:" sources. Dropping these can strand a valid
+              // swarm even though the infoHash itself is correct.
+              final trackerCandidates = <String>[
+                if (uri?.scheme == 'magnet')
+                  ...(uri!.queryParametersAll['tr'] ?? const <String>[]),
+                if (item['sources'] is List)
+                  ...(item['sources'] as List)
+                      .map((value) => value.toString().trim())
+                      .where(
+                        (value) => value.toLowerCase().startsWith('tracker:'),
+                      )
+                      .map((value) => value.substring('tracker:'.length)),
+              ];
+              final trackerUrls = trackerCandidates
+                  .map((value) => value.trim())
+                  .where((value) {
+                    final tracker = Uri.tryParse(value);
+                    return tracker != null &&
+                        tracker.host.isNotEmpty &&
+                        {'udp', 'http', 'https'}.contains(tracker.scheme);
+                  })
+                  .toSet()
+                  .take(16)
+                  .toList(growable: false);
+              if (directUrl == null && rawHash.isEmpty) return null;
+              final title =
+                  (item['title'] ??
+                          item['description'] ??
+                          item['name'] ??
+                          'Stream')
+                      .toString()
+                      .replaceAll('\n', ' ')
+                      .trim();
+              final behaviorHints = item['behaviorHints'];
+              final rawSeeders =
+                  item['seeders'] ??
+                  (behaviorHints is Map ? behaviorHints['seeders'] : null);
+              final titleSeeders = RegExp(r'(?:👤|👥)\s*(\d{1,5})')
+                  .firstMatch(title);
+              final seeders = rawSeeders is num
+                  ? rawSeeders.toInt()
+                  : int.tryParse(rawSeeders?.toString() ?? '') ??
+                        int.tryParse(titleSeeders?.group(1) ?? '');
+              final proxyHeaders = behaviorHints is Map
+                  ? behaviorHints['proxyHeaders']
+                  : null;
+              final requestHeaders = proxyHeaders is Map
+                  ? proxyHeaders['request']
+                  : null;
+              final rawHeaders = requestHeaders is Map
+                  ? requestHeaders
+                  : (item['headers'] is Map
+                        ? item['headers']
+                        : const <String, dynamic>{});
+              final streamHeaders = <String, String>{};
+              if (rawHeaders is Map) {
+                for (final entry in rawHeaders.entries) {
+                  final key = entry.key.toString().trim();
+                  final value = entry.value.toString().trim();
+                  if (key.isNotEmpty && value.isNotEmpty)
+                    streamHeaders[key] = value;
+                }
+              }
+              final probe = '$title ${directUrl ?? ''}'.toLowerCase();
+              final badge = probe.contains('2160') || probe.contains('4k')
+                  ? '4K UHD'
+                  : probe.contains('1080')
                   ? '1080p FHD'
                   : probe.contains('.m3u8') || probe.contains('hls')
-                      ? 'HLS'
-                      : directUrl != null ? 'DIRECT' : 'TORRENT';
-          return StreamLink(
-            url: directUrl,
-            infoHash: rawHash.isEmpty ? null : rawHash,
-            title: title,
-            addonName: addon.name,
-            badge: badge,
-            headers: streamHeaders,
-            seeders: seeders,
-            fileIdx: fileIdx,
-            trackers: trackerUrls,
-          );
-        }).whereType<StreamLink>().toList();
+                  ? 'HLS'
+                  : directUrl != null
+                  ? 'DIRECT'
+                  : 'TORRENT';
+              return StreamLink(
+                url: directUrl,
+                infoHash: rawHash.isEmpty ? null : rawHash,
+                title: title,
+                addonName: addon.name,
+                badge: badge,
+                headers: streamHeaders,
+                seeders: seeders,
+                fileIdx: fileIdx,
+                trackers: trackerUrls,
+              );
+            })
+            .whereType<StreamLink>()
+            .toList();
       } catch (_) {
         // One addon timing out or returning malformed JSON must not block the others.
         return <StreamLink>[];
@@ -844,21 +993,28 @@ class CatalogEngine {
     // Publish each provider's response as soon as it arrives. The user can
     // start a stream from the first usable provider without waiting for the
     // slowest add-on in the parallel fan-out.
-    await Future.wait(eligible.map((addon) async {
-      final streams = await resolveAddon(addon);
-      for (final stream in streams) {
-        final key = stream.url ?? stream.infoHash ?? '${stream.addonName}:${stream.title}';
-        accumulated.putIfAbsent(key, () => stream);
-      }
-      if (streams.isNotEmpty) onUpdate?.call(ranked());
-    }));
+    await Future.wait(
+      eligible.map((addon) async {
+        final streams = await resolveAddon(addon);
+        for (final stream in streams) {
+          final key =
+              stream.url ??
+              stream.infoHash ??
+              '${stream.addonName}:${stream.title}';
+          accumulated.putIfAbsent(key, () => stream);
+        }
+        if (streams.isNotEmpty) onUpdate?.call(ranked());
+      }),
+    );
 
     return ranked();
   }
 
   /// Fetch the community-maintained best public tracker list. It is
   /// cached for 24 hours so tracker discovery cannot stall every playback start.
-  Future<List<String>> fetchSupplementalTrackers({bool forceRefresh = false}) async {
+  Future<List<String>> fetchSupplementalTrackers({
+    bool forceRefresh = false,
+  }) async {
     final support = await getApplicationSupportDirectory();
     final cacheFile = File(support.path + '/moviebox-trackers-best.txt');
     try {
@@ -878,10 +1034,15 @@ class CatalogEngine {
     ];
     for (final url in urls) {
       try {
-        final response = await _client.get(
-          Uri.parse(url),
-          headers: const {'User-Agent': 'MovieBoxNexus/1.2', 'Accept': 'text/plain'},
-        ).timeout(const Duration(seconds: 5));
+        final response = await _client
+            .get(
+              Uri.parse(url),
+              headers: const {
+                'User-Agent': 'MovieBoxNexus/1.2',
+                'Accept': 'text/plain',
+              },
+            )
+            .timeout(const Duration(seconds: 5));
         if (response.statusCode != 200) continue;
         final trackers = _parsePublicTrackers(response.body);
         if (trackers.isEmpty) continue;
@@ -932,14 +1093,16 @@ class CatalogEngine {
         await response.stream.listen((_) {}).cancel();
         return false;
       }
-      final contentType = (response.headers['content-type'] ?? '').toLowerCase();
+      final contentType = (response.headers['content-type'] ?? '')
+          .toLowerCase();
       if (contentType.contains('text/html')) {
         await response.stream.listen((_) {}).cancel();
         return false;
       }
-      final firstChunk = await response.stream
-          .first
-          .timeout(const Duration(seconds: 2), onTimeout: () => <int>[]);
+      final firstChunk = await response.stream.first.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => <int>[],
+      );
       if (firstChunk.isEmpty) return false;
       final prefix = utf8
           .decode(firstChunk.take(512).toList(), allowMalformed: true)
@@ -979,17 +1142,25 @@ class CatalogEngine {
         : allChannels.where((item) => (item['id'] ?? '').trim() == id).toList();
     final matches = idMatches.isNotEmpty
         ? idMatches
-        : allChannels.where((item) =>
-            name.isNotEmpty && _normalizeChannelName(item['name'] ?? '') == name).toList();
+        : allChannels
+              .where(
+                (item) =>
+                    name.isNotEmpty &&
+                    _normalizeChannelName(item['name'] ?? '') == name,
+              )
+              .toList();
     final ordered = <Map<String, String>>[
       selected,
       ...matches.where((item) => (item['url'] ?? '') != selectedUrl),
     ];
     final seen = <String>{};
-    return ordered.where((item) {
-      final url = item['url'] ?? '';
-      return url.isNotEmpty && seen.add(url);
-    }).take(8).toList();
+    return ordered
+        .where((item) {
+          final url = item['url'] ?? '';
+          return url.isNotEmpty && seen.add(url);
+        })
+        .take(8)
+        .toList();
   }
 
   Future<List<int>> _readResponsePrefix(
@@ -1021,21 +1192,21 @@ class CatalogEngine {
         ..headers['Range'] = 'bytes=0-65535'
         ..headers['Accept'] = '*/*'
         ..headers.putIfAbsent('User-Agent', () => 'MovieBoxNexus/1.2');
-      final response = await _client.send(request).timeout(
-        const Duration(seconds: 5),
-      );
+      final response = await _client
+          .send(request)
+          .timeout(const Duration(seconds: 5));
       if (response.statusCode != 200 && response.statusCode != 206) {
         await response.stream.listen((_) {}).cancel();
         return false;
       }
-      final contentType = (response.headers['content-type'] ?? '').toLowerCase();
+      final contentType = (response.headers['content-type'] ?? '')
+          .toLowerCase();
       if (contentType.contains('text/html')) {
         await response.stream.listen((_) {}).cancel();
         return false;
       }
-      final prefix = await _readResponsePrefix(response.stream).timeout(
-        const Duration(seconds: 5),
-      );
+      final prefix = await _readResponsePrefix(response.stream)
+          .timeout(const Duration(seconds: 5));
       if (prefix.isEmpty) return false;
 
       final text = utf8
@@ -1049,8 +1220,8 @@ class CatalogEngine {
         return false;
       }
 
-      final isHls = lower.startsWith('#extm3u') ||
-          contentType.contains('mpegurl');
+      final isHls =
+          lower.startsWith('#extm3u') || contentType.contains('mpegurl');
       if (!isHls) return true;
 
       final finalUri = response.request?.url ?? uri;
@@ -1072,7 +1243,11 @@ class CatalogEngine {
         if (variant != null) break;
       }
       if (variant != null) {
-        return await _probeLiveTvUrl(finalUri.resolve(variant), depth: depth + 1, headers: headers);
+        return await _probeLiveTvUrl(
+          finalUri.resolve(variant),
+          depth: depth + 1,
+          headers: headers,
+        );
       }
 
       // Media playlists contain segment URIs as non-comment lines. For
@@ -1095,7 +1270,11 @@ class CatalogEngine {
         }
       }
       if (segment == null) return false;
-      return await _probeLiveTvUrl(finalUri.resolve(segment), depth: depth + 1, headers: headers);
+      return await _probeLiveTvUrl(
+        finalUri.resolve(segment),
+        depth: depth + 1,
+        headers: headers,
+      );
     } catch (_) {
       return false;
     }
@@ -1106,7 +1285,8 @@ class CatalogEngine {
     final uri = Uri.tryParse(rawUrl);
     if (uri == null || !uri.hasAuthority) return false;
     final headers = <String, String>{
-      if ((item['userAgent'] ?? '').isNotEmpty) 'User-Agent': item['userAgent']!,
+      if ((item['userAgent'] ?? '').isNotEmpty)
+        'User-Agent': item['userAgent']!,
       if ((item['referrer'] ?? '').isNotEmpty) 'Referer': item['referrer']!,
     };
     return _probeLiveTvUrl(uri, headers: headers);
@@ -1142,14 +1322,14 @@ class CatalogEngine {
 
   Future<Map<String, String>?> firstWorkingLiveTvSource(
     List<Map<String, String>> candidates,
-  ) async =>
-      (await probeLiveTvSources(candidates)).working;
+  ) async => (await probeLiveTvSources(candidates)).working;
 
   void close() => _client.close();
 
-
   /// Cached public IPTV playlist enriched with structured country/category data.
-  Future<List<Map<String, String>>> fetchIptv({bool forceRefresh = false}) async {
+  Future<List<Map<String, String>>> fetchIptv({
+    bool forceRefresh = false,
+  }) async {
     final support = await getApplicationSupportDirectory();
     final cacheFile = File(support.path + '/live_tv_multi_source_v3.m3u');
     String? cachedBody;
@@ -1164,7 +1344,8 @@ class CatalogEngine {
     final cachedChannels = hasCache
         ? _uniqueLiveChannels(parseM3uPlaylist(cachedBody))
         : <Map<String, String>>[];
-    final isFresh = cacheTime != null &&
+    final isFresh =
+        cacheTime != null &&
         DateTime.now().difference(cacheTime) < const Duration(hours: 12);
     if (shouldUseCachedLiveTvData(
       cacheExists: hasCache,
@@ -1191,18 +1372,26 @@ class CatalogEngine {
   Future<List<Map<String, String>>> _refreshIptvPlaylist(File cacheFile) async {
     // Smaller country, language, region and category lists replace the giant index.
     // Each request has its own timeout, so one slow source cannot block the others.
-    final responses = await Future.wait<MapEntry<String, String>?>(liveTvPlaylistSources.map((source) async {
-      try {
-        final response = await _client.get(
-          Uri.parse(source.value),
-          headers: const {'User-Agent': 'MovieBoxNexus/1.1', 'Accept': '*/*'},
-        ).timeout(const Duration(seconds: 12));
-        if (response.statusCode != 200 || response.body.trim().isEmpty) return null;
-        return MapEntry(source.key, response.body);
-      } catch (_) {
-        return null;
-      }
-    }));
+    final responses = await Future.wait<MapEntry<String, String>?>(
+      liveTvPlaylistSources.map((source) async {
+        try {
+          final response = await _client
+              .get(
+                Uri.parse(source.value),
+                headers: const {
+                  'User-Agent': 'MovieBoxNexus/1.1',
+                  'Accept': '*/*',
+                },
+              )
+              .timeout(const Duration(seconds: 12));
+          if (response.statusCode != 200 || response.body.trim().isEmpty)
+            return null;
+          return MapEntry(source.key, response.body);
+        } catch (_) {
+          return null;
+        }
+      }),
+    );
     final sourceBodies = <String, String>{
       for (final item in responses.whereType<MapEntry<String, String>>())
         item.key: item.value,
@@ -1211,7 +1400,10 @@ class CatalogEngine {
     if (merged.isEmpty) return <Map<String, String>>[];
     try {
       await cacheFile.parent.create(recursive: true);
-      await cacheFile.writeAsString(sourceBodies.values.join('\n'), flush: true);
+      await cacheFile.writeAsString(
+        sourceBodies.values.join('\n'),
+        flush: true,
+      );
     } catch (_) {}
     return _uniqueLiveChannels(merged);
   }
@@ -1227,7 +1419,9 @@ class CatalogEngine {
     return <String, dynamic>{};
   }
 
-  Future<Map<String, dynamic>> _loadLiveTvMetadata({bool forceRefresh = false}) async {
+  Future<Map<String, dynamic>> _loadLiveTvMetadata({
+    bool forceRefresh = false,
+  }) async {
     final support = await getApplicationSupportDirectory();
     final metadataFile = File(support.path + '/live_tv_metadata.json');
     try {
@@ -1243,8 +1437,10 @@ class CatalogEngine {
             final cachedCountries = cached['countries'];
             // Do not treat a previously cached empty/partial response as fresh:
             // that can freeze every channel as "Country not tagged" for 7 days.
-            if (cachedChannels is Map && cachedChannels.isNotEmpty &&
-                cachedCountries is Map && cachedCountries.isNotEmpty) {
+            if (cachedChannels is Map &&
+                cachedChannels.isNotEmpty &&
+                cachedCountries is Map &&
+                cachedCountries.isNotEmpty) {
               return cached;
             }
           }
@@ -1253,16 +1449,22 @@ class CatalogEngine {
     } catch (_) {}
     Future<dynamic> readJson(String url) async {
       try {
-        final response = await _client.get(
-          Uri.parse(url),
-          headers: const {'User-Agent': 'MovieBoxNexus/1.0', 'Accept': 'application/json'},
-        ).timeout(const Duration(seconds: 18));
+        final response = await _client
+            .get(
+              Uri.parse(url),
+              headers: const {
+                'User-Agent': 'MovieBoxNexus/1.0',
+                'Accept': 'application/json',
+              },
+            )
+            .timeout(const Duration(seconds: 18));
         if (response.statusCode != 200) return null;
         return jsonDecode(response.body);
       } catch (_) {
         return null;
       }
     }
+
     final values = await Future.wait<dynamic>([
       readJson('https://iptv-org.github.io/api/channels.json'),
       readJson('https://iptv-org.github.io/api/countries.json'),
@@ -1386,23 +1588,26 @@ class CatalogEngine {
       final id = normalizeIptvChannelId(channel['id'] ?? '');
       final directMeta = channelIndex[id];
       final exactNameKey = _normalizeChannelName(channel['name'] ?? '');
-      final canonicalNameKey = _normalizeChannelMatchName(channel['name'] ?? '');
+      final canonicalNameKey = _normalizeChannelMatchName(
+        channel['name'] ?? '',
+      );
       final matchedByName = channelNameIndex.containsKey(exactNameKey)
           ? channelNameIndex[exactNameKey]
           : channelNameIndex[canonicalNameKey];
       // Official playlist IDs do not always match the iptv-org channel
       // index. Use a unique normalized channel-name match as a fallback even
       // when a non-empty source ID exists; ambiguous names remain excluded.
-      final channelMetaRaw = directMeta is Map
-          ? directMeta
-          : matchedByName;
+      final channelMetaRaw = directMeta is Map ? directMeta : matchedByName;
       final channelMeta = channelMetaRaw is Map
           ? Map<String, dynamic>.from(channelMetaRaw)
           : <String, dynamic>{};
-      final rawCountry = (channelMeta['country'] ??
-              channel['countryRaw'] ?? channel['country'] ?? '')
-          .toString()
-          .trim();
+      final rawCountry =
+          (channelMeta['country'] ??
+                  channel['countryRaw'] ??
+                  channel['country'] ??
+                  '')
+              .toString()
+              .trim();
       final idCountry = countryCodeFromChannelId(
         id,
         explicitCountry: rawCountry,
@@ -1415,29 +1620,43 @@ class CatalogEngine {
       final countryCode = resolvedCountryCode.isNotEmpty
           ? resolvedCountryCode
           : rawCountry.isNotEmpty
-              ? 'NAME:${_normalizeChannelName(rawCountry).replaceAll(' ', '-')}'
-              : '';
+          ? 'NAME:${_normalizeChannelName(rawCountry).replaceAll(' ', '-')}'
+          : '';
       final countryMeta = countryIndex[countryCode] is Map
           ? Map<String, dynamic>.from(countryIndex[countryCode] as Map)
           : <String, dynamic>{};
       final rawCategories = channelMeta['categories'];
       final categoryIds = rawCategories is List
-          ? rawCategories.map((v) => v.toString()).where((v) => v.isNotEmpty).toList()
+          ? rawCategories
+                .map((v) => v.toString())
+                .where((v) => v.isNotEmpty)
+                .toList()
           : <String>[];
       if (categoryIds.isEmpty && (channel['group'] ?? '').isNotEmpty) {
-        categoryIds.add((channel['group'] ?? 'Other').toLowerCase()
-            .replaceAll(RegExp(r'[^a-z0-9]+'), '-'));
+        categoryIds.add(
+          (channel['group'] ?? 'Other').toLowerCase().replaceAll(
+            RegExp(r'[^a-z0-9]+'),
+            '-',
+          ),
+        );
       }
-      final categoryNames = categoryIds.map((id) =>
-          (categoryIndex[id] ?? id.replaceAll('-', ' ')).toString()).toList();
+      final categoryNames = categoryIds
+          .map(
+            (id) => (categoryIndex[id] ?? id.replaceAll('-', ' ')).toString(),
+          )
+          .toList();
       return <String, String>{
         ...channel,
         'country': countryCode,
         'countryCode': countryCode,
-        'countryName': (countryMeta['name'] ??
-                (countryCode.startsWith('NAME:') ? rawCountry :
-                    (countryCode.isEmpty ? 'Country not tagged' : countryCode)))
-            .toString(),
+        'countryName':
+            (countryMeta['name'] ??
+                    (countryCode.startsWith('NAME:')
+                        ? rawCountry
+                        : (countryCode.isEmpty
+                              ? 'Country not tagged'
+                              : countryCode)))
+                .toString(),
         'countryFlag': (countryMeta['flag'] ?? '').toString(),
         'categoryIds': categoryIds.join('|'),
         'categoryNames': categoryNames.join(', '),
@@ -1445,7 +1664,9 @@ class CatalogEngine {
     }).toList();
   }
 
-  List<Map<String, String>> _uniqueLiveChannels(List<Map<String, String>> channels) {
+  List<Map<String, String>> _uniqueLiveChannels(
+    List<Map<String, String>> channels,
+  ) {
     final unique = <String, Map<String, String>>{};
     for (final channel in channels) {
       final url = channel['url'] ?? '';
@@ -1512,21 +1733,27 @@ class EmbeddedTorrentService {
         uri.scheme != 'http' ||
         uri.host != '127.0.0.1' ||
         uri.port <= 0) {
-      throw StateError('Built-in torrent engine returned an invalid loopback URL.');
+      throw StateError(
+        'Built-in torrent engine returned an invalid loopback URL.',
+      );
     }
     return uri.toString();
   }
 
   Future<Map<String, dynamic>> getStatus() async {
-    final snapshot = await _channel.invokeMapMethod<String, dynamic>('getStatus');
+    final snapshot = await _channel.invokeMapMethod<String, dynamic>(
+      'getStatus',
+    );
     return snapshot ?? <String, dynamic>{};
   }
 
   void dispose() {
     _initialized = false;
-    unawaited(_channel.invokeMethod<void>('stopPlayback').catchError((Object error) {
-      debugPrint('MovieBox torrent stop failed: $error');
-    }));
+    unawaited(
+      _channel.invokeMethod<void>('stopPlayback').catchError((Object error) {
+        debugPrint('MovieBox torrent stop failed: $error');
+      }),
+    );
   }
 }
 
@@ -1542,7 +1769,7 @@ Future<void> main() async {
 
 class MovieBoxApp extends StatelessWidget {
   const MovieBoxApp({super.key});
-  
+
   @override
   Widget build(BuildContext context) {
     return Shortcuts(
@@ -1569,7 +1796,7 @@ class MovieBoxApp extends StatelessWidget {
 
 class RootShell extends StatefulWidget {
   const RootShell({super.key});
-  
+
   @override
   State<RootShell> createState() => _RootShellState();
 }
@@ -1578,12 +1805,12 @@ class _RootShellState extends State<RootShell> {
   final engine = CatalogEngine();
   final addonManager = AddonManager();
   List<ManagedAddon> managedAddons = [];
-  
+
   final watchlist = <String>{};
   final watchedEpisodes = <String>{};
   final resumeMs = <String, int>{};
   final resumeTitles = <String, String>{};
-  
+
   int tab = 0;
   final Set<int> _visitedTabs = <int>{0};
   HttpServer? _server;
@@ -1603,13 +1830,16 @@ class _RootShellState extends State<RootShell> {
     setState(() {
       watchlist.addAll(p.getStringList('watchlist') ?? []);
       watchedEpisodes.addAll(p.getStringList('watched_eps') ?? []);
-      
+
       try {
         final raw = p.getString('resume_ms');
         if (raw != null && raw.isNotEmpty) {
           final decoded = jsonDecode(raw);
           if (decoded is Map) {
-            decoded.forEach((k, v) => resumeMs[k.toString()] = int.tryParse(v.toString()) ?? 0);
+            decoded.forEach(
+              (k, v) =>
+                  resumeMs[k.toString()] = int.tryParse(v.toString()) ?? 0,
+            );
           }
         }
         final titles = jsonDecode(p.getString('resume_titles') ?? '{}');
@@ -1624,7 +1854,10 @@ class _RootShellState extends State<RootShell> {
       for (final item in cached) {
         try {
           final decoded = jsonDecode(item);
-          if (decoded is Map) managedAddons.add(ManagedAddon.fromJson(Map<String, dynamic>.from(decoded)));
+          if (decoded is Map)
+            managedAddons.add(
+              ManagedAddon.fromJson(Map<String, dynamic>.from(decoded)),
+            );
         } catch (_) {
           // Skip only the damaged entry, not the entire addon list.
         }
@@ -1638,7 +1871,10 @@ class _RootShellState extends State<RootShell> {
     await p.setStringList('watched_eps', watchedEpisodes.toList());
     await p.setString('resume_ms', jsonEncode(resumeMs));
     await p.setString('resume_titles', jsonEncode(resumeTitles));
-    await p.setStringList('managed_addons', managedAddons.map((a) => jsonEncode(a.toJson())).toList());
+    await p.setStringList(
+      'managed_addons',
+      managedAddons.map((a) => jsonEncode(a.toJson())).toList(),
+    );
   }
 
   Future<void> _sync() async {
@@ -1649,33 +1885,47 @@ class _RootShellState extends State<RootShell> {
 
   Future<void> _addAddon(String manifestUrl) async {
     final uri = Uri.tryParse(manifestUrl.trim());
-    if (uri == null || !uri.hasScheme || !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
-      throw const FormatException('Valid HTTP/HTTPS manifest URL enter karein.');
+    if (uri == null ||
+        !uri.hasScheme ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      throw const FormatException(
+        'Valid HTTP/HTTPS manifest URL enter karein.',
+      );
     }
     final response = await http.get(uri).timeout(const Duration(seconds: 12));
     if (response.statusCode != 200) {
       throw Exception('Manifest HTTP ${response.statusCode}');
     }
     final decoded = jsonDecode(response.body);
-    if (decoded is! Map) throw const FormatException('Manifest JSON object nahi hai.');
+    if (decoded is! Map)
+      throw const FormatException('Manifest JSON object nahi hai.');
     final manifest = Map<String, dynamic>.from(decoded);
     final name = (manifest['name'] ?? manifest['id'] ?? uri.host).toString();
     final path = uri.path;
     final basePath = path.endsWith('/manifest.json')
         ? path.substring(0, path.length - '/manifest.json'.length)
-        : path.substring(0, path.lastIndexOf('/') < 0 ? 0 : path.lastIndexOf('/'));
+        : path.substring(
+            0,
+            path.lastIndexOf('/') < 0 ? 0 : path.lastIndexOf('/'),
+          );
     final baseUri = Uri(
       scheme: uri.scheme,
       host: uri.host,
       port: uri.hasPort ? uri.port : null,
       path: basePath,
     );
-    final addon = ManagedAddon(name: name, manifestUrl: uri.toString(), baseUrl: baseUri.toString().replaceFirst(RegExp(r'/$'), ''));
+    final addon = ManagedAddon(
+      name: name,
+      manifestUrl: uri.toString(),
+      baseUrl: baseUri.toString().replaceFirst(RegExp(r'/$'), ''),
+    );
     if (managedAddons.any((a) => a.manifestUrl == addon.manifestUrl)) {
       throw const FormatException('Ye addon pehle se installed hai.');
     }
     final prefs = await SharedPreferences.getInstance();
-    final disabled = (prefs.getStringList('disabled_addons') ?? <String>[]).toSet();
+    final disabled = (prefs.getStringList('disabled_addons') ?? <String>[])
+        .toSet();
     disabled.remove(addon.manifestUrl);
     await prefs.setStringList('disabled_addons', disabled.toList());
     if (!mounted) return;
@@ -1686,12 +1936,16 @@ class _RootShellState extends State<RootShell> {
   Future<void> _removeAddon(ManagedAddon addon) async {
     final prefs = await SharedPreferences.getInstance();
     if (AddonManager._seedAddons.values.contains(addon.manifestUrl)) {
-      final disabled = (prefs.getStringList('disabled_addons') ?? <String>[]).toSet();
+      final disabled = (prefs.getStringList('disabled_addons') ?? <String>[])
+          .toSet();
       disabled.add(addon.manifestUrl);
       await prefs.setStringList('disabled_addons', disabled.toList());
     }
     if (!mounted) return;
-    setState(() => managedAddons.removeWhere((a) => a.manifestUrl == addon.manifestUrl));
+    setState(
+      () =>
+          managedAddons.removeWhere((a) => a.manifestUrl == addon.manifestUrl),
+    );
     await _save();
   }
 
@@ -1720,7 +1974,10 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       }
       _server = server;
       String ip = '127.0.0.1';
-      final nets = await NetworkInterface.list(type: InternetAddressType.IPv4, includeLoopback: false);
+      final nets = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
       for (final n in nets) {
         for (final a in n.addresses) {
           if (!a.isLoopback) {
@@ -1729,15 +1986,20 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           }
         }
       }
-      
+
       final random = Random.secure();
-      _remoteToken = base64Url.encode(List<int>.generate(24, (_) => random.nextInt(256))).replaceAll('=', '');
+      _remoteToken = base64Url
+          .encode(List<int>.generate(24, (_) => random.nextInt(256)))
+          .replaceAll('=', '');
       remoteUrl = 'http://$ip:8765/?token=$_remoteToken';
       if (mounted) setState(() {});
 
       server.listen((req) async {
         try {
-          final suppliedToken = req.uri.queryParameters['token'] ?? req.headers.value('x-moviebox-token') ?? '';
+          final suppliedToken =
+              req.uri.queryParameters['token'] ??
+              req.headers.value('x-moviebox-token') ??
+              '';
           if (suppliedToken != _remoteToken || _remoteToken.isEmpty) {
             req.response.statusCode = HttpStatus.forbidden;
             req.response.write('Forbidden');
@@ -1746,13 +2008,20 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           }
           if (req.method == 'GET' && req.uri.path == '/') {
             req.response.headers.contentType = ContentType.html;
-            req.response.write(_remoteHtml.replaceAll('__TOKEN__', _remoteToken));
+            req.response.write(
+              _remoteHtml.replaceAll('__TOKEN__', _remoteToken),
+            );
           } else if (req.method == 'POST' && req.uri.path == '/api/play') {
             final body = await utf8.decoder.bind(req).join();
             final decoded = jsonDecode(body);
-            final url = decoded is Map ? (decoded['url'] ?? '').toString().trim() : '';
+            final url = decoded is Map
+                ? (decoded['url'] ?? '').toString().trim()
+                : '';
             final target = Uri.tryParse(url);
-            if (target == null || !target.hasScheme || !{'http', 'https'}.contains(target.scheme) || target.host.isEmpty) {
+            if (target == null ||
+                !target.hasScheme ||
+                !{'http', 'https'}.contains(target.scheme) ||
+                target.host.isEmpty) {
               req.response.statusCode = HttpStatus.badRequest;
               req.response.write('Valid HTTP(S) stream URL required');
             } else {
@@ -1780,20 +2049,23 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     VoidCallback? onNext,
     Map<String, String>? headers,
   }) {
-    Navigator.push(context, MaterialPageRoute(
-      builder: (_) => PlayerScreen(
-        title: title,
-        url: url,
-        initialMs: resumeMs[key] ?? 0,
-        onSave: (ms) async {
-          resumeMs[key] = ms;
-          resumeTitles[key] = title;
-          await _save();
-        },
-        onNext: onNext,
-        headers: headers ?? const <String, String>{},
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PlayerScreen(
+          title: title,
+          url: url,
+          initialMs: resumeMs[key] ?? 0,
+          onSave: (ms) async {
+            resumeMs[key] = ms;
+            resumeTitles[key] = title;
+            await _save();
+          },
+          onNext: onNext,
+          headers: headers ?? const <String, String>{},
+        ),
       ),
-    ));
+    );
   }
 
   void _openDetails(Meta m) {
@@ -1811,7 +2083,11 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
         watchlist: watchlist,
         watchedEpisodes: watchedEpisodes,
         onToggleWatchlist: (id) async {
-          setState(() => watchlist.contains(id) ? watchlist.remove(id) : watchlist.add(id));
+          setState(
+            () => watchlist.contains(id)
+                ? watchlist.remove(id)
+                : watchlist.add(id),
+          );
           await _save();
         },
         onMarkWatched: (id) async {
@@ -1843,7 +2119,15 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
 
   @override
   Widget build(BuildContext context) {
-    final tabs = ['Home', 'Theaters', 'Anime', 'Mood', 'Live TV', 'OTT Hubs', 'Addons'];
+    final tabs = [
+      'Home',
+      'Theaters',
+      'Anime',
+      'Mood',
+      'Live TV',
+      'OTT Hubs',
+      'Addons',
+    ];
     const tabIcons = <IconData>[
       Icons.home_rounded,
       Icons.theaters_rounded,
@@ -1867,20 +2151,45 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
-                    const Text('MOVIEBOX ', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: _red, letterSpacing: 1.5)),
+                    const Text(
+                      'MOVIEBOX ',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w900,
+                        color: _red,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
                     const SizedBox(width: 12),
-                    _FButton(label: 'Search', icon: Icons.search, onTap: () => showDialog(context: context, builder: (_) => SearchModal(engine: engine, onShowDetails: _openDetails))),
+                    _FButton(
+                      label: 'Search',
+                      icon: Icons.search,
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => SearchModal(
+                          engine: engine,
+                          onShowDetails: _openDetails,
+                        ),
+                      ),
+                    ),
                     const SizedBox(width: 8),
                     _FButton(label: 'Sync', icon: Icons.refresh, onTap: _sync),
                     const SizedBox(width: 8),
                     _FButton(
-                      label: 'QR', icon: Icons.qr_code_2,
+                      label: 'QR',
+                      icon: Icons.qr_code_2,
                       onTap: () => showDialog(
                         context: context,
                         builder: (_) => AlertDialog(
                           backgroundColor: _panel,
                           title: const Text('Scan Remote'),
-                          content: remoteUrl.isNotEmpty ? QrImageView(data: remoteUrl, size: 200, backgroundColor: Colors.white) : const Text('Starting...'),
+                          content: remoteUrl.isNotEmpty
+                              ? QrImageView(
+                                  data: remoteUrl,
+                                  size: 200,
+                                  backgroundColor: Colors.white,
+                                )
+                              : const Text('Starting...'),
                         ),
                       ),
                     ),
@@ -1899,13 +2208,23 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
                           backgroundColor: _panel,
                           selectedIndex: tab,
                           labelType: NavigationRailLabelType.all,
-                          onDestinationSelected: (index) => setState(() { tab = index; _visitedTabs.add(index); }),
+                          onDestinationSelected: (index) => setState(() {
+                            tab = index;
+                            _visitedTabs.add(index);
+                          }),
                           destinations: [
                             for (var i = 0; i < tabs.length; i++)
                               NavigationRailDestination(
                                 icon: Icon(tabIcons[i], size: 20),
-                                selectedIcon: Icon(tabIcons[i], size: 22, color: _cyan),
-                                label: Text(tabs[i], style: const TextStyle(fontSize: 10)),
+                                selectedIcon: Icon(
+                                  tabIcons[i],
+                                  size: 22,
+                                  color: _cyan,
+                                ),
+                                label: Text(
+                                  tabs[i],
+                                  style: const TextStyle(fontSize: 10),
+                                ),
                               ),
                           ],
                         ),
@@ -1924,7 +2243,14 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
                             for (var i = 0; i < tabs.length; i++)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8),
-                                child: _FButton(label: tabs[i], active: tab == i, onTap: () => setState(() { tab = i; _visitedTabs.add(i); })),
+                                child: _FButton(
+                                  label: tabs[i],
+                                  active: tab == i,
+                                  onTap: () => setState(() {
+                                    tab = i;
+                                    _visitedTabs.add(i);
+                                  }),
+                                ),
                               ),
                           ],
                         ),
@@ -1940,6 +2266,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       ),
     );
   }
+
   Widget _buildBody() {
     // Preserve already visited tab state while lazily mounting screens.
     return IndexedStack(
@@ -1992,9 +2319,17 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       case 4:
         return LiveTvScreen(engine: engine, onPlay: _pushPlayer);
       case 5:
-        return HubScreen(engine: engine, addons: managedAddons.toList(), onDetails: _openDetails);
+        return HubScreen(
+          engine: engine,
+          addons: managedAddons.toList(),
+          onDetails: _openDetails,
+        );
       case 6:
-        return _AddonPage(addons: managedAddons, onAdd: _addAddon, onRemove: _removeAddon);
+        return _AddonPage(
+          addons: managedAddons,
+          onAdd: _addAddon,
+          onRemove: _removeAddon,
+        );
       default:
         return const SizedBox();
     }
@@ -2013,7 +2348,8 @@ class HomeScreen extends StatefulWidget {
     String, {
     VoidCallback? onNext,
     Map<String, String>? headers,
-  }) onPlay;
+  })
+  onPlay;
   final void Function(Meta) onDetails;
   final bool onlyTheaters;
   final bool onlyAnime;
@@ -2102,24 +2438,28 @@ class _HomeScreenState extends State<HomeScreen> {
     for (final b in _brands) {
       if (!b.hasCatalog) continue;
       if (activeBrandIndex != null && _brands[activeBrandIndex!] != b) continue;
-      
-      specs.add(CatalogRowSpec(
-        title: '${b.name} Movies',
-        primaryUrl: '$_streamingCatalogs/catalog/movie/${b.shortId}.json',
-        fallbackUrl: null,
-        type: 'movie',
-        accent: b.color,
-        showRanks: true,
-      ));
-      
-      specs.add(CatalogRowSpec(
-        title: '${b.name} Series',
-        primaryUrl: '$_streamingCatalogs/catalog/series/${b.shortId}.json',
-        fallbackUrl: null,
-        type: 'series',
-        accent: b.color,
-        showRanks: true,
-      ));
+
+      specs.add(
+        CatalogRowSpec(
+          title: '${b.name} Movies',
+          primaryUrl: '$_streamingCatalogs/catalog/movie/${b.shortId}.json',
+          fallbackUrl: null,
+          type: 'movie',
+          accent: b.color,
+          showRanks: true,
+        ),
+      );
+
+      specs.add(
+        CatalogRowSpec(
+          title: '${b.name} Series',
+          primaryUrl: '$_streamingCatalogs/catalog/series/${b.shortId}.json',
+          fallbackUrl: null,
+          type: 'series',
+          accent: b.color,
+          showRanks: true,
+        ),
+      );
     }
 
     if (activeBrandIndex == null) {
@@ -2161,11 +2501,11 @@ class _HomeScreenState extends State<HomeScreen> {
       rows.clear();
       loadingRows.clear();
     });
-    
+
     if (!widget.onlyTheaters && !widget.onlyAnime) {
       _loadIndia();
     }
-    
+
     for (final spec in _buildSpecs()) {
       _loadRow(spec);
     }
@@ -2173,12 +2513,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadIndia() async {
     setState(() => indiaLoading = true);
-    
+
     final items = await widget.engine.fetchRow(
       '$_cinemeta/catalog/movie/top.json',
       '$_cinemeta/catalog/movie/imdbRating.json',
     );
-    
+
     if (!mounted) return;
     setState(() {
       rows['Popular Movies'] = items;
@@ -2197,10 +2537,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _loadRow(CatalogRowSpec spec) async {
     if (rows.containsKey(spec.title)) return;
-    
+
     setState(() => loadingRows.add(spec.title));
-    final items = await widget.engine.fetchRow(spec.primaryUrl, spec.fallbackUrl, type: spec.type);
-    
+    final items = await widget.engine.fetchRow(
+      spec.primaryUrl,
+      spec.fallbackUrl,
+      type: spec.type,
+    );
+
     if (!mounted) return;
     setState(() {
       rows[spec.title] = items;
@@ -2228,16 +2572,20 @@ class _HomeScreenState extends State<HomeScreen> {
       child: CustomScrollView(
         scrollCacheExtent: const ScrollCacheExtent.pixels(800.0),
         slivers: [
-          if (hero != null) 
-            SliverToBoxAdapter(child: _buildHero(hero!)),
-          
+          if (hero != null) SliverToBoxAdapter(child: _buildHero(hero!)),
+
           if (!widget.onlyTheaters && !widget.onlyAnime)
             SliverToBoxAdapter(child: _buildOttDock()),
-          
-          if (widget.resumeMs.isNotEmpty && activeBrandIndex == null && !widget.onlyTheaters && !widget.onlyAnime)
+
+          if (widget.resumeMs.isNotEmpty &&
+              activeBrandIndex == null &&
+              !widget.onlyTheaters &&
+              !widget.onlyAnime)
             SliverToBoxAdapter(child: _buildContinueWatching()),
-          
-          if (!widget.onlyTheaters && !widget.onlyAnime && activeBrandIndex == null)
+
+          if (!widget.onlyTheaters &&
+              !widget.onlyAnime &&
+              activeBrandIndex == null)
             SliverToBoxAdapter(
               child: _buildPosterRow(
                 title: 'Popular Movies',
@@ -2247,8 +2595,10 @@ class _HomeScreenState extends State<HomeScreen> {
                 loading: indiaLoading,
               ),
             ),
-          
-          if (!widget.onlyTheaters && !widget.onlyAnime && activeBrandIndex == null)
+
+          if (!widget.onlyTheaters &&
+              !widget.onlyAnime &&
+              activeBrandIndex == null)
             SliverToBoxAdapter(
               child: _buildPosterRow(
                 title: 'Popular Series',
@@ -2258,7 +2608,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 loading: indiaLoading,
               ),
             ),
-          if (activeBrandIndex != null && !_brands[activeBrandIndex!].hasCatalog)
+          if (activeBrandIndex != null &&
+              !_brands[activeBrandIndex!].hasCatalog)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.all(20),
@@ -2269,16 +2620,18 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
 
-          ..._buildSpecs().map((spec) => SliverToBoxAdapter(
-                child: _buildPosterRow(
-                  title: spec.title,
-                  items: rows[spec.title] ?? [],
-                  accent: spec.accent,
-                  showRanks: spec.showRanks,
-                  loading: loadingRows.contains(spec.title),
-                ),
-              )),
-              
+          ..._buildSpecs().map(
+            (spec) => SliverToBoxAdapter(
+              child: _buildPosterRow(
+                title: spec.title,
+                items: rows[spec.title] ?? [],
+                accent: spec.accent,
+                showRanks: spec.showRanks,
+                loading: loadingRows.contains(spec.title),
+              ),
+            ),
+          ),
+
           const SliverToBoxAdapter(child: SizedBox(height: 40)),
         ],
       ),
@@ -2287,7 +2640,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildHero(Meta m) {
     final isFav = widget.watchlist.contains(m.id);
-    
+
     return Container(
       height: 380,
       margin: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -2316,11 +2669,7 @@ class _HomeScreenState extends State<HomeScreen> {
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [
-                  Colors.transparent,
-                  _bg.withValues(alpha: 0.7),
-                  _bg,
-                ],
+                colors: [Colors.transparent, _bg.withValues(alpha: 0.7), _bg],
                 stops: const [0.0, 0.6, 1.0],
               ),
             ),
@@ -2334,27 +2683,41 @@ class _HomeScreenState extends State<HomeScreen> {
                 Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: _red,
                         borderRadius: BorderRadius.circular(4),
                       ),
                       child: Text(
                         m.type.toUpperCase(),
-                        style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w900, color: Colors.white),
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                     const SizedBox(width: 8),
                     if (m.rating.isNotEmpty)
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
                           color: Colors.amber.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           'IMDb ${m.rating}',
-                          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.amber),
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.amber,
+                          ),
                         ),
                       ),
                   ],
@@ -2377,7 +2740,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   m.description,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: _muted, fontSize: 14, height: 1.4),
+                  style: const TextStyle(
+                    color: _muted,
+                    fontSize: 14,
+                    height: 1.4,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Wrap(
@@ -2418,7 +2785,12 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Text(
             'OTT BRAND STUDIO DOCK',
-            style: TextStyle(color: _cyan, fontSize: 14, fontWeight: FontWeight.w900, letterSpacing: 1.5),
+            style: TextStyle(
+              color: _cyan,
+              fontSize: 14,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 1.5,
+            ),
           ),
           const SizedBox(height: 12),
           SizedBox(
@@ -2459,7 +2831,11 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: EdgeInsets.symmetric(horizontal: 16),
             child: Text(
               'Continue Watching',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: _textPri),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: _textPri,
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -2473,7 +2849,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 final key = items[i];
                 final title = widget.resumeTitles[key] ?? key;
                 final ms = widget.resumeMs[key] ?? 0;
-                
+
                 return Padding(
                   padding: const EdgeInsets.only(right: 12),
                   child: SizedBox(
@@ -2490,12 +2866,20 @@ class _HomeScreenState extends State<HomeScreen> {
                               title,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 14),
+                              style: const TextStyle(
+                                color: _textPri,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
                             ),
                             const SizedBox(height: 6),
                             Text(
                               'Resume from ${_fmt(ms)}',
-                              style: const TextStyle(color: _cyan, fontSize: 12, fontWeight: FontWeight.w600),
+                              style: const TextStyle(
+                                color: _cyan,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ],
                         ),
@@ -2519,7 +2903,7 @@ class _HomeScreenState extends State<HomeScreen> {
     bool loading = false,
   }) {
     if (items.isEmpty && !loading) return const SizedBox.shrink();
-    
+
     return RepaintBoundary(
       child: Padding(
         padding: const EdgeInsets.only(top: 24),
@@ -2541,7 +2925,11 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   Text(
                     title,
-                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: _textPri),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      color: _textPri,
+                    ),
                   ),
                 ],
               ),
@@ -2550,7 +2938,12 @@ class _HomeScreenState extends State<HomeScreen> {
             SizedBox(
               height: 260,
               child: items.isEmpty && loading
-                  ? const Center(child: CircularProgressIndicator(color: _cyan, strokeWidth: 2))
+                  ? const Center(
+                      child: CircularProgressIndicator(
+                        color: _cyan,
+                        strokeWidth: 2,
+                      ),
+                    )
                   : ListView.builder(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -2574,19 +2967,29 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _smartPlay(Meta m) async {
-    final streams = await widget.engine.resolveStreams(m.type, m.id, widget.addons);
+    final streams = await widget.engine.resolveStreams(
+      m.type,
+      m.id,
+      widget.addons,
+    );
     if (!mounted) return;
-    
+
     if (streams.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No stream results. Check addon status and configuration.')),
+        const SnackBar(
+          content: Text(
+            'No stream results. Check addon status and configuration.',
+          ),
+        ),
       );
       return;
     }
-    
+
     final direct = streams.where((stream) => stream.isDirect).take(8).toList();
     if (direct.isNotEmpty) {
-      final checks = await Future.wait(direct.map(widget.engine.probeDirectStream));
+      final checks = await Future.wait(
+        direct.map(widget.engine.probeDirectStream),
+      );
       final workingIndex = checks.indexWhere((isWorking) => isWorking);
       if (workingIndex >= 0 && mounted) {
         final stream = direct[workingIndex];
@@ -2596,12 +2999,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     if (!mounted) return;
     final torrentOnly = streams.every((stream) => stream.isTorrent);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(torrentOnly
-          ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
-          : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.'),
-      duration: const Duration(seconds: 7),
-    ));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          torrentOnly
+              ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
+              : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.',
+        ),
+        duration: const Duration(seconds: 7),
+      ),
+    );
   }
 
   String _fmt(int ms) {
@@ -2620,7 +3027,8 @@ class LiveTvScreen extends StatefulWidget {
     String, {
     VoidCallback? onNext,
     Map<String, String>? headers,
-  }) onPlay;
+  })
+  onPlay;
   const LiveTvScreen({super.key, required this.engine, required this.onPlay});
   @override
   State<LiveTvScreen> createState() => _LiveTvScreenState();
@@ -2646,11 +3054,13 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   void initState() {
     super.initState();
     _healthReady = _health.load();
-    unawaited(_healthReady.then((_) async {
-      if (!mounted) return;
-      setState(() {});
-      await _revalidateExpiredFeeds();
-    }));
+    unawaited(
+      _healthReady.then((_) async {
+        if (!mounted) return;
+        setState(() {});
+        await _revalidateExpiredFeeds();
+      }),
+    );
     _load();
     _autoRefreshTimer = Timer.periodic(const Duration(hours: 6), (_) {
       if (mounted && !_loading && !_refreshing) _load(forceRefresh: true);
@@ -2698,13 +3108,16 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
 
   Future<void> _load({bool forceRefresh = false}) async {
     final hasChannels = _channels.isNotEmpty;
-    if (mounted) setState(() {
-      _loading = !hasChannels;
-      _refreshing = hasChannels;
-      _error = null;
-    });
+    if (mounted)
+      setState(() {
+        _loading = !hasChannels;
+        _refreshing = hasChannels;
+        _error = null;
+      });
     try {
-      final channels = await widget.engine.fetchIptv(forceRefresh: forceRefresh);
+      final channels = await widget.engine.fetchIptv(
+        forceRefresh: forceRefresh,
+      );
       if (!mounted) return;
       setState(() {
         if (channels.isNotEmpty) _channels = channels;
@@ -2713,12 +3126,19 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         _error = _channels.isEmpty
             ? 'Public playlist or channel metadata is unavailable. Check the connection and retry.'
             : null;
-        final countryCodes = _channels.map((c) => c['countryCode'] ?? '')
-            .where((v) => v.isNotEmpty).toSet();
-        final categoryIds = _channels.expand((c) => (c['categoryIds'] ?? '').split('|'))
-            .where((v) => v.isNotEmpty).toSet();
-        if (_selectedCountry != '*' && !countryCodes.contains(_selectedCountry)) _selectedCountry = '*';
-        if (_selectedCategory != '*' && !categoryIds.contains(_selectedCategory)) _selectedCategory = '*';
+        final countryCodes = _channels
+            .map((c) => c['countryCode'] ?? '')
+            .where((v) => v.isNotEmpty)
+            .toSet();
+        final categoryIds = _channels
+            .expand((c) => (c['categoryIds'] ?? '').split('|'))
+            .where((v) => v.isNotEmpty)
+            .toSet();
+        if (_selectedCountry != '*' && !countryCodes.contains(_selectedCountry))
+          _selectedCountry = '*';
+        if (_selectedCategory != '*' &&
+            !categoryIds.contains(_selectedCategory))
+          _selectedCategory = '*';
       });
     } catch (error) {
       if (!mounted) return;
@@ -2750,21 +3170,31 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
       if (!mounted) return;
       setState(() => _checkingChannelUrl = null);
       if (working == null) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Is channel ke public feeds offline/blocked mile. Dead entries 20 minutes ke liye hide ki gayi hain; app unhe background me dobara check karegi.'),
-          duration: Duration(seconds: 6),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Is channel ke public feeds offline/blocked mile. Dead entries 20 minutes ke liye hide ki gayi hain; app unhe background me dobara check karegi.',
+            ),
+            duration: Duration(seconds: 6),
+          ),
+        );
         return;
       }
       if ((working['url'] ?? '') != (channel['url'] ?? '')) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Primary feed unavailable; alternate ${working['source'] ?? 'public'} feed selected.'),
-          duration: const Duration(seconds: 3),
-        ));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Primary feed unavailable; alternate ${working['source'] ?? 'public'} feed selected.',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
       final headers = <String, String>{
-        if ((working['userAgent'] ?? '').isNotEmpty) 'User-Agent': working['userAgent']!,
-        if ((working['referrer'] ?? '').isNotEmpty) 'Referer': working['referrer']!,
+        if ((working['userAgent'] ?? '').isNotEmpty)
+          'User-Agent': working['userAgent']!,
+        if ((working['referrer'] ?? '').isNotEmpty)
+          'Referer': working['referrer']!,
       };
       widget.onPlay(
         working['name'] ?? channel['name'] ?? 'Live TV',
@@ -2791,15 +3221,19 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     for (final c in _channels) {
       final code = c['countryCode'] ?? '';
       if (code.isNotEmpty) {
-        countryOptions.putIfAbsent(code, () =>
-            (c['countryFlag'] ?? '') + ' ' + (c['countryName'] ?? code));
+        countryOptions.putIfAbsent(
+          code,
+          () => (c['countryFlag'] ?? '') + ' ' + (c['countryName'] ?? code),
+        );
       }
       final ids = (c['categoryIds'] ?? '').split('|');
       final names = (c['categoryNames'] ?? '').split(', ');
       for (var i = 0; i < ids.length; i++) {
         if (ids[i].isNotEmpty) {
-          categoryOptions.putIfAbsent(ids[i], () =>
-              i < names.length && names[i].isNotEmpty ? names[i] : ids[i]);
+          categoryOptions.putIfAbsent(
+            ids[i],
+            () => i < names.length && names[i].isNotEmpty ? names[i] : ids[i],
+          );
         }
       }
     }
@@ -2817,133 +3251,242 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Row(children: [
-            Expanded(child: TextField(
-              controller: _search,
-              onChanged: (v) => setState(() => _query = v.trim()),
-              style: const TextStyle(color: _textPri),
-              decoration: InputDecoration(
-                hintText: 'Search live channels worldwide...',
-                prefixIcon: const Icon(Icons.search, color: _cyan),
-                suffixIcon: _query.isEmpty ? null : IconButton(
-                  onPressed: () { _search.clear(); setState(() => _query = ''); },
-                  icon: const Icon(Icons.close),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _search,
+                  onChanged: (v) => setState(() => _query = v.trim()),
+                  style: const TextStyle(color: _textPri),
+                  decoration: InputDecoration(
+                    hintText: 'Search live channels worldwide...',
+                    prefixIcon: const Icon(Icons.search, color: _cyan),
+                    suffixIcon: _query.isEmpty
+                        ? null
+                        : IconButton(
+                            onPressed: () {
+                              _search.clear();
+                              setState(() => _query = '');
+                            },
+                            icon: const Icon(Icons.close),
+                          ),
+                    filled: true,
+                    fillColor: _panel,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
                 ),
-                filled: true, fillColor: _panel,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
               ),
-            )),
-            const SizedBox(width: 8),
-            IconButton(onPressed: _loading ? null : () => _load(forceRefresh: true), icon: const Icon(Icons.refresh, color: _cyan), tooltip: 'Refresh channels'),
-          ]),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _loading ? null : () => _load(forceRefresh: true),
+                icon: const Icon(Icons.refresh, color: _cyan),
+                tooltip: 'Refresh channels',
+              ),
+            ],
+          ),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-          child: Row(children: [
-            Expanded(child: DropdownButtonFormField<String>(
-              value: _selectedCountry,
-              isExpanded: true,
-              dropdownColor: _panel,
-              decoration: const InputDecoration(
-                labelText: 'COUNTRY',
-                labelStyle: TextStyle(color: _muted, fontSize: 12),
-                filled: true, fillColor: _panel,
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                border: OutlineInputBorder(borderSide: BorderSide.none),
+          child: Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _selectedCountry,
+                  isExpanded: true,
+                  dropdownColor: _panel,
+                  decoration: const InputDecoration(
+                    labelText: 'COUNTRY',
+                    labelStyle: TextStyle(color: _muted, fontSize: 12),
+                    filled: true,
+                    fillColor: _panel,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    border: OutlineInputBorder(borderSide: BorderSide.none),
+                  ),
+                  style: const TextStyle(color: _textPri, fontSize: 13),
+                  items: [
+                    const DropdownMenuItem(
+                      value: '*',
+                      child: Text('All countries'),
+                    ),
+                    ...sortedCountryOptions.map(
+                      (e) => DropdownMenuItem(
+                        value: e.key,
+                        child: Text(
+                          e.value,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (v) => setState(() => _selectedCountry = v ?? '*'),
+                ),
               ),
-              style: const TextStyle(color: _textPri, fontSize: 13),
-              items: [
-                const DropdownMenuItem(value: '*', child: Text('All countries')),
-                ...sortedCountryOptions.map((e) => DropdownMenuItem(value: e.key,
-                    child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
-              ],
-              onChanged: (v) => setState(() => _selectedCountry = v ?? '*'),
-            )),
-            const SizedBox(width: 10),
-            Expanded(child: DropdownButtonFormField<String>(
-              value: _selectedCategory,
-              isExpanded: true,
-              dropdownColor: _panel,
-              decoration: const InputDecoration(
-                labelText: 'CATEGORY',
-                labelStyle: TextStyle(color: _muted, fontSize: 12),
-                filled: true, fillColor: _panel,
-                contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                border: OutlineInputBorder(borderSide: BorderSide.none),
+              const SizedBox(width: 10),
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _selectedCategory,
+                  isExpanded: true,
+                  dropdownColor: _panel,
+                  decoration: const InputDecoration(
+                    labelText: 'CATEGORY',
+                    labelStyle: TextStyle(color: _muted, fontSize: 12),
+                    filled: true,
+                    fillColor: _panel,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    border: OutlineInputBorder(borderSide: BorderSide.none),
+                  ),
+                  style: const TextStyle(color: _textPri, fontSize: 13),
+                  items: [
+                    const DropdownMenuItem(
+                      value: '*',
+                      child: Text('All categories'),
+                    ),
+                    ...sortedCategoryOptions.map(
+                      (e) => DropdownMenuItem(
+                        value: e.key,
+                        child: Text(
+                          e.value,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ),
+                  ],
+                  onChanged: (v) =>
+                      setState(() => _selectedCategory = v ?? '*'),
+                ),
               ),
-              style: const TextStyle(color: _textPri, fontSize: 13),
-              items: [
-                const DropdownMenuItem(value: '*', child: Text('All categories')),
-                ...sortedCategoryOptions.map((e) => DropdownMenuItem(value: e.key,
-                    child: Text(e.value, maxLines: 1, overflow: TextOverflow.ellipsis))),
-              ],
-              onChanged: (v) => setState(() => _selectedCategory = v ?? '*'),
-            )),
-          ]),
+            ],
+          ),
         ),
         if (_refreshing)
-          const LinearProgressIndicator(minHeight: 2, color: _cyan, backgroundColor: _panel),
+          const LinearProgressIndicator(
+            minHeight: 2,
+            color: _cyan,
+            backgroundColor: _panel,
+          ),
         if (_channels.isNotEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
             child: Align(
               alignment: Alignment.centerLeft,
-              child: Text('${filtered.length} of ${healthyCandidates.length} candidate feeds • India + South Asia + Asia + language/category playlists • refresh every 6h; dead feeds rechecked every 5m',
-                  style: const TextStyle(color: _muted, fontSize: 12)),
+              child: Text(
+                '${filtered.length} of ${healthyCandidates.length} candidate feeds • India + South Asia + Asia + language/category playlists • refresh every 6h; dead feeds rechecked every 5m',
+                style: const TextStyle(color: _muted, fontSize: 12),
+              ),
             ),
           ),
         Expanded(
           child: _loading
               ? const Center(child: CircularProgressIndicator(color: _cyan))
               : filtered.isEmpty
-                  ? Center(child: Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         const Icon(Icons.live_tv, size: 48, color: _muted),
                         const SizedBox(height: 12),
-                        Text(_error ?? (_channels.isEmpty ? 'No live channels available.' : 'No matching channels.'),
-                            textAlign: TextAlign.center, style: const TextStyle(color: _muted)),
+                        Text(
+                          _error ??
+                              (_channels.isEmpty
+                                  ? 'No live channels available.'
+                                  : 'No matching channels.'),
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: _muted),
+                        ),
                         if (_channels.isEmpty) ...[
                           const SizedBox(height: 12),
-                          FilledButton.icon(onPressed: _load, icon: const Icon(Icons.refresh), label: const Text('Retry')),
+                          FilledButton.icon(
+                            onPressed: _load,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Retry'),
+                          ),
                         ],
-                      ]),
-                    ))
-                  : RefreshIndicator(
-                      onRefresh: () => _load(forceRefresh: true),
-                      color: _cyan,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                        itemCount: filtered.length,
-                        itemBuilder: (_, i) {
-                          final c = filtered[i];
-                          final logo = c['logo'] ?? '';
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: _Card(child: ListTile(
-                              leading: logo.isNotEmpty
-                                  ? Image.network(logo, width: 42, height: 42, fit: BoxFit.contain,
-                                      errorBuilder: (_, __, ___) => const Icon(Icons.live_tv, color: _red))
-                                  : const Icon(Icons.live_tv, color: _red),
-                              title: Text(c['name'] ?? 'Channel', style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold)),
-                              subtitle: Text([
-                                (c['categoryNames'] ?? '').isNotEmpty ? c['categoryNames']! : (c['group'] ?? 'Other'),
-                                if ((c['countryName'] ?? '').isNotEmpty) (c['countryFlag'] ?? '') + ' ' + c['countryName']!,
-                                if ((c['language'] ?? '').isNotEmpty) c['language']!,
-                              ].join(' • '), maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _cyan, fontSize: 11)),
-                              trailing: _checkingChannelUrl == (c['url'] ?? '')
-                                  ? const SizedBox(
-                                      width: 22,
-                                      height: 22,
-                                      child: CircularProgressIndicator(strokeWidth: 2, color: _cyan),
-                                    )
-                                  : const Icon(Icons.play_circle_fill, color: Colors.greenAccent),
-                              onTap: () => _playChannel(c),
-                            )),
-                          );
-                        },
-                      ),
+                      ],
                     ),
+                  ),
+                )
+              : RefreshIndicator(
+                  onRefresh: () => _load(forceRefresh: true),
+                  color: _cyan,
+                  child: ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                    itemCount: filtered.length,
+                    itemBuilder: (_, i) {
+                      final c = filtered[i];
+                      final logo = c['logo'] ?? '';
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: _Card(
+                          child: ListTile(
+                            leading: logo.isNotEmpty
+                                ? Image.network(
+                                    logo,
+                                    width: 42,
+                                    height: 42,
+                                    fit: BoxFit.contain,
+                                    errorBuilder: (_, __, ___) =>
+                                        const Icon(Icons.live_tv, color: _red),
+                                  )
+                                : const Icon(Icons.live_tv, color: _red),
+                            title: Text(
+                              c['name'] ?? 'Channel',
+                              style: const TextStyle(
+                                color: _textPri,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            subtitle: Text(
+                              [
+                                (c['categoryNames'] ?? '').isNotEmpty
+                                    ? c['categoryNames']!
+                                    : (c['group'] ?? 'Other'),
+                                if ((c['countryName'] ?? '').isNotEmpty)
+                                  (c['countryFlag'] ?? '') +
+                                      ' ' +
+                                      c['countryName']!,
+                                if ((c['language'] ?? '').isNotEmpty)
+                                  c['language']!,
+                              ].join(' • '),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: _cyan,
+                                fontSize: 11,
+                              ),
+                            ),
+                            trailing: _checkingChannelUrl == (c['url'] ?? '')
+                                ? const SizedBox(
+                                    width: 22,
+                                    height: 22,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: _cyan,
+                                    ),
+                                  )
+                                : const Icon(
+                                    Icons.play_circle_fill,
+                                    color: Colors.greenAccent,
+                                  ),
+                            onTap: () => _playChannel(c),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
         ),
       ],
     );
@@ -2982,14 +3525,10 @@ class _HubScreenState extends State<HubScreen> {
   @override
   void didUpdateWidget(covariant HubScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final oldManifests = oldWidget.addons
-        .map((addon) => addon.manifestUrl)
-        .toList()
-      ..sort();
-    final newManifests = widget.addons
-        .map((addon) => addon.manifestUrl)
-        .toList()
-      ..sort();
+    final oldManifests =
+        oldWidget.addons.map((addon) => addon.manifestUrl).toList()..sort();
+    final newManifests =
+        widget.addons.map((addon) => addon.manifestUrl).toList()..sort();
     if (oldManifests.join('\\n') != newManifests.join('\\n')) {
       _loadCatalogs();
     }
@@ -3019,8 +3558,8 @@ class _HubScreenState extends State<HubScreen> {
     final catalogs = merged.values.toList()
       ..sort((a, b) {
         final byName = a.catalogName.toLowerCase().compareTo(
-              b.catalogName.toLowerCase(),
-            );
+          b.catalogName.toLowerCase(),
+        );
         return byName != 0
             ? byName
             : a.addonName.toLowerCase().compareTo(b.addonName.toLowerCase());
@@ -3044,10 +3583,7 @@ class _HubScreenState extends State<HubScreen> {
     final encodedId = Uri.encodeComponent(catalog.id);
     final results = await Future.wait([
       catalog.types.contains('movie')
-          ? widget.engine.fetchRow(
-              '$base/catalog/movie/$encodedId.json',
-              null,
-            )
+          ? widget.engine.fetchRow('$base/catalog/movie/$encodedId.json', null)
           : Future.value(<Meta>[]),
       catalog.types.contains('series')
           ? widget.engine.fetchRow(
@@ -3074,13 +3610,12 @@ class _HubScreenState extends State<HubScreen> {
       'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/configure',
     );
     try {
-      final opened = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
       if (!opened && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not open the catalog setup page.')),
+          const SnackBar(
+            content: Text('Could not open the catalog setup page.'),
+          ),
         );
       }
     } catch (error) {
@@ -3095,30 +3630,38 @@ class _HubScreenState extends State<HubScreen> {
     if (items.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(top: 18),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Text(title,
-              style: TextStyle(
-                  color: accent, fontSize: 18, fontWeight: FontWeight.w800)),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 250,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            itemCount: items.length,
-            itemBuilder: (_, i) => PosterCard(
-              meta: items[i],
-              rank: i < 10 ? i + 1 : null,
-              accent: accent,
-              onFocus: () {},
-              onTap: () => widget.onDetails(items[i]),
+            child: Text(
+              title,
+              style: TextStyle(
+                color: accent,
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ),
-        ),
-      ]),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 250,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: items.length,
+              itemBuilder: (_, i) => PosterCard(
+                meta: items[i],
+                rank: i < 10 ? i + 1 : null,
+                accent: accent,
+                onFocus: () {},
+                onTap: () => widget.onDetails(items[i]),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -3135,7 +3678,10 @@ class _HubScreenState extends State<HubScreen> {
               'No OTT catalog feeds are available yet.',
               textAlign: TextAlign.center,
               style: TextStyle(
-                  color: _textPri, fontSize: 17, fontWeight: FontWeight.w700),
+                color: _textPri,
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+              ),
             ),
             const SizedBox(height: 8),
             const Text(
@@ -3165,73 +3711,89 @@ class _HubScreenState extends State<HubScreen> {
   Widget build(BuildContext context) {
     if (_selected != null) {
       final catalog = _selected!;
-      return Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-          child: Row(children: [
-            IconButton(
-              onPressed: () => setState(() {
-                _selected = null;
-                _message = null;
-              }),
-              icon: const Icon(Icons.arrow_back, color: _cyan),
+      return Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(
+              children: [
+                IconButton(
+                  onPressed: () => setState(() {
+                    _selected = null;
+                    _message = null;
+                  }),
+                  icon: const Icon(Icons.arrow_back, color: _cyan),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        catalog.catalogName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: _cyan,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      Text(
+                        catalog.addonName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: _muted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  onPressed: () => _openCatalog(catalog),
+                  icon: const Icon(Icons.refresh, color: _cyan),
+                ),
+              ],
             ),
+          ),
+          if (_loading)
+            const Expanded(
+              child: Center(child: CircularProgressIndicator(color: _cyan)),
+            )
+          else if (_message != null)
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    _message!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: _muted, height: 1.5),
+                  ),
+                ),
+              ),
+            )
+          else
+            Expanded(
+              child: ListView(
                 children: [
-                  Text(
-                    catalog.catalogName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        color: _cyan, fontSize: 18, fontWeight: FontWeight.w900),
+                  _contentRow(
+                    '${catalog.catalogName} • Movies',
+                    _movies,
+                    _cyan,
                   ),
-                  Text(
-                    catalog.addonName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: _muted, fontSize: 11),
+                  _contentRow(
+                    '${catalog.catalogName} • Series',
+                    _series,
+                    _textPri,
                   ),
+                  const SizedBox(height: 28),
                 ],
               ),
             ),
-            IconButton(
-              onPressed: () => _openCatalog(catalog),
-              icon: const Icon(Icons.refresh, color: _cyan),
-            ),
-          ]),
-        ),
-        if (_loading)
-          const Expanded(
-              child: Center(
-                  child: CircularProgressIndicator(color: _cyan)))
-        else if (_message != null)
-          Expanded(
-            child: Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  _message!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(color: _muted, height: 1.5),
-                ),
-              ),
-            ),
-          )
-        else
-          Expanded(
-            child: ListView(children: [
-              _contentRow('${catalog.catalogName} • Movies', _movies, _cyan),
-              _contentRow('${catalog.catalogName} • Series', _series, _textPri),
-              const SizedBox(height: 28),
-            ]),
-          ),
-      ]);
+        ],
+      );
     }
     if (_loadingCatalogs) {
-      return const Center(
-          child: CircularProgressIndicator(color: _cyan));
+      return const Center(child: CircularProgressIndicator(color: _cyan));
     }
     if (_catalogs.isEmpty) return _emptyCatalogState();
     return GridView.builder(
@@ -3282,7 +3844,10 @@ class _HubScreenState extends State<HubScreen> {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      color: _muted, fontSize: 11, fontWeight: FontWeight.w600),
+                    color: _muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -3296,9 +3861,13 @@ class _HubScreenState extends State<HubScreen> {
 class MoodScreen extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
-  
-  const MoodScreen({super.key, required this.engine, required this.onShowDetails});
-  
+
+  const MoodScreen({
+    super.key,
+    required this.engine,
+    required this.onShowDetails,
+  });
+
   @override
   State<MoodScreen> createState() => _MoodScreenState();
 }
@@ -3323,12 +3892,12 @@ class _MoodScreenState extends State<MoodScreen> {
       _currentLabel = label;
       _results = [];
     });
-    
+
     final items = await widget.engine.fetchRow(
-      '$_cinemeta/catalog/movie/top/genre=$genre.json', 
+      '$_cinemeta/catalog/movie/top/genre=$genre.json',
       '$_cinemeta/catalog/movie/imdbRating.json',
     );
-    
+
     if (!mounted) return;
     setState(() {
       _results = items;
@@ -3343,8 +3912,12 @@ class _MoodScreenState extends State<MoodScreen> {
         const Padding(
           padding: EdgeInsets.all(20),
           child: Text(
-            'AI MOOD & VIBE', 
-            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _cyan),
+            'AI MOOD & VIBE',
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+              color: _cyan,
+            ),
           ),
         ),
         SizedBox(
@@ -3368,16 +3941,20 @@ class _MoodScreenState extends State<MoodScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Text(
-                            m[0], 
-                            style: const TextStyle(color: _red, fontWeight: FontWeight.bold, fontSize: 16), 
-                            maxLines: 1, 
+                            m[0],
+                            style: const TextStyle(
+                              color: _red,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            m[2], 
-                            style: const TextStyle(color: _muted, fontSize: 12), 
-                            maxLines: 2, 
+                            m[2],
+                            style: const TextStyle(color: _muted, fontSize: 12),
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ],
@@ -3395,15 +3972,22 @@ class _MoodScreenState extends State<MoodScreen> {
             child: Row(
               children: [
                 Text(
-                  'Mood: $_currentLabel', 
-                  style: const TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 18),
+                  'Mood: $_currentLabel',
+                  style: const TextStyle(
+                    color: _cyan,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
                 const Spacer(),
-                if (_loading) 
+                if (_loading)
                   const SizedBox(
-                    width: 20, 
-                    height: 20, 
-                    child: CircularProgressIndicator(strokeWidth: 2, color: _cyan),
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _cyan,
+                    ),
                   ),
               ],
             ),
@@ -3412,22 +3996,22 @@ class _MoodScreenState extends State<MoodScreen> {
           child: _results.isEmpty
               ? Center(
                   child: Text(
-                    _loading ? '' : 'Select a mood to discover', 
+                    _loading ? '' : 'Select a mood to discover',
                     style: const TextStyle(color: _muted, fontSize: 16),
                   ),
                 )
               : GridView.builder(
                   padding: const EdgeInsets.all(16),
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                    maxCrossAxisExtent: 150, 
-                    mainAxisExtent: 240, 
-                    crossAxisSpacing: 12, 
+                    maxCrossAxisExtent: 150,
+                    mainAxisExtent: 240,
+                    crossAxisSpacing: 12,
                     mainAxisSpacing: 12,
                   ),
                   itemCount: _results.length,
                   itemBuilder: (_, i) => PosterCard(
-                    meta: _results[i], 
-                    onFocus: () {}, 
+                    meta: _results[i],
+                    onFocus: () {},
                     onTap: () => widget.onShowDetails(_results[i]),
                   ),
                 ),
@@ -3451,7 +4035,8 @@ class DetailsSheet extends StatefulWidget {
     String, {
     VoidCallback? onNext,
     Map<String, String>? headers,
-  }) onPlay;
+  })
+  onPlay;
 
   const DetailsSheet({
     super.key,
@@ -3493,32 +4078,33 @@ class _DetailsSheetState extends State<DetailsSheet> {
 
   Future<void> _loadEpisodes() async {
     setState(() => _loadingMeta = true);
-    
+
     final eps = await widget.engine.fetchEpisodes(widget.meta.id);
     final g = <int, List<Map<String, dynamic>>>{};
-    
+
     for (final e in eps) {
       final s = int.tryParse((e['season'] ?? '1').toString()) ?? 1;
       if (s == 0) continue;
       g.putIfAbsent(s, () => []).add(e);
     }
-    
+
     if (!mounted) return;
     setState(() {
       _grouped = g;
       _season = g.keys.isEmpty ? null : (g.keys.toList()..sort()).first;
       _loadingMeta = false;
     });
-    
+
     final firstSeason = _season;
     if (firstSeason != null && g[firstSeason]!.isNotEmpty) {
       final firstEp = g[firstSeason]!.first;
       final id = (firstEp['id'] ?? '').toString();
-      
+
       if (id.isNotEmpty) {
         setState(() {
           _targetId = id;
-          _targetLabel = 'S${firstEp['season']}E${firstEp['episode']} - ${firstEp['name'] ?? ''}';
+          _targetLabel =
+              'S${firstEp['season']}E${firstEp['episode']} - ${firstEp['name'] ?? ''}';
         });
         _loadStreams(id);
       }
@@ -3530,7 +4116,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _loadingStreams = true;
       _streams = [];
     });
-    
+
     final streams = await widget.engine.resolveStreams(
       widget.meta.type,
       id,
@@ -3551,7 +4137,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
   @override
   Widget build(BuildContext context) {
     final isFav = widget.watchlist.contains(widget.meta.id);
-    
+
     return DraggableScrollableSheet(
       expand: false,
       initialChildSize: 0.9,
@@ -3566,7 +4152,11 @@ class _DetailsSheetState extends State<DetailsSheet> {
               Expanded(
                 child: Text(
                   widget.meta.name,
-                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: _textPri),
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w900,
+                    color: _textPri,
+                  ),
                 ),
               ),
               _FButton(
@@ -3582,11 +4172,15 @@ class _DetailsSheetState extends State<DetailsSheet> {
             style: const TextStyle(color: _muted, fontSize: 14, height: 1.5),
           ),
           const Divider(color: Colors.white12, height: 32),
-          
+
           if (widget.meta.type == 'series' && _grouped.isNotEmpty) ...[
             const Text(
               'Seasons',
-              style: TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 16),
+              style: TextStyle(
+                color: _cyan,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
             ),
             const SizedBox(height: 12),
             SingleChildScrollView(
@@ -3626,7 +4220,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
                   final epId = (ep['id'] ?? '').toString();
                   final watched = widget.watchedEpisodes.contains(epId);
                   final selected = _targetId == epId;
-                  
+
                   return Padding(
                     padding: const EdgeInsets.only(right: 12),
                     child: SizedBox(
@@ -3636,7 +4230,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
                         onTap: () {
                           setState(() {
                             _targetId = epId;
-                            _targetLabel = 'S${ep['season']}E${ep['episode']} - ${ep['name'] ?? ''}';
+                            _targetLabel =
+                                'S${ep['season']}E${ep['episode']} - ${ep['name'] ?? ''}';
                           });
                           _loadStreams(epId);
                         },
@@ -3650,11 +4245,19 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 children: [
                                   Text(
                                     'EP ${ep['episode']}',
-                                    style: const TextStyle(color: _red, fontWeight: FontWeight.bold, fontSize: 13),
+                                    style: const TextStyle(
+                                      color: _red,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                    ),
                                   ),
                                   const Spacer(),
                                   if (watched)
-                                    const Icon(Icons.check_circle, color: Colors.greenAccent, size: 16),
+                                    const Icon(
+                                      Icons.check_circle,
+                                      color: Colors.greenAccent,
+                                      size: 16,
+                                    ),
                                 ],
                               ),
                               const SizedBox(height: 6),
@@ -3662,7 +4265,11 @@ class _DetailsSheetState extends State<DetailsSheet> {
                                 (ep['name'] ?? '').toString(),
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: _textPri, fontSize: 13, fontWeight: FontWeight.bold),
+                                style: const TextStyle(
+                                  color: _textPri,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
                             ],
                           ),
@@ -3675,13 +4282,13 @@ class _DetailsSheetState extends State<DetailsSheet> {
             ),
             const Divider(color: Colors.white12, height: 32),
           ],
-          
+
           if (widget.meta.type == 'series' && _loadingMeta)
             const Padding(
               padding: EdgeInsets.all(20),
               child: Center(child: CircularProgressIndicator(color: _cyan)),
             ),
-            
+
           if (_streams.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
@@ -3694,18 +4301,25 @@ class _DetailsSheetState extends State<DetailsSheet> {
                 onTap: _playBestAvailable,
               ),
             ),
-            
+
           Text(
             'Available Streams: $_targetLabel',
-            style: const TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 16),
+            style: const TextStyle(
+              color: _cyan,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
           ),
           const SizedBox(height: 12),
-          
+
           if (_loadingStreams)
             const Padding(
               padding: EdgeInsets.all(24),
               child: Center(
-                child: Text('Scanning sources...', style: TextStyle(color: _cyan, fontSize: 14)),
+                child: Text(
+                  'Scanning sources...',
+                  style: TextStyle(color: _cyan, fontSize: 14),
+                ),
               ),
             )
           else if (_streams.isEmpty)
@@ -3717,64 +4331,90 @@ class _DetailsSheetState extends State<DetailsSheet> {
               ),
             )
           else
-            ..._streams.take(30).map((s) => Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: _Card(
-                    onTap: () => _playStream(s),
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                decoration: BoxDecoration(
-                                  color: _cyan.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(6),
+            ..._streams
+                .take(30)
+                .map(
+                  (s) => Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: _Card(
+                      onTap: () => _playStream(s),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: _cyan.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    s.badge,
+                                    style: const TextStyle(
+                                      color: _cyan,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
                                 ),
-                                child: Text(
-                                  s.badge,
-                                  style: const TextStyle(color: _cyan, fontSize: 11, fontWeight: FontWeight.bold),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Text(
-                                s.addonName,
-                                style: const TextStyle(color: _red, fontSize: 13, fontWeight: FontWeight.bold),
-                              ),
-                              const Spacer(),
-                              if (s.isDirect) ...[
-                                const Text(
-                                  'PLAY IN APP',
-                                  style: TextStyle(
-                                    color: Colors.greenAccent,
-                                    fontSize: 11,
+                                const SizedBox(width: 12),
+                                Text(
+                                  s.addonName,
+                                  style: const TextStyle(
+                                    color: _red,
+                                    fontSize: 13,
                                     fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                              ] else if (s.isTorrent)
-                                Text(
-                                  s.seeders == null ? 'TORRENT • SEEDERS UNREPORTED' : 'TORRENT • ${s.seeders} REPORTED SEEDERS',
-                                  style: TextStyle(color: s.seeders == 0 ? Colors.orangeAccent : Colors.greenAccent, fontSize: 10, fontWeight: FontWeight.bold),
-                                ),
-                            ],
-                          ),
-                          if (s.title.isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              s.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(color: _textPri, fontSize: 13),
+                                const Spacer(),
+                                if (s.isDirect) ...[
+                                  const Text(
+                                    'PLAY IN APP',
+                                    style: TextStyle(
+                                      color: Colors.greenAccent,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ] else if (s.isTorrent)
+                                  Text(
+                                    s.seeders == null
+                                        ? 'TORRENT • SEEDERS UNREPORTED'
+                                        : 'TORRENT • ${s.seeders} REPORTED SEEDERS',
+                                    style: TextStyle(
+                                      color: s.seeders == 0
+                                          ? Colors.orangeAccent
+                                          : Colors.greenAccent,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                              ],
                             ),
+                            if (s.title.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                s.title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: _textPri,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
                           ],
-                        ],
+                        ),
                       ),
                     ),
                   ),
-                )),
+                ),
         ],
       ),
     );
@@ -3787,7 +4427,10 @@ class _DetailsSheetState extends State<DetailsSheet> {
     try {
       // Probe direct HLS/DASH/file URLs concurrently. One dead/expired source
       // must not hold the user behind the other providers' timeout.
-      final direct = _streams.where((stream) => stream.isDirect).take(6).toList();
+      final direct = _streams
+          .where((stream) => stream.isDirect)
+          .take(6)
+          .toList();
       if (direct.isNotEmpty) {
         final checks = await Future.wait(
           direct.map(widget.engine.probeDirectStream),
@@ -3811,16 +4454,24 @@ class _DetailsSheetState extends State<DetailsSheet> {
         return;
       }
       if (torrents.isNotEmpty && mounted) {
-        messenger.showSnackBar(const SnackBar(
-          content: Text('All torrent results report zero seeders. Choose another source; a zero-seeder swarm cannot provide the first video pieces.'),
-          duration: Duration(seconds: 8),
-        ));
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'All torrent results report zero seeders. Choose another source; a zero-seeder swarm cannot provide the first video pieces.',
+            ),
+            duration: Duration(seconds: 8),
+          ),
+        );
         return;
       }
       if (mounted) {
-        messenger.showSnackBar(const SnackBar(
-          content: Text('No reachable direct stream or torrent source was found. Try another provider or source.'),
-        ));
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No reachable direct stream or torrent source was found. Try another provider or source.',
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _smartPlayBusy = false);
@@ -3834,10 +4485,18 @@ class _DetailsSheetState extends State<DetailsSheet> {
         builder: (dialogContext) => AlertDialog(
           backgroundColor: _panel,
           title: const Text('No seeders reported'),
-          content: const Text('This provider reports zero seeders. The player can remain at 00:00 because no peer can send the first video pieces. Choose another source first, or try this swarm anyway.'),
+          content: const Text(
+            'This provider reports zero seeders. The player can remain at 00:00 because no peer can send the first video pieces. Choose another source first, or try this swarm anyway.',
+          ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Choose another source')),
-            FilledButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Try anyway')),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('Choose another source'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('Try anyway'),
+            ),
           ],
         ),
       );
@@ -3845,12 +4504,17 @@ class _DetailsSheetState extends State<DetailsSheet> {
     }
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
-    messenger.showSnackBar(const SnackBar(
-      content: Text('Starting torrent playback. If no peers deliver the first pieces, the player will show an error so you can choose another source.'),
-      duration: Duration(seconds: 8),
-    ));
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Starting torrent playback. If no peers deliver the first pieces, the player will show an error so you can choose another source.',
+        ),
+        duration: Duration(seconds: 8),
+      ),
+    );
     try {
-      final supplementalTrackers = await widget.engine.fetchSupplementalTrackers();
+      final supplementalTrackers = await widget.engine
+          .fetchSupplementalTrackers();
       // Trackerlist's daily health-ranked 20 lead; keep a few add-on hints too.
       final trackers = <String>{
         ...supplementalTrackers.take(20),
@@ -3864,18 +4528,16 @@ class _DetailsSheetState extends State<DetailsSheet> {
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
-      widget.onPlay(
-        '${widget.meta.name} - $_targetLabel',
-        url,
-        _targetId,
-      );
+      widget.onPlay('${widget.meta.name} - $_targetLabel', url, _targetId);
     } catch (error) {
       if (!mounted) return;
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(
-        content: Text('Torrent playback failed: $error'),
-        duration: const Duration(seconds: 7),
-      ));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Torrent playback failed: $error'),
+          duration: const Duration(seconds: 7),
+        ),
+      );
     }
   }
 
@@ -3891,20 +4553,18 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _playTorrent(s);
     }
   }
-
-
 }
 
 class SearchModal extends StatefulWidget {
   final CatalogEngine engine;
   final void Function(Meta) onShowDetails;
-  
+
   const SearchModal({
-    super.key, 
-    required this.engine, 
+    super.key,
+    required this.engine,
     required this.onShowDetails,
   });
-  
+
   @override
   State<SearchModal> createState() => _SearchModalState();
 }
@@ -3923,9 +4583,9 @@ class _SearchModalState extends State<SearchModal> {
   Future<void> _doSearch() async {
     if (_ctrl.text.trim().isEmpty) return;
     setState(() => _searching = true);
-    
+
     final items = await widget.engine.search(_ctrl.text);
-    
+
     if (!mounted) return;
     setState(() {
       _results = items;
@@ -3946,8 +4606,12 @@ class _SearchModalState extends State<SearchModal> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Universal Search', 
-                style: TextStyle(color: _cyan, fontWeight: FontWeight.bold, fontSize: 20),
+                'Universal Search',
+                style: TextStyle(
+                  color: _cyan,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 20,
+                ),
               ),
               const SizedBox(height: 16),
               TextField(
@@ -3959,11 +4623,11 @@ class _SearchModalState extends State<SearchModal> {
                   filled: true,
                   fillColor: _bg,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12), 
+                    borderRadius: BorderRadius.circular(12),
                     borderSide: BorderSide.none,
                   ),
                   suffixIcon: IconButton(
-                    icon: const Icon(Icons.search, color: _cyan), 
+                    icon: const Icon(Icons.search, color: _cyan),
                     onPressed: _doSearch,
                   ),
                 ),
@@ -3972,26 +4636,36 @@ class _SearchModalState extends State<SearchModal> {
               const SizedBox(height: 16),
               Expanded(
                 child: _searching
-                    ? const Center(child: CircularProgressIndicator(color: _cyan))
+                    ? const Center(
+                        child: CircularProgressIndicator(color: _cyan),
+                      )
                     : _results.isEmpty
-                        ? const Center(child: Text('Search for anything', style: TextStyle(color: _muted)))
-                        : ListView.builder(
-                            itemCount: _results.length,
-                            itemBuilder: (_, i) => ListTile(
-                              title: Text(
-                                _results[i].name, 
-                                style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Text(
-                                '${_results[i].type.toUpperCase()} · ${_results[i].year}', 
-                                style: const TextStyle(color: _muted),
-                              ),
-                              onTap: () {
-                                Navigator.pop(context);
-                                widget.onShowDetails(_results[i]);
-                              },
+                    ? const Center(
+                        child: Text(
+                          'Search for anything',
+                          style: TextStyle(color: _muted),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: _results.length,
+                        itemBuilder: (_, i) => ListTile(
+                          title: Text(
+                            _results[i].name,
+                            style: const TextStyle(
+                              color: _textPri,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
+                          subtitle: Text(
+                            '${_results[i].type.toUpperCase()} · ${_results[i].year}',
+                            style: const TextStyle(color: _muted),
+                          ),
+                          onTap: () {
+                            Navigator.pop(context);
+                            widget.onShowDetails(_results[i]);
+                          },
+                        ),
+                      ),
               ),
             ],
           ),
@@ -4006,7 +4680,11 @@ class _AddonPage extends StatelessWidget {
   final Future<void> Function(String) onAdd;
   final Future<void> Function(ManagedAddon) onRemove;
 
-  const _AddonPage({required this.addons, required this.onAdd, required this.onRemove});
+  const _AddonPage({
+    required this.addons,
+    required this.onAdd,
+    required this.onRemove,
+  });
 
   Future<void> _showAddDialog(BuildContext context) async {
     final controller = TextEditingController();
@@ -4024,8 +4702,15 @@ class _AddonPage extends StatelessWidget {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(dialogContext, controller.text.trim()), child: const Text('Validate & Add')),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, controller.text.trim()),
+            child: const Text('Validate & Add'),
+          ),
         ],
       ),
     );
@@ -4033,9 +4718,13 @@ class _AddonPage extends StatelessWidget {
     if (url == null || url.isEmpty || !context.mounted) return;
     try {
       await onAdd(url);
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Addon installed.')));
+      if (context.mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Addon installed.')));
     } catch (e) {
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Addon install failed: $e')));
+      if (context.mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Addon install failed: $e')));
     }
   }
 
@@ -4046,36 +4735,75 @@ class _AddonPage extends StatelessWidget {
       children: [
         Row(
           children: [
-            const Expanded(child: Text('Addon Manager', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900, color: _cyan))),
-            FilledButton.icon(onPressed: () => _showAddDialog(context), icon: const Icon(Icons.add), label: const Text('Add addon')),
+            const Expanded(
+              child: Text(
+                'Addon Manager',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                  color: _cyan,
+                ),
+              ),
+            ),
+            FilledButton.icon(
+              onPressed: () => _showAddDialog(context),
+              icon: const Icon(Icons.add),
+              label: const Text('Add addon'),
+            ),
           ],
         ),
         const SizedBox(height: 8),
-        const Text('Configured addons are retained when temporarily offline. Only compatible Stremio manifest/stream endpoints are supported.', style: TextStyle(color: _muted, fontSize: 13)),
+        const Text(
+          'Configured addons are retained when temporarily offline. Only compatible Stremio manifest/stream endpoints are supported.',
+          style: TextStyle(color: _muted, fontSize: 13),
+        ),
         const SizedBox(height: 10),
         OutlinedButton.icon(
-          onPressed: () => launchUrl(Uri.parse('https://comet.elfhosted.com/configure'), mode: LaunchMode.externalApplication),
+          onPressed: () => launchUrl(
+            Uri.parse('https://comet.elfhosted.com/configure'),
+            mode: LaunchMode.externalApplication,
+          ),
           icon: const Icon(Icons.tune),
           label: const Text('Configure Comet (optional debrid source)'),
         ),
-        const Text('Comet public endpoint may require a debrid account. After configuration, copy its generated manifest URL and use Add addon. Do not paste API keys into public chats.',
-          style: TextStyle(color: _muted, fontSize: 11)),
+        const Text(
+          'Comet public endpoint may require a debrid account. After configuration, copy its generated manifest URL and use Add addon. Do not paste API keys into public chats.',
+          style: TextStyle(color: _muted, fontSize: 11),
+        ),
         const SizedBox(height: 16),
-        if (addons.isEmpty) const Text('No addons configured.', style: TextStyle(color: _muted)),
-        ...addons.map((a) => Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: _Card(
-            child: ListTile(
-              title: Text(a.name, style: const TextStyle(color: _textPri, fontWeight: FontWeight.bold, fontSize: 15)),
-              subtitle: Text(a.baseUrl, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: _muted, fontSize: 12)),
-              trailing: IconButton(
-                tooltip: 'Remove addon',
-                icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-                onPressed: () => onRemove(a),
+        if (addons.isEmpty)
+          const Text('No addons configured.', style: TextStyle(color: _muted)),
+        ...addons.map(
+          (a) => Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: _Card(
+              child: ListTile(
+                title: Text(
+                  a.name,
+                  style: const TextStyle(
+                    color: _textPri,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
+                ),
+                subtitle: Text(
+                  a.baseUrl,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: _muted, fontSize: 12),
+                ),
+                trailing: IconButton(
+                  tooltip: 'Remove addon',
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    color: Colors.redAccent,
+                  ),
+                  onPressed: () => onRemove(a),
+                ),
               ),
             ),
           ),
-        )),
+        ),
       ],
     );
   }
@@ -4108,20 +4836,16 @@ class _FButtonState extends State<_FButton> {
     final bg = _focused
         ? _red
         : (widget.primary
-            ? _red.withValues(alpha: 0.8)
-            : (widget.active ? _cyan.withValues(alpha: 0.15) : _panel));
-            
+              ? _red.withValues(alpha: 0.8)
+              : (widget.active ? _cyan.withValues(alpha: 0.15) : _panel));
+
     final fg = _focused
         ? Colors.white
-        : (widget.primary
-            ? Colors.white
-            : (widget.active ? _cyan : _textPri));
-            
+        : (widget.primary ? Colors.white : (widget.active ? _cyan : _textPri));
+
     final border = _focused
         ? _cyan
-        : (widget.primary
-            ? _red
-            : (widget.active ? _cyan : Colors.white24));
+        : (widget.primary ? _red : (widget.active ? _cyan : Colors.white24));
 
     return InkWell(
       onFocusChange: (f) => setState(() => _focused = f),
@@ -4184,9 +4908,7 @@ class _CardState extends State<_Card> {
   Widget build(BuildContext context) {
     final border = _focused
         ? _cyan
-        : (widget.selected
-            ? _red
-            : (widget.borderColor ?? Colors.white12));
+        : (widget.selected ? _red : (widget.borderColor ?? Colors.white12));
 
     return InkWell(
       onFocusChange: (f) => setState(() => _focused = f),
@@ -4259,7 +4981,12 @@ class _PosterCardState extends State<PosterCard> {
                 width: 3,
               ),
               boxShadow: _focused
-                  ? [BoxShadow(color: _cyan.withValues(alpha: 0.4), blurRadius: 20)]
+                  ? [
+                      BoxShadow(
+                        color: _cyan.withValues(alpha: 0.4),
+                        blurRadius: 20,
+                      ),
+                    ]
                   : [const BoxShadow(color: Colors.black54, blurRadius: 8)],
             ),
             child: ClipRRect(
@@ -4293,7 +5020,10 @@ class _PosterCardState extends State<PosterCard> {
                       top: 8,
                       left: 8,
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
                         decoration: BoxDecoration(
                           color: widget.accent,
                           borderRadius: BorderRadius.circular(6),
@@ -4333,9 +5063,9 @@ class _PosterCardState extends State<PosterCard> {
   }
 
   Widget _fallback() => Container(
-        color: _panel,
-        child: const Icon(Icons.movie, color: _muted, size: 40),
-      );
+    color: _panel,
+    child: const Icon(Icons.movie, color: _muted, size: 40),
+  );
 }
 
 class _BrandTile extends StatefulWidget {
@@ -4383,7 +5113,12 @@ class _BrandTileState extends State<_BrandTile> {
             width: active ? 2 : 1,
           ),
           boxShadow: _focused
-              ? [BoxShadow(color: widget.brand.color.withValues(alpha: 0.4), blurRadius: 16)]
+              ? [
+                  BoxShadow(
+                    color: widget.brand.color.withValues(alpha: 0.4),
+                    blurRadius: 16,
+                  ),
+                ]
               : [],
         ),
         child: Column(
@@ -4401,7 +5136,9 @@ class _BrandTileState extends State<_BrandTile> {
             ),
             const SizedBox(height: 4),
             Text(
-              widget.brand.hasCatalog ? 'Movies & Series' : 'Catalog addon required',
+              widget.brand.hasCatalog
+                  ? 'Movies & Series'
+                  : 'Catalog addon required',
               style: const TextStyle(
                 color: _muted,
                 fontSize: 11,

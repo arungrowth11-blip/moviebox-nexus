@@ -62,13 +62,10 @@ void main() {
       // An invalid hash must be rejected by the native handler before any torrent
       // is downloaded, so this remains a free, deterministic offline smoke test.
       await expectLater(
-        torrentChannel.invokeMethod<String>(
-          'startPlayback',
-          <String, Object>{
-            'infoHash': 'not-a-valid-info-hash',
-            'title': 'Native bridge smoke test',
-          },
-        ),
+        torrentChannel.invokeMethod<String>('startPlayback', <String, Object>{
+          'infoHash': 'not-a-valid-info-hash',
+          'title': 'Native bridge smoke test',
+        }),
         throwsA(
           isA<PlatformException>().having(
             (error) => error.code,
@@ -119,8 +116,11 @@ void main() {
         await tester.ensureVisible(tab);
         await tester.tap(tab, warnIfMissed: false);
         await tester.pump(const Duration(milliseconds: 300));
-        expect(find.text(label), findsWidgets,
-            reason: 'The $label tab must remain visible after selection.');
+        expect(
+          find.text(label),
+          findsWidgets,
+          reason: 'The $label tab must remain visible after selection.',
+        );
 
         if (label == 'Live TV') {
           expect(find.text('COUNTRY'), findsOneWidget);
@@ -139,19 +139,20 @@ void main() {
     timeout: const Timeout(Duration(minutes: 3)),
   );
 
-  testWidgets(
-    'Media3 prepares a real MP4 over the runner HTTP byte-range server',
-    (tester) async {
-      const mediaUrl = String.fromEnvironment('MOVIEBOX_TEST_MP4_URL');
-      final uri = Uri.tryParse(mediaUrl);
-      expect(uri, isNotNull);
-      expect(uri!.host, '10.0.2.2');
-      expect(uri.path, '/moviebox-ci-video.mp4');
+  testWidgets('Media3 prepares a real MP4 over the runner HTTP byte-range server', (
+    tester,
+  ) async {
+    const mediaUrl = String.fromEnvironment('MOVIEBOX_TEST_MP4_URL');
+    final uri = Uri.tryParse(mediaUrl);
+    expect(uri, isNotNull);
+    expect(uri!.host, '10.0.2.2');
+    expect(uri.path, '/moviebox-ci-video.mp4');
 
-      final prepared = Completer<Duration>();
-      final media3Ready = Completer<BetterPlayerController>();
-      try {
-        await tester.pumpWidget(MaterialApp(
+    final prepared = Completer<Duration>();
+    final media3Ready = Completer<BetterPlayerController>();
+    try {
+      await tester.pumpWidget(
+        MaterialApp(
           home: PlayerScreen(
             title: 'MovieBox Nexus real MP4 QA sample',
             url: mediaUrl,
@@ -163,53 +164,54 @@ void main() {
               if (!media3Ready.isCompleted) media3Ready.complete(controller);
             },
           ),
-        ));
+        ),
+      );
 
-        final elapsed = await prepared.future.timeout(
-          const Duration(seconds: 30),
-          onTimeout: () => throw TimeoutException(
-            'Media3 did not prepare the generated MP4 within 30 seconds.',
-          ),
-        );
-        expect(elapsed, lessThan(const Duration(seconds: 30)));
+      final elapsed = await prepared.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => throw TimeoutException(
+          'Media3 did not prepare the generated MP4 within 30 seconds.',
+        ),
+      );
+      expect(elapsed, lessThan(const Duration(seconds: 30)));
 
-        final controller = await media3Ready.future.timeout(
-          const Duration(seconds: 10),
-        );
-        final initialValue = controller.videoPlayerController?.value;
-        expect(initialValue, isNotNull);
-        expect(initialValue!.size?.width ?? 0, greaterThan(0));
-        expect(initialValue.size?.height ?? 0, greaterThan(0));
-        expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
-        debugPrint(
-          'MovieBox CI direct Media3 before play: isPlaying=${initialValue.isPlaying}, '
-          'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
-          'duration=${initialValue.duration}',
-        );
-        await controller.play().timeout(
-          const Duration(seconds: 10),
-          onTimeout: () => throw TimeoutException('Media3 play command timed out on the direct MP4.'),
-        );
+      final controller = await media3Ready.future.timeout(
+        const Duration(seconds: 10),
+      );
+      final initialValue = controller.videoPlayerController?.value;
+      expect(initialValue, isNotNull);
+      expect(initialValue!.size?.width ?? 0, greaterThan(0));
+      expect(initialValue.size?.height ?? 0, greaterThan(0));
+      expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+      debugPrint(
+        'MovieBox CI direct Media3 before play: isPlaying=${initialValue.isPlaying}, '
+        'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
+        'duration=${initialValue.duration}',
+      );
+      await controller.play().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw TimeoutException(
+          'Media3 play command timed out on the direct MP4.',
+        ),
+      );
 
-        final beforePlayback =
-            await controller.videoPlayerController!.position ?? Duration.zero;
-        await _waitUntil(
-          tester,
-          () async {
-            final position = await controller.videoPlayerController?.position;
-            return position != null &&
-                position > beforePlayback + const Duration(milliseconds: 700);
-          },
-          'Media3 native playback clock must advance on the direct HTTP source.',
-          timeout: const Duration(seconds: 20),
-          diagnostic: () => _media3Diagnostic(controller),
-        );
-      } finally {
-        await tester.pumpWidget(const SizedBox.shrink());
-      }
-    },
-    timeout: const Timeout(Duration(minutes: 2)),
-  );
+      final beforePlayback =
+          await controller.videoPlayerController!.position ?? Duration.zero;
+      await _waitUntil(
+        tester,
+        () async {
+          final position = await controller.videoPlayerController?.position;
+          return position != null &&
+              position > beforePlayback + const Duration(milliseconds: 700);
+        },
+        'Media3 native playback clock must advance on the direct HTTP source.',
+        timeout: const Duration(seconds: 20),
+        diagnostic: () => _media3Diagnostic(controller),
+      );
+    } finally {
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets(
     'Media3 retries two bounded HTTP 503 responses and then plays valid 206 bytes',
@@ -242,8 +244,10 @@ void main() {
             }
           }
 
-          final upstreamRequest =
-              await upstreamClient.openUrl(incoming.method, sourceUri);
+          final upstreamRequest = await upstreamClient.openUrl(
+            incoming.method,
+            sourceUri,
+          );
           final range = incoming.headers.value(HttpHeaders.rangeHeader);
           if (range != null) {
             upstreamRequest.headers.set(HttpHeaders.rangeHeader, range);
@@ -267,8 +271,9 @@ void main() {
             }
           }
           if (upstreamResponse.statusCode == HttpStatus.partialContent) {
-            successful206ContentRange =
-                upstreamResponse.headers.value(HttpHeaders.contentRangeHeader);
+            successful206ContentRange = upstreamResponse.headers.value(
+              HttpHeaders.contentRangeHeader,
+            );
           }
           await for (final chunk in upstreamResponse) {
             if (upstreamResponse.statusCode == HttpStatus.partialContent) {
@@ -305,20 +310,22 @@ void main() {
       final prepared = Completer<Duration>();
       final media3Ready = Completer<BetterPlayerController>();
       try {
-        await tester.pumpWidget(MaterialApp(
-          home: PlayerScreen(
-            title: 'MovieBox Media3 bounded 503 retry QA',
-            url: retryUrl,
-            headers: const <String, String>{'Range': 'bytes=0-'},
-            onSave: (_) async {},
-            onPrepared: (elapsed) {
-              if (!prepared.isCompleted) prepared.complete(elapsed);
-            },
-            onMedia3ControllerReady: (controller) {
-              if (!media3Ready.isCompleted) media3Ready.complete(controller);
-            },
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PlayerScreen(
+              title: 'MovieBox Media3 bounded 503 retry QA',
+              url: retryUrl,
+              headers: const <String, String>{'Range': 'bytes=0-'},
+              onSave: (_) async {},
+              onPrepared: (elapsed) {
+                if (!prepared.isCompleted) prepared.complete(elapsed);
+              },
+              onMedia3ControllerReady: (controller) {
+                if (!media3Ready.isCompleted) media3Ready.complete(controller);
+              },
+            ),
           ),
-        ));
+        );
 
         await prepared.future.timeout(
           const Duration(seconds: 60),
@@ -374,7 +381,9 @@ void main() {
         'MOVIEBOX_TEST_PEER',
         defaultValue: '127.0.0.1:6881',
       );
-      const expectedFirstHex = String.fromEnvironment('MOVIEBOX_TEST_FIRST_HEX');
+      const expectedFirstHex = String.fromEnvironment(
+        'MOVIEBOX_TEST_FIRST_HEX',
+      );
       const expectedSeekHex = String.fromEnvironment('MOVIEBOX_TEST_SEEK_HEX');
 
       expect(infoHash, matches(RegExp(r'^[a-f0-9]{40}$')));
@@ -383,9 +392,9 @@ void main() {
       expect(expectedSeekHex, hasLength(32));
 
       const channel = MethodChannel('moviebox_nexus/torrent');
-      await channel.invokeMethod<bool>('initialize').timeout(
-        const Duration(seconds: 30),
-      );
+      await channel
+          .invokeMethod<bool>('initialize')
+          .timeout(const Duration(seconds: 30));
 
       // Prove the emulator-to-runner TCP tunnel is reachable before asking
       // libtorrent to fetch metadata from the deterministic local seeder.
@@ -411,7 +420,8 @@ void main() {
       expect(uri.host, '127.0.0.1');
       expect(uri.path, startsWith('/stream/'));
 
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+      final client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
       String hex(List<int> bytes) =>
           bytes.map((value) => value.toRadixString(16).padLeft(2, '0')).join();
 
@@ -434,15 +444,14 @@ void main() {
           response.headers.value(HttpHeaders.contentRangeHeader),
           startsWith('bytes $start-$end/'),
         );
-        final bytes = await response.fold<List<int>>(
-          <int>[],
-          (result, chunk) => result..addAll(chunk),
-        ).timeout(
-          const Duration(seconds: 100),
-          onTimeout: () => throw TimeoutException(
-            'Torrent piece $start-$end did not arrive in 100 seconds.',
-          ),
-        );
+        final bytes = await response
+            .fold<List<int>>(<int>[], (result, chunk) => result..addAll(chunk))
+            .timeout(
+              const Duration(seconds: 100),
+              onTimeout: () => throw TimeoutException(
+                'Torrent piece $start-$end did not arrive in 100 seconds.',
+              ),
+            );
         expect(bytes, hasLength(end - start + 1));
         return bytes;
       }
@@ -503,25 +512,29 @@ void main() {
           'MovieBox CI lifecycle before torrent player: ${tester.binding.lifecycleState}',
         );
         if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
-          tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
           await tester.pump();
         }
 
         final prepared = Completer<Duration>();
         final media3Ready = Completer<BetterPlayerController>();
-        await tester.pumpWidget(MaterialApp(
-          home: PlayerScreen(
-            title: 'Seeded torrent end-to-end QA',
-            url: uri.toString(),
-            onSave: (_) async {},
-            onPrepared: (elapsed) {
-              if (!prepared.isCompleted) prepared.complete(elapsed);
-            },
-            onMedia3ControllerReady: (controller) {
-              if (!media3Ready.isCompleted) media3Ready.complete(controller);
-            },
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PlayerScreen(
+              title: 'Seeded torrent end-to-end QA',
+              url: uri.toString(),
+              onSave: (_) async {},
+              onPrepared: (elapsed) {
+                if (!prepared.isCompleted) prepared.complete(elapsed);
+              },
+              onMedia3ControllerReady: (controller) {
+                if (!media3Ready.isCompleted) media3Ready.complete(controller);
+              },
+            ),
           ),
-        ));
+        );
         final elapsed = await prepared.future.timeout(
           const Duration(seconds: 105),
           onTimeout: () => throw TimeoutException(
@@ -550,7 +563,9 @@ void main() {
         );
         await controller.play().timeout(
           const Duration(seconds: 10),
-          onTimeout: () => throw TimeoutException('Media3 play command timed out on the torrent stream.'),
+          onTimeout: () => throw TimeoutException(
+            'Media3 play command timed out on the torrent stream.',
+          ),
         );
 
         final beforePlayback =
@@ -570,12 +585,14 @@ void main() {
         // Exercise the same Media3 seek operation used by the playback UI.
         // The torrent engine must satisfy data requests at the new position.
         const seekTarget = Duration(seconds: 20);
-        await controller.seekTo(seekTarget).timeout(
-          const Duration(seconds: 20),
-          onTimeout: () => throw TimeoutException(
-            'Media3 seek command did not complete within 20 seconds.',
-          ),
-        );
+        await controller
+            .seekTo(seekTarget)
+            .timeout(
+              const Duration(seconds: 20),
+              onTimeout: () => throw TimeoutException(
+                'Media3 seek command did not complete within 20 seconds.',
+              ),
+            );
         await _waitUntil(
           tester,
           () async {
@@ -607,12 +624,11 @@ void main() {
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         client.close(force: true);
-        await channel.invokeMethod<bool>('stopPlayback').timeout(
-          const Duration(seconds: 15),
-        );
+        await channel
+            .invokeMethod<bool>('stopPlayback')
+            .timeout(const Duration(seconds: 15));
       }
     },
     timeout: const Timeout(Duration(minutes: 6)),
   );
-
 }

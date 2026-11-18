@@ -22,8 +22,7 @@ class Media3StartupPolicy {
     required bool isEmbeddedTorrent,
     required int httpBytesSent,
   }) {
-    if (isPlaying ||
-        currentPosition > initialPosition + progressThreshold) {
+    if (isPlaying || currentPosition > initialPosition + progressThreshold) {
       return Media3StartupDecision.started;
     }
     if (elapsed < startupTimeout) return Media3StartupDecision.wait;

@@ -46,7 +46,8 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
+class _PlayerScreenState extends State<PlayerScreen>
+    with WidgetsBindingObserver {
   BetterPlayerController? _media3;
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
@@ -55,8 +56,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Timer? _torrentStatusTimer;
   String _torrentStatusMessage = '';
   String _torrentTechnicalLine = '';
-  static const MethodChannel _torrentDiagnostics =
-      MethodChannel('moviebox_nexus/torrent');
+  static const MethodChannel _torrentDiagnostics = MethodChannel(
+    'moviebox_nexus/torrent',
+  );
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
@@ -77,18 +79,21 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pendingPositionMs = widget.initialMs;
-    unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]));
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+    unawaited(
+      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+    );
     _startMedia3();
     _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_savePosition());
     });
   }
-
 
   /// Own Media3 lifecycle handling instead of BetterPlayer's internal gate.
   /// BetterPlayerController.play() is ignored unless its private lifecycle
@@ -130,6 +135,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
     }
   }
+
   void _startTorrentStatusPolling() {
     if (!_isEmbeddedTorrent) return;
     _torrentStatusTimer?.cancel();
@@ -185,14 +191,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         message = 'Starting the built-in torrent engine…';
       } else if (!metadataReady) {
         if (connectedPeers > 0) {
-          message = 'Connected to $connectedPeers peers; receiving torrent metadata…';
+          message =
+              'Connected to $connectedPeers peers; receiving torrent metadata…';
         } else if (knownPeers > 0) {
-          message = 'Found $knownPeers peers; waiting for a metadata connection…';
+          message =
+              'Found $knownPeers peers; waiting for a metadata connection…';
         } else {
           message = 'Discovering peers through DHT and public trackers…';
         }
       } else if (connectedPeers > 0) {
-        message = 'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
+        message =
+            'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
       } else if (knownPeers > 0) {
         message = 'Metadata ready • $knownPeers peers discovered • connecting…';
       } else {
@@ -207,12 +216,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         if (lastHttpStatus > 0) 'HTTP: $lastHttpStatus',
         if (lastRangeStart >= 0) 'Last range: $lastRangeStart-$lastRangeEnd',
         if (httpBytesSent > 0) 'Loopback body bytes sent: $httpBytesSent',
-        if (lastRequestBytesSent > 0) 'Last response bytes: $lastRequestBytesSent',
+        if (lastRequestBytesSent > 0)
+          'Last response bytes: $lastRequestBytesSent',
         if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
-        if (lastPieceIndex >= 0) 'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
+        if (lastPieceIndex >= 0)
+          'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
         if (lastHttpError.isNotEmpty) 'HTTP/piece error: $lastHttpError',
       ].join(' • ');
-      if (message != _torrentStatusMessage || technical != _torrentTechnicalLine) {
+      if (message != _torrentStatusMessage ||
+          technical != _torrentTechnicalLine) {
         setState(() {
           _torrentStatusMessage = message;
           _torrentTechnicalLine = technical;
@@ -302,8 +314,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         bufferForPlaybackMs: 1500,
         bufferForPlaybackAfterRebufferMs: 3000,
       ),
-      notificationConfiguration:
-          const BetterPlayerNotificationConfiguration(showNotification: false),
+      notificationConfiguration: const BetterPlayerNotificationConfiguration(
+        showNotification: false,
+      ),
     );
 
     final controls = BetterPlayerControlsConfiguration(
@@ -394,14 +407,19 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           _startMedia3PlaybackStartWatchdog(initializedController);
           // AutoPlay is configured on BetterPlayer; issue one explicit play
           // command after initialization to recover a stale lifecycle play gate.
-          unawaited(initializedController.play().catchError((Object error) {
-            debugPrint('MovieBox Media3 initial play command failed: $error');
-          }));
+          unawaited(
+            initializedController.play().catchError((Object error) {
+              debugPrint('MovieBox Media3 initial play command failed: $error');
+            }),
+          );
         }
         _reportPrepared();
         _preferredHindiAudioApplied = false;
         _applyPreferredHindiAudio();
-        Future<void>.delayed(const Duration(milliseconds: 900), _applyPreferredHindiAudio);
+        Future<void>.delayed(
+          const Duration(milliseconds: 900),
+          _applyPreferredHindiAudio,
+        );
         setState(() {
           _loading = false;
           _error = null;
@@ -409,7 +427,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         });
         break;
       case BetterPlayerEventType.exception:
-        final details = event.parameters?.toString() ?? 'Unsupported stream or network error';
+        final details =
+            event.parameters?.toString() ??
+            'Unsupported stream or network error';
         debugPrint('MovieBox Media3 exception: $details');
         // BetterPlayer dispatches events while iterating its listener list.
         // Defer fallback/disposal until that iteration has completed.
@@ -440,7 +460,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
     late final Timer watchdog;
     watchdog = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (!mounted || _disposed || _usingVlc || !identical(_media3, controller)) {
+      if (!mounted ||
+          _disposed ||
+          _usingVlc ||
+          !identical(_media3, controller)) {
         watchdog.cancel();
         return;
       }
@@ -461,18 +484,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       }
       if (!playRetryAttempted && elapsed >= const Duration(seconds: 4)) {
         playRetryAttempted = true;
-        unawaited(controller.play().catchError((Object error) {
-          debugPrint('MovieBox Media3 playback-start retry failed: $error');
-        }));
+        unawaited(
+          controller.play().catchError((Object error) {
+            debugPrint('MovieBox Media3 playback-start retry failed: $error');
+          }),
+        );
       }
       if (elapsed < Media3StartupPolicy.startupTimeout || resolving) return;
       resolving = true;
-      unawaited(_resolveMedia3StartupStall(
-        controller,
-        watchdog,
-        startedAt,
-        initialPosition,
-      ));
+      unawaited(
+        _resolveMedia3StartupStall(
+          controller,
+          watchdog,
+          startedAt,
+          initialPosition,
+        ),
+      );
     });
     _media3PlaybackStartWatchdog = watchdog;
   }
@@ -511,7 +538,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       watchdog.cancel();
       setState(() {
         _loading = false;
-        _error = 'The torrent engine diagnostics could not be read. '
+        _error =
+            'The torrent engine diagnostics could not be read. '
             'MovieBox will not guess whether video bytes arrived or switch players without evidence.';
       });
       return;
@@ -552,10 +580,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       debugPrint('MovieBox torrent first-byte failure: $details');
       setState(() {
         _loading = false;
-        _torrentStatusMessage =
-            'Torrent metadata/player initialized, but no video body bytes were sent.';
+        _torrentStatusMessage = 'Torrent metadata/player initialized, but no video body bytes were sent.';
         _torrentTechnicalLine = details;
-        _error = 'No playable video bytes have been emitted by this torrent source yet. '
+        _error =
+            'No playable video bytes have been emitted by this torrent source yet. '
             'Peer counts and HTTP response headers do not prove that the requested video pieces arrived. '
             'Retry after the source or peer connection changes. $details';
       });
@@ -581,7 +609,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = 'This stream requires custom HTTP headers (${unsupportedVlcHeaders.join(', ')}). '
+          _error =
+              'This stream requires custom HTTP headers (${unsupportedVlcHeaders.join(', ')}). '
               'Media3 could not play it, and this VLC plugin version cannot forward those headers.';
         });
       }
@@ -659,8 +688,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         _loading = false;
         _error = _isEmbeddedTorrent
             ? 'Media3 and VLC could not open this torrent stream: $error. '
-                '$_torrentStatusMessage. $_torrentTechnicalLine. '
-                'Peer count and download rate do not prove that the requested video pieces were delivered.'
+                  '$_torrentStatusMessage. $_torrentTechnicalLine. '
+                  'Peer count and download rate do not prove that the requested video pieces were delivered.'
             : 'Media3 and VLC could not start this stream: $error';
       });
     }
@@ -738,7 +767,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _seekVlc(int seconds) async {
     final controller = _vlc;
-    if (controller == null || !controller.value.isInitialized || _isLive) return;
+    if (controller == null || !controller.value.isInitialized || _isLive)
+      return;
     final duration = controller.value.duration;
     if (duration <= Duration.zero) return;
     final target = controller.value.position + Duration(seconds: seconds);
@@ -753,7 +783,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (_disposed || _preferredHindiAudioApplied) return;
     final controller = _media3;
     if (controller == null) return;
-    final tracks = controller.betterPlayerAsmsAudioTracks ?? const <BetterPlayerAsmsAudioTrack>[];
+    final tracks =
+        controller.betterPlayerAsmsAudioTracks ??
+        const <BetterPlayerAsmsAudioTrack>[];
     if (tracks.isEmpty) return;
     final hindi = tracks.where((track) {
       final language = (track.language ?? '').toLowerCase();
@@ -779,12 +811,18 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   Future<void> _showMedia3AudioTracks() async {
     final controller = _media3;
     if (controller == null) return;
-    final tracks = controller.betterPlayerAsmsAudioTracks ?? const <BetterPlayerAsmsAudioTrack>[];
+    final tracks =
+        controller.betterPlayerAsmsAudioTracks ??
+        const <BetterPlayerAsmsAudioTrack>[];
     if (!mounted) return;
     if (tracks.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('This stream exposes only its default audio. Hindi/other audio can be selected only when the source publishes alternate tracks.'),
-      ));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This stream exposes only its default audio. Hindi/other audio can be selected only when the source publishes alternate tracks.',
+          ),
+        ),
+      );
       return;
     }
     await showModalBottomSheet<void>(
@@ -795,17 +833,25 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           shrinkWrap: true,
           children: [
             const ListTile(
-              title: Text('Audio language', style: TextStyle(
-                color: _movieBoxCyan,
-                fontWeight: FontWeight.bold,
-              )),
-              subtitle: Text('Hindi is preferred automatically when the stream provides it.',
-                style: TextStyle(color: Colors.white60)),
+              title: Text(
+                'Audio language',
+                style: TextStyle(
+                  color: _movieBoxCyan,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              subtitle: Text(
+                'Hindi is preferred automatically when the stream provides it.',
+                style: TextStyle(color: Colors.white60),
+              ),
             ),
             for (final track in tracks)
               ListTile(
                 leading: const Icon(Icons.audiotrack, color: Colors.white70),
-                title: Text(_audioTrackLabel(track), style: const TextStyle(color: Colors.white)),
+                title: Text(
+                  _audioTrackLabel(track),
+                  style: const TextStyle(color: Colors.white),
+                ),
                 trailing: controller.betterPlayerAsmsAudioTrack == track
                     ? const Icon(Icons.check, color: _movieBoxCyan)
                     : null,
@@ -851,8 +897,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               ),
               if (subtitles)
                 ListTile(
-                  leading: const Icon(Icons.closed_caption_disabled, color: Colors.white),
-                  title: const Text('Off', style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.closed_caption_disabled,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'Off',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     unawaited(controller.setSpuTrack(-1));
                     Navigator.pop(sheetContext);
@@ -864,7 +916,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     subtitles ? Icons.subtitles : Icons.audiotrack,
                     color: Colors.white70,
                   ),
-                  title: Text(entry.value, style: const TextStyle(color: Colors.white)),
+                  title: Text(
+                    entry.value,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     if (subtitles) {
                       unawaited(controller.setSpuTrack(entry.key));
@@ -887,9 +942,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Track list unavailable: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Track list unavailable: $error')));
     }
   }
 
@@ -906,7 +961,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           mainAxisSize: MainAxisSize.min,
           children: [
             const ListTile(
-              title: Text('Playback speed', style: TextStyle(color: _movieBoxCyan)),
+              title: Text(
+                'Playback speed',
+                style: TextStyle(color: _movieBoxCyan),
+              ),
             ),
             for (final speed in speeds)
               ListTile(
@@ -983,7 +1041,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         key == LogicalKeyboardKey.arrowRight) {
       final controller = _media3;
       final value = controller?.videoPlayerController?.value;
-      if (controller != null && value != null && value.initialized && !_isLive) {
+      if (controller != null &&
+          value != null &&
+          value.initialized &&
+          !_isLive) {
         final delta = key == LogicalKeyboardKey.arrowLeft ? -10 : 10;
         final target = value.position + Duration(seconds: delta);
         final duration = value.duration;
@@ -1036,7 +1097,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, color: Colors.orangeAccent, size: 48),
+            const Icon(
+              Icons.error_outline,
+              color: Colors.orangeAccent,
+              size: 48,
+            ),
             const SizedBox(height: 12),
             Text(
               message,
@@ -1133,8 +1198,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     child: Row(
                       children: [
-                        Text(_timeText(value.position),
-                            style: const TextStyle(color: Colors.white)),
+                        Text(
+                          _timeText(value.position),
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         Expanded(
                           child: Slider(
                             value: positionMs.toDouble().clamp(0.0, maxValue),
@@ -1144,14 +1211,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                             onChanged: durationMs <= 0
                                 ? null
                                 : (next) => unawaited(
-                                      controller.seekTo(
-                                        Duration(milliseconds: next.round()),
-                                      ),
+                                    controller.seekTo(
+                                      Duration(milliseconds: next.round()),
                                     ),
+                                  ),
                           ),
                         ),
-                        Text(_timeText(value.duration),
-                            style: const TextStyle(color: Colors.white)),
+                        Text(
+                          _timeText(value.duration),
+                          style: const TextStyle(color: Colors.white),
+                        ),
                       ],
                     ),
                   ),
@@ -1170,7 +1239,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       iconSize: 62,
                       onPressed: _toggleVlcPlayback,
                       icon: Icon(
-                        value.isPlaying ? Icons.pause_circle : Icons.play_circle,
+                        value.isPlaying
+                            ? Icons.pause_circle
+                            : Icons.play_circle,
                         color: _movieBoxRed,
                       ),
                     ),
@@ -1269,12 +1340,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
     _focusNode.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]));
+    unawaited(
+      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
     super.dispose();
   }
 
@@ -1332,7 +1405,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                         border: Border.all(color: Colors.white12),
                       ),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -1341,14 +1417,22 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                                   ? 'Connecting to the real BitTorrent swarm…'
                                   : _torrentStatusMessage,
                               textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                height: 1.35,
+                              ),
                             ),
                             if (_torrentTechnicalLine.isNotEmpty) ...[
                               const SizedBox(height: 6),
                               Text(
                                 _torrentTechnicalLine,
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.white38, fontSize: 10, height: 1.3),
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 10,
+                                  height: 1.3,
+                                ),
                               ),
                             ],
                           ],
