@@ -708,7 +708,7 @@ jobs:
               }
           }
           '''
-          gradle_file.write_text(source.rstrip() + "\\n\\n" + signing_block.lstrip(), encoding="utf-8")
+          gradle_file.write_text(source.rstrip() + "\n\n" + signing_block.lstrip(), encoding="utf-8")
           final_source = gradle_file.read_text(encoding="utf-8")
           for required in (
               marker,
