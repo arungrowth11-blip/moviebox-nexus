@@ -637,15 +637,39 @@ jobs:
           chmod 600 "$keystore"
           echo "Decoded PKCS12 keystore size: $(wc -c < "$keystore") bytes."
 
-          phase="PKCS12 alias/password inspection"
+          phase="PKCS12 store-password inspection"
+          certificate_inventory="$RUNNER_TEMP/moviebox-release-certificate-inventory.txt"
           certificate_info="$RUNNER_TEMP/moviebox-release-certificate.txt"
           keytool_error="$RUNNER_TEMP/moviebox-release-keytool-error.txt"
+
+          # First inspect the store without selecting an alias. keytool writes
+          # some PKCS12 errors to stdout, not stderr; capture both so CI can
+          # distinguish a bad store password from a missing alias.
+          if ! keytool -list -v -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" > "$certificate_inventory" 2> "$keytool_error"; then
+            echo "::error::PKCS12 store-password inspection failed. Safe keytool diagnostics follow:"
+            grep -Ei 'keytool error|exception|password|integrity|tamper|invalid|failed|error' \
+              "$certificate_inventory" "$keytool_error" | head -n 12 || true
+            exit 1
+          fi
+
+          phase="PKCS12 alias inspection"
+          if ! grep -Fqx "Alias name: $ANDROID_KEY_ALIAS" "$certificate_inventory"; then
+            echo "::error::Configured release alias was not found in the readable PKCS12 store."
+            echo "Available aliases (public metadata only):"
+            sed -n 's/^Alias name: /- /p' "$certificate_inventory"
+            exit 1
+          fi
+
+          phase="PKCS12 private-key entry inspection"
           if ! keytool -list -v -storetype PKCS12 \
             -keystore "$keystore" \
             -storepass "$ANDROID_KEYSTORE_PASSWORD" \
             -alias "$ANDROID_KEY_ALIAS" > "$certificate_info" 2> "$keytool_error"; then
-            echo "::error::keytool could not open the PKCS12 keystore with the configured password and alias."
-            sed -n '1,12p' "$keytool_error"
+            echo "::error::The configured PKCS12 alias could not be inspected. Safe keytool diagnostics follow:"
+            grep -Ei 'keytool error|exception|password|integrity|tamper|invalid|failed|error' \
+              "$certificate_info" "$keytool_error" | head -n 12 || true
             exit 1
           fi
           entry_type="$(sed -n 's/^Entry type: //p' "$certificate_info" | head -n 1)"
