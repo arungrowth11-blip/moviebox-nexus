@@ -580,5 +580,4 @@ void main() {
     expect(find.text('MOVIEBOX '), findsOneWidget);
     expect(find.text('Home'), findsOneWidget);
   });
-
 }
