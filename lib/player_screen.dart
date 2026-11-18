@@ -205,7 +205,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       } else if (knownPeers > 0) {
         message = 'Metadata ready • $knownPeers peers discovered • connecting…';
       } else {
-        message = 'Metadata ready • waiting for a reachable peer to send verified video pieces…';
+        message =
+            'Metadata ready • waiting for a reachable peer to send verified video pieces…';
       }
 
       final technical = <String>[
@@ -580,7 +581,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       debugPrint('MovieBox torrent first-byte failure: $details');
       setState(() {
         _loading = false;
-        _torrentStatusMessage = 'Torrent metadata/player initialized, but no video body bytes were sent.';
+        _torrentStatusMessage =
+            'Torrent metadata/player initialized, but no video body bytes were sent.';
         _torrentTechnicalLine = details;
         _error =
             'No playable video bytes have been emitted by this torrent source yet. '

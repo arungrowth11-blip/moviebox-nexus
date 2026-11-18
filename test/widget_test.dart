@@ -98,144 +98,141 @@ void main() {
     },
   );
 
-  test(
-    'IPTV enrichment joins quality-suffixed IDs and unique channel names',
-    () {
-      final countries = <String, dynamic>{
-        'IN': {'name': 'India', 'flag': '🇮🇳'},
-        'GB': {'name': 'United Kingdom', 'flag': '🇬🇧'},
-        'US': {'name': 'United States', 'flag': '🇺🇸'},
-        'UA': {'name': 'Ukraine', 'flag': '🇺🇦'},
-      };
-      final categories = <String, dynamic>{
-        'news': 'News',
-        'sports': 'Sports',
-        'general': 'General',
-        'religious': 'Religious',
-      };
-      final enriched = CatalogEngine().enrichLiveTvChannels(
-        <Map<String, String>>[
-          {
-            'id': 'BBCOne.uk',
-            'sourceId': 'BBCOne.uk@HD',
-            'name': 'BBC One',
-            'url': 'https://example.test/bbc.m3u8',
-            'group': 'General',
-            'country': '',
-            'language': 'English',
-          },
-          {
-            // A non-empty playlist ID may still not exist in iptv-org's channel index.
-            'id': 'NDTV24x7',
-            'sourceId': 'NDTV24x7',
-            'name': 'NDTV 24x7',
-            'url': 'https://example.test/ndtv.m3u8',
-            'group': 'News',
-            'country': '',
-            'countryRaw': '',
-            'language': 'Hindi',
-          },
-          {
-            // Preserve and resolve an explicit country name if the ID has no suffix.
-            'id': 'LocalNewsFeed',
-            'sourceId': 'LocalNewsFeed',
-            'name': 'Local News',
-            'url': 'https://example.test/local.m3u8',
-            'group': 'News',
-            'country': '',
-            'countryRaw': 'United Kingdom',
-            'language': 'English',
-          },
-          {
-            'id': 'IndependentFeed',
-            'sourceId': 'IndependentFeed',
-            'name': 'Independent TV',
-            'url': 'https://example.test/independent.m3u8',
-            'group': 'General',
-            'country': '',
-            'countryRaw': 'United States',
-            'language': 'English',
-          },
-          {
-            'id': 'OnePlusOneFeed',
-            'sourceId': 'OnePlusOneFeed',
-            'name': '1+1 International HD (720p)',
-            'url': 'https://example.test/oneplusone.m3u8',
-            'group': 'General',
-            'country': '',
-            'language': '',
-          },
-          {
-            'id': '3ABNFeed',
-            'sourceId': '3ABNFeed',
-            'name': '3ABN English (720p)',
-            'url': 'https://example.test/3abn.m3u8',
-            'group': 'Religious',
-            'country': '',
-            'language': 'English',
-          },
-          {
-            'id': '',
-            'sourceId': '',
-            'name': 'Shared Name',
-            'url': 'https://example.test/shared.m3u8',
-            'group': 'General',
-            'country': '',
-            'language': '',
-          },
-        ],
+  test('IPTV enrichment joins quality-suffixed IDs and unique channel names', () {
+    final countries = <String, dynamic>{
+      'IN': {'name': 'India', 'flag': '🇮🇳'},
+      'GB': {'name': 'United Kingdom', 'flag': '🇬🇧'},
+      'US': {'name': 'United States', 'flag': '🇺🇸'},
+      'UA': {'name': 'Ukraine', 'flag': '🇺🇦'},
+    };
+    final categories = <String, dynamic>{
+      'news': 'News',
+      'sports': 'Sports',
+      'general': 'General',
+      'religious': 'Religious',
+    };
+    final enriched = CatalogEngine().enrichLiveTvChannels(
+      <Map<String, String>>[
         {
-          'channels': <String, dynamic>{
-            'BBCOne.uk': {
-              'country': 'GB',
-              'categories': ['news'],
-            },
-          },
-          'channelNames': <String, dynamic>{
-            'ndtv 24x7': {
-              'country': 'IN',
-              'categories': ['news'],
-            },
-            'local news': {
-              'country': 'GB',
-              'categories': ['news'],
-            },
-            '1 1 international': {
-              'country': 'UA',
-              'categories': ['general'],
-            },
-            '3abn': {
-              'country': 'US',
-              'categories': ['religious'],
-            },
-            'shared name': null,
-          },
-          'countries': countries,
-          'categories': categories,
+          'id': 'BBCOne.uk',
+          'sourceId': 'BBCOne.uk@HD',
+          'name': 'BBC One',
+          'url': 'https://example.test/bbc.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': 'English',
         },
-      );
+        {
+          // A non-empty playlist ID may still not exist in iptv-org's channel index.
+          'id': 'NDTV24x7',
+          'sourceId': 'NDTV24x7',
+          'name': 'NDTV 24x7',
+          'url': 'https://example.test/ndtv.m3u8',
+          'group': 'News',
+          'country': '',
+          'countryRaw': '',
+          'language': 'Hindi',
+        },
+        {
+          // Preserve and resolve an explicit country name if the ID has no suffix.
+          'id': 'LocalNewsFeed',
+          'sourceId': 'LocalNewsFeed',
+          'name': 'Local News',
+          'url': 'https://example.test/local.m3u8',
+          'group': 'News',
+          'country': '',
+          'countryRaw': 'United Kingdom',
+          'language': 'English',
+        },
+        {
+          'id': 'IndependentFeed',
+          'sourceId': 'IndependentFeed',
+          'name': 'Independent TV',
+          'url': 'https://example.test/independent.m3u8',
+          'group': 'General',
+          'country': '',
+          'countryRaw': 'United States',
+          'language': 'English',
+        },
+        {
+          'id': 'OnePlusOneFeed',
+          'sourceId': 'OnePlusOneFeed',
+          'name': '1+1 International HD (720p)',
+          'url': 'https://example.test/oneplusone.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': '',
+        },
+        {
+          'id': '3ABNFeed',
+          'sourceId': '3ABNFeed',
+          'name': '3ABN English (720p)',
+          'url': 'https://example.test/3abn.m3u8',
+          'group': 'Religious',
+          'country': '',
+          'language': 'English',
+        },
+        {
+          'id': '',
+          'sourceId': '',
+          'name': 'Shared Name',
+          'url': 'https://example.test/shared.m3u8',
+          'group': 'General',
+          'country': '',
+          'language': '',
+        },
+      ],
+      {
+        'channels': <String, dynamic>{
+          'BBCOne.uk': {
+            'country': 'GB',
+            'categories': ['news'],
+          },
+        },
+        'channelNames': <String, dynamic>{
+          'ndtv 24x7': {
+            'country': 'IN',
+            'categories': ['news'],
+          },
+          'local news': {
+            'country': 'GB',
+            'categories': ['news'],
+          },
+          '1 1 international': {
+            'country': 'UA',
+            'categories': ['general'],
+          },
+          '3abn': {
+            'country': 'US',
+            'categories': ['religious'],
+          },
+          'shared name': null,
+        },
+        'countries': countries,
+        'categories': categories,
+      },
+    );
 
-      expect(enriched[0]['countryName'], 'United Kingdom');
-      expect(enriched[0]['countryCode'], 'GB');
-      expect(enriched[0]['categoryNames'], 'News');
-      expect(enriched[1]['countryName'], 'India');
-      expect(enriched[1]['countryCode'], 'IN');
-      expect(enriched[1]['categoryNames'], 'News');
-      expect(enriched[2]['countryName'], 'United Kingdom');
-      expect(enriched[2]['countryCode'], 'GB');
-      expect(enriched[3]['countryName'], 'United States');
-      expect(enriched[3]['countryCode'], 'US');
-      expect(enriched[4]['countryName'], 'Ukraine');
-      expect(enriched[4]['countryCode'], 'UA');
-      expect(enriched[4]['categoryNames'], 'General');
-      expect(enriched[5]['countryName'], 'United States');
-      expect(enriched[5]['countryCode'], 'US');
-      expect(enriched[5]['categoryNames'], 'Religious');
-      // Duplicate official names are ambiguous; never guess a country.
-      expect(enriched[6]['countryName'], 'Country not tagged');
-      expect(enriched[6]['countryCode'], '');
-    },
-  );
+    expect(enriched[0]['countryName'], 'United Kingdom');
+    expect(enriched[0]['countryCode'], 'GB');
+    expect(enriched[0]['categoryNames'], 'News');
+    expect(enriched[1]['countryName'], 'India');
+    expect(enriched[1]['countryCode'], 'IN');
+    expect(enriched[1]['categoryNames'], 'News');
+    expect(enriched[2]['countryName'], 'United Kingdom');
+    expect(enriched[2]['countryCode'], 'GB');
+    expect(enriched[3]['countryName'], 'United States');
+    expect(enriched[3]['countryCode'], 'US');
+    expect(enriched[4]['countryName'], 'Ukraine');
+    expect(enriched[4]['countryCode'], 'UA');
+    expect(enriched[4]['categoryNames'], 'General');
+    expect(enriched[5]['countryName'], 'United States');
+    expect(enriched[5]['countryCode'], 'US');
+    expect(enriched[5]['categoryNames'], 'Religious');
+    // Duplicate official names are ambiguous; never guess a country.
+    expect(enriched[6]['countryName'], 'Country not tagged');
+    expect(enriched[6]['countryCode'], '');
+  });
 
   test(
     'multiple IPTV feeds are merged while exact duplicate URLs are removed',

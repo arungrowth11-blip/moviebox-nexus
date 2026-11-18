@@ -30,10 +30,10 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Flutter stable
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.50.0'
           cache: true
 
       - name: Recreate a clean Android scaffold and restore app source
@@ -786,10 +786,10 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Flutter stable
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.50.0'
           cache: true
 
       - name: Resolve dependencies for integration test

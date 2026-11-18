@@ -29,6 +29,12 @@ jobs:
         with:
           flutter-version: '3.50.0'
 
+      - name: Resolve package language versions before formatting
+        run: flutter pub get
+
+      - name: Record pinned Dart SDK
+        run: dart --version
+
       - name: Apply canonical Dart formatting and commit once
         id: dart-format
         shell: bash

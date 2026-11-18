@@ -646,7 +646,8 @@ class AddonManager {
     'Torrentio': 'https://torrentio.strem.fun/manifest.json',
     'MediaFusion': 'https://mediafusion.elfhosted.com/manifest.json',
     'Cinemeta': 'https://v3-cinemeta.strem.io/manifest.json',
-    'Streaming Catalogs': 'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
+    'Streaming Catalogs':
+        'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/manifest.json',
     'IndiaStreams': 'https://indiastreams.rdata.in/manifest.json',
   };
 
@@ -934,8 +935,9 @@ class CatalogEngine {
               final rawSeeders =
                   item['seeders'] ??
                   (behaviorHints is Map ? behaviorHints['seeders'] : null);
-              final titleSeeders = RegExp(r'(?:👤|👥)\s*(\d{1,5})')
-                  .firstMatch(title);
+              final titleSeeders = RegExp(
+                r'(?:👤|👥)\s*(\d{1,5})',
+              ).firstMatch(title);
               final seeders = rawSeeders is num
                   ? rawSeeders.toInt()
                   : int.tryParse(rawSeeders?.toString() ?? '') ??
@@ -1205,8 +1207,9 @@ class CatalogEngine {
         await response.stream.listen((_) {}).cancel();
         return false;
       }
-      final prefix = await _readResponsePrefix(response.stream)
-          .timeout(const Duration(seconds: 5));
+      final prefix = await _readResponsePrefix(
+        response.stream,
+      ).timeout(const Duration(seconds: 5));
       if (prefix.isEmpty) return false;
 
       final text = utf8
@@ -4719,12 +4722,14 @@ class _AddonPage extends StatelessWidget {
     try {
       await onAdd(url);
       if (context.mounted)
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Addon installed.')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Addon installed.')));
     } catch (e) {
       if (context.mounted)
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Addon install failed: $e')));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Addon install failed: $e')));
     }
   }
 
