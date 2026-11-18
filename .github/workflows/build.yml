@@ -711,28 +711,52 @@ jobs:
           adb install -r "$apk"
           adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"
           adb logcat -c
-          start_output="$(adb shell am start -W -n com.moviebox.nexus/.MainActivity 2>&1)"
+          # ADB's -W wait can time out while the launcher has already started
+          # the activity. Verify the actual Flutter first frame and foreground
+          # state rather than treating that wait timeout as success or failure.
+          start_output="$(adb shell am start -n com.moviebox.nexus/.MainActivity 2>&1)"
           printf '%s\n' "$start_output" | tee "$diagnostics_dir/activity-start.txt"
-          printf '%s' "$start_output" | grep -q 'Status: ok'
 
           app_pid=""
-          for attempt in $(seq 1 30); do
+          first_frame_verified=0
+          for attempt in $(seq 1 60); do
             app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
-            if [ -n "$app_pid" ]; then break; fi
+            activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
+            window_dump="$(adb shell dumpsys window 2>&1 || true)"
+            resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
+            focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
+            first_window_drawn="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'firstWindowDrawn=true' || true)"
+            echo "Launch poll ${attempt}/60: pid=${app_pid:-missing}; resumed=${resumed_line:-missing}; focusedApp=${focused_app_line:-missing}; firstFrame=${first_window_drawn:-pending}"
+            if [ -n "$app_pid" ] && \
+               [[ "$resumed_line" == *com.moviebox.nexus* ]] && \
+               [[ "$focused_app_line" == *com.moviebox.nexus* ]] && \
+               [ -n "$first_window_drawn" ]; then
+              first_frame_verified=1
+              break
+            fi
             sleep 2
           done
+
           test -n "$app_pid" || { echo "::error::Release APK process did not stay alive after explicit launch."; exit 1; }
+          test "$first_frame_verified" -eq 1 || {
+            echo "::error::Release APK did not draw its first Flutter window and become the resumed/focused app within 120 seconds."
+            exit 1
+          }
           echo "Release APK process is alive: $app_pid"
-          sleep 5
+          sleep 3
 
           activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
           window_dump="$(adb shell dumpsys window 2>&1 || true)"
-          resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|mResumedActivity|ResumedActivity' || true)"
-          focus_line="$(printf '%s\n' "$window_dump" | grep -m 1 -E 'mCurrentFocus|mFocusedApp' || true)"
-          echo "Resumed activity: ${resumed_line:-not reported}"
-          echo "Focused window: ${focus_line:-not reported}"
-          if [[ "$resumed_line$focus_line" != *com.moviebox.nexus* ]]; then
-            echo "::error::Installed APK process exists but app is not the foreground activity/window."
+          resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
+          focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
+          first_window_drawn="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'firstWindowDrawn=true' || true)"
+          echo "Final resumed activity: ${resumed_line:-not reported}"
+          echo "Final focused app: ${focused_app_line:-not reported}"
+          echo "Final first-window state: ${first_window_drawn:-not drawn}"
+          if [[ "$resumed_line" != *com.moviebox.nexus* ]] || \
+             [[ "$focused_app_line" != *com.moviebox.nexus* ]] || \
+             [ -z "$first_window_drawn" ]; then
+            echo "::error::Installed APK did not keep its first Flutter window in the foreground."
             exit 1
           fi
 
@@ -741,7 +765,7 @@ jobs:
             echo "::error::Release APK emitted a fatal native/plugin startup error."
             exit 1
           fi
-          echo "Release APK install, process, native startup and foreground launch verified."
+          echo "Release APK install, signature, native process, first Flutter frame and foreground launch verified."
           MOVIEBOX_RELEASE_VERIFY
           chmod +x "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
 
@@ -753,7 +777,7 @@ jobs:
           arch: x86_64
           profile: pixel_2
           emulator-boot-timeout: 600
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -memory 2048
+          emulator-options: -no-window -gpu swiftshader -no-snapshot -no-boot-anim -camera-back none -memory 2048
           disable-animations: true
           script: bash "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
 
