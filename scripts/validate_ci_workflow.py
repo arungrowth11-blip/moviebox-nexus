@@ -47,7 +47,7 @@ def main() -> int:
     if "Download already-published release APK" in integration:
         raise SystemExit("Release APK download is still coupled to integration-tests.")
 
-    expected_signing_sha256 = "6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
+    expected_signing_sha256 = "6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
     required_signing = (
         "ANDROID_KEYSTORE_BASE64",
         "ANDROID_KEYSTORE_PASSWORD",
