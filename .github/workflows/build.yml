@@ -883,8 +883,8 @@ jobs:
           apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           test -x "$apksigner"
           "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
-          expected_cert_sha256="6588a39dd9b56035c9ba957e243da9b156437e57aafea9a1acf92877544c9d2f"
-          actual_cert_sha256="$(sed -n 's/^[[:space:]]*Signer #1 certificate SHA-256 digest: *//p' "$diagnostics_dir/apksigner.txt" | head -n 1 | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          expected_cert_sha256="6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
+          actual_cert_sha256="$(awk -F': ' '/Signer #1 certificate SHA-256 digest:|V[0-9]+ Signer: certificate SHA-256 digest:/ {print $NF; exit}' "$diagnostics_dir/apksigner.txt" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
           test -n "$actual_cert_sha256" || {
             echo "::error::Release APK signer SHA-256 fingerprint was not reported."
             exit 1
