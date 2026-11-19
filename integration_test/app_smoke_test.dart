@@ -148,6 +148,13 @@ void main() {
     expect(uri!.host, '10.0.2.2');
     expect(uri.path, '/moviebox-ci-video.mp4');
 
+    // Integration-test widget teardown can leave the host lifecycle paused.
+    // Restore foreground state before asking Media3 to start playback.
+    if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+    }
+
     final prepared = Completer<Duration>();
     final media3Ready = Completer<BetterPlayerController>();
     try {
@@ -156,6 +163,7 @@ void main() {
           home: PlayerScreen(
             title: 'MovieBox Nexus real MP4 QA sample',
             url: mediaUrl,
+            headers: const <String, String>{'Range': 'bytes=0-'},
             onSave: (_) async {},
             onPrepared: (elapsed) {
               if (!prepared.isCompleted) prepared.complete(elapsed);
