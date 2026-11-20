@@ -230,6 +230,17 @@ void main() {
       final sourceUri = parsedSourceUri!;
       expect(sourceUri.host, '10.0.2.2');
 
+      // A preceding integration test can leave the host lifecycle paused.
+      // BetterPlayer may report initialized/isPlaying while ExoPlayer's clock
+      // remains frozen until the test host is explicitly resumed.
+      debugPrint(
+        'MovieBox CI lifecycle before 503 retry player: ${tester.binding.lifecycleState}',
+      );
+      if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
+        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        await tester.pump();
+      }
+
       final upstreamClient = HttpClient()
         ..connectionTimeout = const Duration(seconds: 15);
       final retryStatuses = <int>[];
