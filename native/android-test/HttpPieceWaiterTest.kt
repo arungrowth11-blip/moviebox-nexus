@@ -35,6 +35,25 @@ class HttpPieceWaiterTest {
         assertTrue(HttpRangePolicy.shouldWaitForFirstPiece("get"))
     }
 
+
+    @Test
+    fun initialPieceWaitBudgetAllowsSlowPeerSchedulingBeyondFourSeconds() {
+        assertEquals(45_000L, HttpRangePolicy.INITIAL_PIECE_WAIT_MS)
+        val clock = FakeClock()
+        val waiter = HttpPieceWaiter(
+            hasPiece = { clock.now >= 4_500L },
+            nowMs = { clock.now },
+            sleepMs = clock::sleep
+        )
+        val ready = waiter.await(
+            pieceIndex = 0,
+            timeoutMs = HttpRangePolicy.INITIAL_PIECE_WAIT_MS,
+            isCancelled = { false }
+        )
+        assertTrue(ready)
+        assertEquals(4_580L, clock.now)
+    }
+
     @Test
     fun initialPieceTimeoutProducesRetryable503Decision() {
         val decision = HttpRangePolicy.beforeHeaders(pieceReady = false, cancelled = false)
