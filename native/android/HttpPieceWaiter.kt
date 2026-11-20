@@ -137,3 +137,19 @@ internal object HttpRangePolicy {
         return min(min(remainingBytes, pieceRemaining.toLong()), maxBufferBytes.toLong()).toInt()
     }
 }
+
+/**
+ * Distinguishes a valid HTTP request-side half-close from a socket read failure.
+ * EOF on the request direction does not prove the peer has closed its response
+ * direction; only an actual read error should cancel a pending body wait.
+ */
+internal enum class HttpRequestReadOutcome {
+    END_OF_STREAM,
+    IO_ERROR
+}
+
+internal object HttpRequestReadPolicy {
+    fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
+        outcome == HttpRequestReadOutcome.IO_ERROR
+}
+
