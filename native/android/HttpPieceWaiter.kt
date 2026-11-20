@@ -54,6 +54,9 @@ internal data class HttpByteRange(
 
 /** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
 internal object HttpRangePolicy {
+    // Real swarms can take several seconds to schedule the first requested piece.
+    // Keep the first response wait aligned with the bounded mid-stream piece wait.
+    const val INITIAL_PIECE_WAIT_MS = 45_000L
     const val RETRY_AFTER_SECONDS = 1
 
     fun shouldWaitForFirstPiece(method: String): Boolean =
