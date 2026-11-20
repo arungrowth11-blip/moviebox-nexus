@@ -911,7 +911,8 @@ jobs:
             activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
             window_dump="$(adb shell dumpsys window windows 2>&1 || true)"
             resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
-            focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
+            # Android 16 reports mFocusedApp in dumpsys activity, not dumpsys window.
+            focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
             main_window_block="$(printf '%s\n' "$window_dump" | awk '
               /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
               capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
@@ -946,7 +947,7 @@ jobs:
           activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
           window_dump="$(adb shell dumpsys window windows 2>&1 || true)"
           resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
-          focused_app_line="$(printf '%s\n' "$window_dump" | grep -m 1 'mFocusedApp=' || true)"
+          focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
           main_window_block="$(printf '%s\n' "$window_dump" | awk '
             /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
             capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
