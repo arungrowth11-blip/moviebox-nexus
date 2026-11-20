@@ -752,7 +752,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
-        private const val FIRST_RESPONSE_PIECE_WAIT_MS = 4_000L
+        private const val FIRST_RESPONSE_PIECE_WAIT_MS = HttpRangePolicy.INITIAL_PIECE_WAIT_MS
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12
