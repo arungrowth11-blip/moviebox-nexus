@@ -433,21 +433,26 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                 }
                 // Watch the request side independently while a piece is pending.
-                // HTTP clients close the range socket when seeking/releasing a load;
-                // a short read timeout lets us detect that FIN without blocking the
-                // stream worker for the full piece deadline.
+                // EOF here means the client half-closed its request-output direction.
+                // That is valid for HTTP: the client may still be waiting for the
+                // response on the opposite direction, so EOF must not cancel the
+                // torrent-piece wait. A socket read error remains a cancellation signal.
                 client.soTimeout = 250
                 Thread({
                     while (!requestCancelled.get() && !client.isClosed) {
                         try {
                             if (reader.readLine() == null) {
-                                requestCancelled.set(true)
+                                if (HttpRequestReadPolicy.shouldCancel(HttpRequestReadOutcome.END_OF_STREAM)) {
+                                    requestCancelled.set(true)
+                                }
                                 break
                             }
                         } catch (_: java.net.SocketTimeoutException) {
-                            // No pipelined request data; continue watching for FIN.
+                            // No pipelined request data; continue watching.
                         } catch (_: Exception) {
-                            requestCancelled.set(true)
+                            if (HttpRequestReadPolicy.shouldCancel(HttpRequestReadOutcome.IO_ERROR)) {
+                                requestCancelled.set(true)
+                            }
                             break
                         }
                     }
@@ -747,7 +752,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
-        private const val FIRST_RESPONSE_PIECE_WAIT_MS = 4_000L
+        private const val FIRST_RESPONSE_PIECE_WAIT_MS = HttpRangePolicy.INITIAL_PIECE_WAIT_MS
         private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12

@@ -54,6 +54,9 @@ internal data class HttpByteRange(
 
 /** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
 internal object HttpRangePolicy {
+    // Real swarms can take several seconds to schedule the first requested piece.
+    // Keep the first response wait aligned with the bounded mid-stream piece wait.
+    const val INITIAL_PIECE_WAIT_MS = 45_000L
     const val RETRY_AFTER_SECONDS = 1
 
     fun shouldWaitForFirstPiece(method: String): Boolean =
@@ -137,3 +140,19 @@ internal object HttpRangePolicy {
         return min(min(remainingBytes, pieceRemaining.toLong()), maxBufferBytes.toLong()).toInt()
     }
 }
+
+/**
+ * Distinguishes a valid HTTP request-side half-close from a socket read failure.
+ * EOF on the request direction does not prove the peer has closed its response
+ * direction; only an actual read error should cancel a pending body wait.
+ */
+internal enum class HttpRequestReadOutcome {
+    END_OF_STREAM,
+    IO_ERROR
+}
+
+internal object HttpRequestReadPolicy {
+    fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
+        outcome == HttpRequestReadOutcome.IO_ERROR
+}
+
