@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: moviebox-nexus-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -17,16 +21,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Validate CI job isolation and diagnostics
+        run: python3 scripts/validate_ci_workflow.py
+
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
-      - name: Set up Flutter stable
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.50.0'
           cache: true
 
       - name: Recreate a clean Android scaffold and restore app source
@@ -50,6 +57,7 @@ jobs:
           cp -a lib "$backup_dir/lib"
           if [ -d test ]; then cp -a test "$backup_dir/test"; fi
           cp pubspec.yaml "$backup_dir/pubspec.yaml"
+          if [ -d native/android ]; then cp -a native/android "$backup_dir/native-android"; fi
 
           if [ -s android/app/src/main/res/drawable/tv_banner.png ]; then
             mkdir -p "$backup_dir/tv_banner"
@@ -90,6 +98,14 @@ jobs:
             cp -a "$backup_dir/test" test
           fi
           cp "$backup_dir/pubspec.yaml" pubspec.yaml
+          if [ -d "$backup_dir/native-android" ]; then
+            mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
+            cp "$backup_dir/native-android/MainActivity.kt" android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+            cp "$backup_dir/native-android/EmbeddedTorrentEngine.kt" android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+            cp "$backup_dir/native-android/HttpPieceWaiter.kt" android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
+          fi
+          mkdir -p android/app/src/test/kotlin/com/moviebox/nexus
+          cp native/android-test/HttpPieceWaiterTest.kt android/app/src/test/kotlin/com/moviebox/nexus/HttpPieceWaiterTest.kt
 
           if [ -s "$backup_dir/tv_banner/tv_banner.png" ]; then
             mkdir -p android/app/src/main/res/drawable
@@ -126,15 +142,19 @@ jobs:
               repositoryHandler.google()
           }
 
-          // Gradle plugin marker artifacts are often hosted on the Plugin Portal,
-          // not Maven Central. Keep mirrors first, but retain these official repos.
+          // Plugin markers and Gradle's own Kotlin DSL plugin must resolve from
+          // the Plugin Portal first. Keep mirrors as fallbacks for normal modules.
           gradle.beforeSettings { settings ->
+              settings.pluginManagement.repositories.gradlePluginPortal()
+              settings.pluginManagement.repositories.maven {
+                  name = 'GradlePluginPortalDirect'
+                  url = new URI('https://plugins.gradle.org/m2/')
+              }
+              addGoogleRepository.call(settings.pluginManagement.repositories)
               addMovieBoxMirrors.call(
                   settings.pluginManagement.repositories,
-                  'Plugin'
+                  'PluginFallback'
               )
-              addGoogleRepository.call(settings.pluginManagement.repositories)
-              settings.pluginManagement.repositories.gradlePluginPortal()
 
               addMovieBoxMirrors.call(
                   settings.dependencyResolutionManagement.repositories,
@@ -143,7 +163,27 @@ jobs:
               addGoogleRepository.call(
                   settings.dependencyResolutionManagement.repositories
               )
-              println "[MovieBox CI] Plugin Portal + Maven mirrors configured before settings evaluation: ${settings.settingsDir}"
+              settings.dependencyResolutionManagement.repositories.maven {
+                  name = 'FrostWireJlibtorrent'
+                  url = new URI('https://dl.frostwire.com/maven')
+                  content { includeGroup('com.frostwire') }
+              }
+              println "[MovieBox CI] Plugin Portal + Maven mirrors + FrostWire repository configured before settings evaluation: ${settings.settingsDir}"
+          }
+
+          // Kotlin Gradle Plugin may inherit JDK 21 as its default bytecode target,
+          // while Android JavaCompile tasks in Flutter plugins remain at Java 17.
+          // Align every KotlinCompile task (including third-party Flutter plugins)
+          // with Android's Java 17 baseline before Gradle builds the task graph.
+          gradle.projectsEvaluated {
+              rootProject.allprojects { project ->
+                  project.tasks.configureEach { task ->
+                      if (task.class.name.contains('KotlinCompile')) {
+                          task.kotlinOptions.jvmTarget = '17'
+                          println "[MovieBox CI] Kotlin JVM target 17: ${project.path}:${task.name}"
+                      }
+                  }
+              }
           }
 
           // Do not mutate project repositories here. The Android and Flutter
@@ -155,12 +195,12 @@ jobs:
           test -s "$RUNNER_TEMP/moviebox-maven-mirrors.init.gradle"
           echo "Gradle init script created."
 
-      - name: Cache verified Gradle 9.3.1 distribution
+      - name: Cache verified Gradle 9.5.0 distribution
         id: gradle-dist-cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/gradle-9.3.1
-          key: gradle-9.3.1-bin-${{ runner.os }}-verified-v1
+          path: ${{ runner.temp }}/gradle-9.5.0
+          key: gradle-9.5.0-bin-${{ runner.os }}-verified-v1
 
       - name: Download and verify Gradle distribution with mirror fallback
         if: steps.gradle-dist-cache.outputs.cache-hit != 'true'
@@ -168,8 +208,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION="9.3.1"
-          EXPECTED_SHA256="b266d5ff6b90eada6dc3b20cb090e3731302e553a27c5d3e4df1f0d76beaff06"
+          VERSION="9.5.0"
+          EXPECTED_SHA256="553c78f50dafcd54d65b9a444649057857469edf836431389695608536d6b746"
           ARCHIVE="$RUNNER_TEMP/gradle-${VERSION}-bin.zip"
           EXTRACT_DIR="$RUNNER_TEMP/gradle-extract"
           INSTALL_DIR="$RUNNER_TEMP/gradle-${VERSION}"
@@ -221,7 +261,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          GRADLE_HOME="$RUNNER_TEMP/gradle-9.3.1"
+          GRADLE_HOME="$RUNNER_TEMP/gradle-9.5.0"
           test -x "$GRADLE_HOME/bin/gradle"
           echo "$GRADLE_HOME/bin" >> "$GITHUB_PATH"
 
@@ -242,6 +282,21 @@ jobs:
           chmod +x android/gradlew
 
           "$GRADLE_HOME/bin/gradle" --version
+      - name: Verify Gradle Kotlin DSL plugin portal
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_url="https://plugins.gradle.org/m2/org/gradle/kotlin/kotlin-dsl/org.gradle.kotlin.kotlin-dsl.gradle.plugin/6.4.2/org.gradle.kotlin.kotlin-dsl.gradle.plugin-6.4.2.pom"
+          echo "Checking Gradle Kotlin DSL marker: $marker_url"
+          status="$(curl --head --location --silent --show-error \
+            --connect-timeout 20 --max-time 90 \
+            --output /dev/null --write-out '%{http_code}' "$marker_url" || true)"
+          echo "Gradle Plugin Portal marker HTTP status:" "$status"
+          if [ "$status" != "200" ]; then
+            echo "::error::Gradle Plugin Portal marker is not reachable; cannot compile Flutter's Gradle build logic."
+            exit 1
+          fi
+
       - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -253,6 +308,7 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
           import struct
           import xml.etree.ElementTree as ET
           import zlib
@@ -342,6 +398,16 @@ jobs:
           if not gradle_app.is_file():
               raise SystemExit(f'Missing app Gradle Kotlin DSL file: {gradle_app}')
           gradle_text = gradle_app.read_text(encoding='utf-8')
+          # Native code is already shipped as prebuilt FrostWire and LibVLC AARs.
+          # This app has no C/C++ target, so an NDK download is unnecessary.
+          gradle_text, ndk_pin_count = re.subn(
+              r'^\s*ndkVersion\s*=\s*flutter\.ndkVersion\s*\n?',
+              '',
+              gradle_text,
+              flags=re.MULTILINE,
+          )
+          if ndk_pin_count:
+              print(f'Removed unnecessary generated NDK version pin ({ndk_pin_count}).')
           pick_first = 'pickFirsts += "lib/**/libc++_shared.so"'
           if pick_first not in gradle_text:
               gradle_text += (
@@ -354,6 +420,8 @@ jobs:
                   '}\n'
               )
               gradle_app.write_text(gradle_text, encoding='utf-8')
+
+          gradle_app.write_text(gradle_text, encoding='utf-8')
 
           # AndroidX WorkManager creates its Room database through reflection during
           # AndroidX Startup. R8 full mode can strip the generated no-arg constructor,
@@ -386,6 +454,8 @@ jobs:
               )
 
           final_gradle = gradle_app.read_text(encoding='utf-8')
+          if re.search(r'^\s*ndkVersion\s*=\s*flutter\.ndkVersion', final_gradle, flags=re.MULTILINE):
+              raise SystemExit('Unexpected NDK version pin would trigger an SDK-manager download.')
           final_rules = proguard.read_text(encoding='utf-8')
           if '"proguard-rules.pro"' not in final_gradle:
               raise SystemExit('ERROR: Release build does not reference proguard-rules.pro')
@@ -399,11 +469,137 @@ jobs:
           print('Release Gradle config references proguard-rules.pro')
           PY
 
+      - name: Configure FrostWire embedded torrent engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s native/android/MainActivity.kt
+          test -s native/android/EmbeddedTorrentEngine.kt
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          frostwire_repository = '''repositories {
+              maven {
+                  url = uri("https://dl.frostwire.com/maven")
+                  content { includeGroup("com.frostwire") }
+              }
+          }
+          '''
+
+          app_gradle = Path('android/app/build.gradle.kts')
+          app_text = app_gradle.read_text(encoding='utf-8')
+
+          # Keep the generated Android namespace/applicationId aligned with the
+          # package declared by the restored native MainActivity and engine.
+          # Otherwise Flutter's manifest resolves .MainActivity to a different
+          # package and the MethodChannel handler is never registered.
+          for key in ('namespace', 'applicationId'):
+              pattern = rf'({key}\s*=\s*)["\'][^"\']+["\']'
+              app_text, count = re.subn(
+                  pattern, rf'\1"com.moviebox.nexus"', app_text, count=1
+              )
+              if count != 1:
+                  raise SystemExit(f'Could not set Android {key} to com.moviebox.nexus.')
+
+          # Flutter's generated Android project prefers project-level repositories.
+          # Add FrostWire here, in addition to the settings-level mirror, because
+          # Gradle reports that project repositories override settings repositories.
+          if 'https://dl.frostwire.com/maven' not in app_text:
+              app_text += '\n\n' + frostwire_repository + '\n'
+
+          dependency = 'jlibtorrent-android:2.0.15.3@aar'
+          if dependency not in app_text:
+              app_text += '''
+          dependencies {
+              implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")
+          }
+          '''
+
+          min_sdk_pattern = r'minSdk\s*=\s*flutter\.minSdkVersion'
+          if re.search(min_sdk_pattern, app_text):
+              app_text = re.sub(
+                  min_sdk_pattern,
+                  'minSdk = maxOf(26, flutter.minSdkVersion)',
+                  app_text,
+              )
+          elif 'minSdk = maxOf(26, flutter.minSdkVersion)' not in app_text:
+              raise SystemExit('Could not locate Flutter minSdk declaration to raise it to 26.')
+
+          app_gradle.write_text(app_text, encoding='utf-8')
+          final_app = app_gradle.read_text(encoding='utf-8')
+          if 'https://dl.frostwire.com/maven' not in final_app:
+              raise SystemExit('FrostWire Maven repository is missing from the app project repositories.')
+          if dependency not in final_app:
+              raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
+          if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
+              raise SystemExit('Android minSdk was not raised to the jlibtorrent requirement.')
+
+          init_script = Path(os.environ['RUNNER_TEMP']) / 'moviebox-maven-mirrors.init.gradle'
+          init_text = init_script.read_text(encoding='utf-8')
+          if 'https://dl.frostwire.com/maven' not in init_text:
+              raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
+          if "task.kotlinOptions.jvmTarget = '17'" not in init_text:
+              raise SystemExit('Kotlin JVM target alignment is missing from the Gradle init script.')
+          print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 in project and settings repositories (all ABIs, minSdk 26).')
+          PY
+
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Install bounded Media3 503 retry policy
+        run: python3 scripts/patch_better_player_503_retry.py
+
+      - name: Configure JUnit for native JVM tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          gradle = Path("android/app/build.gradle.kts")
+          source = gradle.read_text(encoding="utf-8")
+          dependency = 'testImplementation("junit:junit:4.13.2")'
+          if dependency not in source:
+              source += f"\n\ndependencies {{\n    {dependency}\n}}\n"
+              gradle.write_text(source, encoding="utf-8")
+          if dependency not in gradle.read_text(encoding="utf-8"):
+              raise SystemExit("JUnit 4 dependency was not configured.")
+          PY
+
+      - name: Run deterministic native JVM tests
+        run: ./android/gradlew -p android testDebugUnitTest
+
       - name: Format Dart source
-        run: dart format lib test
+        id: dart-format
+        run: dart format --output=none --set-exit-if-changed lib test integration_test
+
+      # Export the exact canonical Dart formatting patch for review when the
+      # non-mutating formatter gate detects an out-of-format source commit.
+      - name: Export Dart formatter patch for repair
+        if: failure() && steps.dart-format.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_dir="$RUNNER_TEMP/moviebox-dart-format-export"
+          mkdir -p "$export_dir"
+          dart format lib test integration_test
+          git diff --binary -- lib test integration_test > "$export_dir/dart-format.patch"
+          if [ -s "$export_dir/dart-format.patch" ]; then
+            git diff --stat -- lib test integration_test
+          else
+            echo "No formatter changes to export; source is already canonical."
+          fi
+
+      - name: Upload Dart formatter patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Dart-Formatter-Patch
+          path: ${{ runner.temp }}/moviebox-dart-format-export/dart-format.patch
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Static analysis
         run: flutter analyze --no-pub --no-fatal-infos
@@ -411,8 +607,152 @@ jobs:
       - name: Run tests
         run: flutter test --no-pub
 
+      - name: Configure and validate release APK signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -Eeuo pipefail
+          phase="required secret validation"
+          trap 'status=$?; echo "::error::Release signing setup failed during phase: ${phase} (exit ${status})."; exit "$status"' ERR
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 repository secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD repository secret}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS repository secret}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD repository secret}"
+          echo "Release signing secrets are present; values remain masked."
+
+          phase="PKCS12 base64 decode"
+          keystore="$RUNNER_TEMP/moviebox-release.p12"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is not valid Base64."
+            exit 1
+          fi
+          if [ ! -s "$keystore" ]; then
+            echo "::error::Decoded release keystore is empty."
+            exit 1
+          fi
+          chmod 600 "$keystore"
+          echo "Decoded PKCS12 keystore size: $(wc -c < "$keystore") bytes."
+
+          phase="PKCS12 store-password inspection"
+          certificate_inventory="$RUNNER_TEMP/moviebox-release-certificate-inventory.txt"
+          certificate_info="$RUNNER_TEMP/moviebox-release-certificate.txt"
+          keytool_error="$RUNNER_TEMP/moviebox-release-keytool-error.txt"
+
+          # First inspect the store without selecting an alias. keytool writes
+          # some PKCS12 errors to stdout, not stderr; capture both so CI can
+          # distinguish a bad store password from a missing alias.
+          if ! keytool -list -v -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" > "$certificate_inventory" 2> "$keytool_error"; then
+            echo "::error::PKCS12 store-password inspection failed. Safe keytool diagnostics follow:"
+            grep -Ei 'keytool error|exception|password|integrity|tamper|invalid|failed|error' \
+              "$certificate_inventory" "$keytool_error" | head -n 12 || true
+            exit 1
+          fi
+
+          phase="PKCS12 alias inspection"
+          if ! grep -Fqx "Alias name: $ANDROID_KEY_ALIAS" "$certificate_inventory"; then
+            echo "::error::Configured release alias was not found in the readable PKCS12 store."
+            echo "Available aliases (public metadata only):"
+            sed -n 's/^Alias name: /- /p' "$certificate_inventory"
+            exit 1
+          fi
+
+          phase="PKCS12 private-key entry inspection"
+          if ! keytool -list -v -storetype PKCS12 \
+            -keystore "$keystore" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" > "$certificate_info" 2> "$keytool_error"; then
+            echo "::error::The configured PKCS12 alias could not be inspected. Safe keytool diagnostics follow:"
+            grep -Ei 'keytool error|exception|password|integrity|tamper|invalid|failed|error' \
+              "$certificate_info" "$keytool_error" | head -n 12 || true
+            exit 1
+          fi
+          entry_type="$(sed -n 's/^Entry type: //p' "$certificate_info" | head -n 1)"
+          owner="$(sed -n 's/^Owner: //p' "$certificate_info" | head -n 1)"
+          actual_sha256="$(awk 'toupper($1) == "SHA256:" {gsub(":", "", $2); print tolower($2); exit}' "$certificate_info")"
+          echo "Keystore entry type: ${entry_type:-unreported}"
+          echo "Keystore certificate owner: ${owner:-unreported}"
+          echo "Keystore certificate SHA-256: ${actual_sha256:-unreported}"
+          if [ "$entry_type" != "PrivateKeyEntry" ]; then
+            echo "::error::Release keystore alias is not a PrivateKeyEntry."
+            exit 1
+          fi
+          if [ -z "$actual_sha256" ]; then
+            echo "::error::Could not parse the PKCS12 SHA-256 certificate fingerprint."
+            exit 1
+          fi
+
+          phase="pinned certificate identity verification"
+          expected_sha256="6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "::error::Release keystore fingerprint does not match the pinned MovieBox certificate."
+            exit 1
+          fi
+          case "$owner" in
+            *"CN=MovieBox Nexus Release"*"C=IN"*) ;;
+            *)
+              echo "::error::Release signing certificate subject does not match the expected MovieBox identity."
+              exit 1
+              ;;
+          esac
+          echo "Release PKCS12 key, alias, subject and pinned SHA-256 fingerprint verified."
+
+          phase="Gradle release signing configuration"
+          echo "MOVIEBOX_RELEASE_KEYSTORE=$keystore" >> "$GITHUB_ENV"
+          python3 - <<'PY_SIGNING'
+          from pathlib import Path
+
+          gradle_file = Path("android/app/build.gradle.kts")
+          source = gradle_file.read_text(encoding="utf-8")
+          marker = "// MOVIEBOX_RELEASE_SIGNING_CONFIG"
+          if marker in source:
+              raise SystemExit("Release signing configuration marker already exists; refusing duplicate injection.")
+
+          signing_block = r'''
+          // MOVIEBOX_RELEASE_SIGNING_CONFIG
+          android {
+              signingConfigs {
+                  create("movieboxRelease") {
+                      storeFile = file(System.getenv("MOVIEBOX_RELEASE_KEYSTORE") ?: error("MOVIEBOX_RELEASE_KEYSTORE is missing"))
+                      storeType = "PKCS12"
+                      storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: error("ANDROID_KEYSTORE_PASSWORD is missing")
+                      keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: error("ANDROID_KEY_ALIAS is missing")
+                      keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: error("ANDROID_KEY_PASSWORD is missing")
+                  }
+              }
+              buildTypes {
+                  getByName("release") {
+                      signingConfig = signingConfigs.getByName("movieboxRelease")
+                  }
+              }
+          }
+          '''
+          gradle_file.write_text(source.rstrip() + "\n\n" + signing_block.lstrip(), encoding="utf-8")
+          final_source = gradle_file.read_text(encoding="utf-8")
+          for required in (
+              marker,
+              'create("movieboxRelease")',
+              'storeType = "PKCS12"',
+              'signingConfig = signingConfigs.getByName("movieboxRelease")',
+          ):
+              if required not in final_source:
+                  raise SystemExit(f"Release signing configuration missing: {required}")
+          print("Release build now uses the validated MovieBox PKCS12 signing identity.")
+          PY_SIGNING
+          echo "Release signing configuration completed."
+
+
       - name: Build release APK (retry transient network failures)
         shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -uo pipefail
           log_file="$(mktemp)"
@@ -439,6 +779,34 @@ jobs:
           echo 'Gradle/build downloads still failing after three attempts.'
           exit 1
 
+      - name: Verify release APK certificate fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          signature_output="$RUNNER_TEMP/moviebox-release-apksigner.txt"
+          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$signature_output"
+          expected_sha256="6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
+          actual_sha256="$(awk -F': ' '/Signer #1 certificate SHA-256 digest:|V[0-9]+ Signer: certificate SHA-256 digest:/ {print $NF; exit}' "$signature_output" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_sha256" || {
+            echo "::error::APK signer SHA-256 fingerprint was not reported."
+            exit 1
+          }
+          if [ "$actual_sha256" != "$expected_sha256" ]; then
+            echo "::error::APK was not signed by the pinned MovieBox release certificate."
+            exit 1
+          fi
+          echo "APK signature is valid and matches the pinned MovieBox release certificate."
+
+      - name: Remove temporary release signing key
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/moviebox-release.p12" "$RUNNER_TEMP/moviebox-release-certificate.txt" "$RUNNER_TEMP/moviebox-release-keytool-error.txt"
+
       - name: Stage APK
         shell: bash
         run: |
@@ -448,9 +816,717 @@ jobs:
           test -s dist/MovieBox-Nexus-OS.apk
 
       - name: Upload APK artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: MovieBox-Nexus-OS-APK
           path: dist/MovieBox-Nexus-OS.apk
           if-no-files-found: error
           retention-days: 30
+
+
+
+  release-apk-verify:
+    name: Install and launch the exact release APK
+    needs: [android-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare release verification diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics/preflight.txt"
+
+      - name: Download required release APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MovieBox-Nexus-OS-APK
+          path: dist
+
+      - name: Prepare release APK verification diagnostics and script
+        shell: bash
+        run: |
+          set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$diagnostics_dir/preflight.txt"
+          cat > "$RUNNER_TEMP/moviebox-release-apk-verify.sh" <<'MOVIEBOX_RELEASE_VERIFY'
+          set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-release-apk-verify-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          collect_release_diagnostics() {
+            status=$?
+            set +e
+            printf 'exit_code=%s\n' "$status" > "$diagnostics_dir/run-summary.txt"
+            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
+            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
+            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
+            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
+            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
+            cp dist/MovieBox-Nexus-OS.apk "$diagnostics_dir/" 2>/dev/null || true
+            sha256sum dist/MovieBox-Nexus-OS.apk > "$diagnostics_dir/apk-sha256.txt" 2>&1 || true
+            return 0
+          }
+          trap collect_release_diagnostics EXIT
+
+          apk="dist/MovieBox-Nexus-OS.apk"
+          test -s "$apk"
+          sha256sum "$apk" | tee "$diagnostics_dir/apk-sha256.txt"
+          aapt="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          test -x "$aapt"
+          "$aapt" dump badging "$apk" | tee "$diagnostics_dir/apk-badging.txt"
+          grep -q "package: name='com.moviebox.nexus'" "$diagnostics_dir/apk-badging.txt"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -x "$apksigner"
+          "$apksigner" verify --verbose --print-certs "$apk" 2>&1 | tee "$diagnostics_dir/apksigner.txt"
+          expected_cert_sha256="6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
+          actual_cert_sha256="$(awk -F': ' '/Signer #1 certificate SHA-256 digest:|V[0-9]+ Signer: certificate SHA-256 digest:/ {print $NF; exit}' "$diagnostics_dir/apksigner.txt" | tr -d ':' | tr '[:upper:]' '[:lower:]')"
+          test -n "$actual_cert_sha256" || {
+            echo "::error::Release APK signer SHA-256 fingerprint was not reported."
+            exit 1
+          }
+          if [ "$actual_cert_sha256" != "$expected_cert_sha256" ]; then
+            echo "::error::Installed APK artifact does not match the pinned MovieBox release certificate."
+            exit 1
+          fi
+          echo "Release APK certificate fingerprint independently verified."
+
+          adb install -r "$apk"
+          adb shell pm path com.moviebox.nexus | tee "$diagnostics_dir/installed-package-path.txt"
+          adb logcat -c
+          # ADB's -W wait can time out while the launcher has already started
+          # the activity. Verify the actual Flutter first frame and foreground
+          # state rather than treating that wait timeout as success or failure.
+          start_output="$(adb shell am start -n com.moviebox.nexus/.MainActivity 2>&1)"
+          printf '%s\n' "$start_output" | tee "$diagnostics_dir/activity-start.txt"
+
+          app_pid=""
+          first_frame_verified=0
+          for attempt in $(seq 1 60); do
+            app_pid="$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\r' | awk '{print $1}' || true)"
+            activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
+            window_dump="$(adb shell dumpsys window windows 2>&1 || true)"
+            resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
+            # Android 16 reports mFocusedApp in dumpsys activity, not dumpsys window.
+            focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
+            main_window_block="$(printf '%s\n' "$window_dump" | awk '
+              /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
+              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+              capture {print}
+            ')"
+            main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
+            main_window_surface="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'Surface: shown=true' || true)"
+            main_window_visible="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isVisible=true' || true)"
+            main_window_on_screen="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isOnScreen=true' || true)"
+            echo "Launch poll ${attempt}/60: pid=${app_pid:-missing}; resumed=${resumed_line:-missing}; focusedApp=${focused_app_line:-missing}; mainWindowDrawn=${main_window_drawn:-pending}; surface=${main_window_surface:-pending}; visible=${main_window_visible:-pending}; onScreen=${main_window_on_screen:-pending}"
+            if [ -n "$app_pid" ] && \
+               [[ "$resumed_line" == *com.moviebox.nexus* ]] && \
+               [[ "$focused_app_line" == *com.moviebox.nexus* ]] && \
+               [ -n "$main_window_drawn" ] && \
+               [ -n "$main_window_surface" ] && \
+               [ -n "$main_window_visible" ] && \
+               [ -n "$main_window_on_screen" ]; then
+              first_frame_verified=1
+              break
+            fi
+            sleep 2
+          done
+
+          test -n "$app_pid" || { echo "::error::Release APK process did not stay alive after explicit launch."; exit 1; }
+          test "$first_frame_verified" -eq 1 || {
+            echo "::error::Release APK did not draw its first Flutter window and become the resumed/focused app within 120 seconds."
+            exit 1
+          }
+          echo "Release APK process is alive: $app_pid"
+          sleep 3
+
+          activity_dump="$(adb shell dumpsys activity activities 2>&1 || true)"
+          window_dump="$(adb shell dumpsys window windows 2>&1 || true)"
+          resumed_line="$(printf '%s\n' "$activity_dump" | grep -m 1 -E 'topResumedActivity|ResumedActivity:|mResumedActivity' || true)"
+          focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
+          main_window_block="$(printf '%s\n' "$window_dump" | awk '
+            /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
+            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+            capture {print}
+          ')"
+          main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
+          main_window_surface="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'Surface: shown=true' || true)"
+          main_window_visible="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isVisible=true' || true)"
+          main_window_on_screen="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'isOnScreen=true' || true)"
+          echo "Final resumed activity: ${resumed_line:-not reported}"
+          echo "Final focused app: ${focused_app_line:-not reported}"
+          echo "Final MainActivity window draw state: ${main_window_drawn:-not drawn}"
+          echo "Final MainActivity surface: ${main_window_surface:-not shown}"
+          echo "Final MainActivity visibility: ${main_window_visible:-not visible}"
+          echo "Final MainActivity screen state: ${main_window_on_screen:-not on screen}"
+          if [[ "$resumed_line" != *com.moviebox.nexus* ]] || \
+             [[ "$focused_app_line" != *com.moviebox.nexus* ]] || \
+             [ -z "$main_window_drawn" ] || \
+             [ -z "$main_window_surface" ] || \
+             [ -z "$main_window_visible" ] || \
+             [ -z "$main_window_on_screen" ]; then
+            echo "::error::Installed APK did not keep its first Flutter window in the foreground."
+            exit 1
+          fi
+
+          adb logcat -d --pid="$app_pid" -v brief > "$diagnostics_dir/app-logcat.txt" 2>&1 || true
+          if grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback' "$diagnostics_dir/app-logcat.txt"; then
+            echo "::error::Release APK emitted a fatal native/plugin startup error."
+            exit 1
+          fi
+          echo "Release APK install, signature, native process, first Flutter frame and foreground launch verified."
+          MOVIEBOX_RELEASE_VERIFY
+          chmod +x "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
+
+      - name: Reclaim runner disk space for release APK emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
+          sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          sudo rm -rf "$android_sdk/system-images"
+          sudo apt-get clean
+          echo "Disk after cleanup:"
+          df -h /
+          available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          if [ "$available_kb" -lt 5000000 ]; then
+            echo "::error::Less than 5 GB is available for the Android emulator system image."
+            exit 1
+          fi
+
+      - name: Enable KVM for release APK emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::KVM device is unavailable after udev setup; refusing to start an emulator in unsupported software-acceleration mode."
+            exit 1
+          fi
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+          ls -l /dev/kvm
+
+      - name: Run release APK emulator verification
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -memory 2048
+          disable-animations: true
+          script: bash "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
+
+      - name: Upload release APK verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Release-APK-Verification-Diagnostics
+          path: ${{ runner.temp }}/moviebox-release-apk-verify-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
+
+  integration-tests:
+    name: Android seeded-torrent and Media3 integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare integration diagnostics
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/moviebox-emulator-diagnostics"
+          printf 'commit=%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/moviebox-emulator-diagnostics/preflight.txt"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Flutter 3.50.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.50.0'
+          cache: true
+
+      - name: Resolve dependencies for integration test
+        run: flutter pub get
+
+      - name: Install bounded Media3 503 retry policy
+        run: python3 scripts/patch_better_player_503_retry.py
+
+      - name: Prepare Android scaffold and FrostWire bridge for emulator test
+        shell: bash
+        run: |
+          set -euo pipefail
+          backup_dir="$(mktemp -d)"
+          trap 'rm -rf "$backup_dir"' EXIT
+
+          cp -a lib "$backup_dir/lib"
+          if [ -d test ]; then cp -a test "$backup_dir/test"; fi
+          cp -a integration_test "$backup_dir/integration_test"
+          cp pubspec.yaml "$backup_dir/pubspec.yaml"
+
+          scaffold_complete=1
+          for required_file in \
+            android/gradlew \
+            android/gradle/wrapper/gradle-wrapper.properties \
+            android/settings.gradle.kts \
+            android/build.gradle.kts \
+            android/app/build.gradle.kts \
+            android/app/src/main/AndroidManifest.xml; do
+            if [ ! -s "$required_file" ]; then
+              scaffold_complete=0
+              break
+            fi
+          done
+
+          if [ "$scaffold_complete" -ne 1 ]; then
+            echo "Android scaffold is incomplete in this fresh job; generating it before integration tests."
+            rm -rf android
+            flutter create \
+              --platforms=android \
+              --org com.moviebox.nexus \
+              --project-name moviebox_nexus \
+              .
+          fi
+
+          # flutter create may touch project files; restore the exact source under test.
+          rm -rf lib
+          cp -a "$backup_dir/lib" lib
+          if [ -d "$backup_dir/test" ]; then
+            rm -rf test
+            cp -a "$backup_dir/test" test
+          fi
+          rm -rf integration_test
+          cp -a "$backup_dir/integration_test" integration_test
+          cp "$backup_dir/pubspec.yaml" pubspec.yaml
+
+          # Restore the same Kotlin bridge used by the release APK.
+          mkdir -p android/app/src/main/kotlin/com/moviebox/nexus
+          cp native/android/MainActivity.kt android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+          cp native/android/EmbeddedTorrentEngine.kt android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+          cp native/android/HttpPieceWaiter.kt android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import xml.etree.ElementTree as ET
+
+          gradle = Path("android/app/build.gradle.kts")
+          source = gradle.read_text(encoding="utf-8")
+          for key in ("namespace", "applicationId"):
+              pattern = rf"""({key}\s*=\s*)["'][^"']+["']"""
+              source, count = re.subn(pattern, rf'\1"com.moviebox.nexus"', source, count=1)
+              if count != 1:
+                  raise SystemExit(f"Could not align Android {key} with the native Kotlin package.")
+
+          if "minSdk = maxOf(26, flutter.minSdkVersion)" not in source:
+              source, count = re.subn(
+                  r"minSdk\s*=\s*flutter\.minSdkVersion",
+                  "minSdk = maxOf(26, flutter.minSdkVersion)",
+                  source,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit("Could not raise minSdk to FrostWire's Android requirement.")
+
+          # Native code is supplied by prebuilt AARs; don't make sdkmanager fetch an NDK.
+          source, ndk_pin_count = re.subn(
+              r"^\s*ndkVersion\s*=\s*flutter\.ndkVersion\s*\n?",
+              "",
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if ndk_pin_count:
+              print(f"Removed unnecessary generated NDK version pin ({ndk_pin_count}).")
+
+          if "https://dl.frostwire.com/maven" not in source:
+              source += '''
+          repositories {
+              maven {
+                  url = uri("https://dl.frostwire.com/maven")
+                  content { includeGroup("com.frostwire") }
+              }
+          }
+          '''
+          if "jlibtorrent-android:2.0.15.3@aar" not in source:
+              source += '''
+          dependencies {
+              implementation("com.frostwire:jlibtorrent-android:2.0.15.3@aar")
+          }
+          '''
+          gradle.write_text(source, encoding="utf-8")
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          android_ns = "http://schemas.android.com/apk/res/android"
+          ET.register_namespace("android", android_ns)
+          A = "{" + android_ns + "}"
+          tree = ET.parse(manifest)
+          root = tree.getroot()
+          permissions = {node.get(A + "name") for node in root.findall("uses-permission")}
+          for permission in ("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.WAKE_LOCK"):
+              if permission not in permissions:
+                  ET.SubElement(root, "uses-permission", {A + "name": permission})
+          application = root.find("application")
+          if application is None:
+              raise SystemExit("Android manifest has no application element.")
+          application.set(A + "label", "MovieBox Nexus OS")
+          application.set(A + "usesCleartextTraffic", "true")
+          tree.write(manifest, encoding="utf-8", xml_declaration=True)
+
+          final_gradle = gradle.read_text(encoding="utf-8")
+          if re.search(r"^\s*ndkVersion\s*=\s*flutter\.ndkVersion", final_gradle, flags=re.MULTILINE):
+              raise SystemExit("Unexpected NDK version pin would trigger an SDK-manager download.")
+          if 'namespace = "com.moviebox.nexus"' not in final_gradle or 'applicationId = "com.moviebox.nexus"' not in final_gradle:
+              raise SystemExit("Android namespace/applicationId are not aligned with MainActivity.")
+          if "jlibtorrent-android:2.0.15.3@aar" not in final_gradle:
+              raise SystemExit("FrostWire AAR dependency is missing from the emulator build.")
+          print("Emulator Android scaffold, package identity, Internet access and FrostWire AAR configured.")
+          PY
+
+          test -s android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
+          test -s android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
+          test -s android/app/src/main/AndroidManifest.xml
+          test -s android/app/build.gradle.kts
+
+      - name: Enable Gradle dependency cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+
+      - name: Align Kotlin plugin targets with Android Java 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/moviebox-kotlin-target.init.gradle" <<'GRADLE_INIT'
+          gradle.projectsEvaluated {
+              rootProject.allprojects { project ->
+                  project.tasks.configureEach { task ->
+                      if (task.class.name.contains('KotlinCompile')) {
+                          task.kotlinOptions.jvmTarget = '17'
+                          println "[MovieBox CI] Kotlin JVM target 17: ${project.path}:${task.name}"
+                      }
+                  }
+              }
+          }
+          GRADLE_INIT
+          test -s "$RUNNER_TEMP/moviebox-kotlin-target.init.gradle"
+
+          # Flutter invokes android/gradlew. Preserve the generated wrapper and
+          # pass the same target-alignment init script to the emulator build.
+          mv android/gradlew android/gradlew-upstream
+          cat > android/gradlew <<'GRADLE_SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          : "${RUNNER_TEMP:?RUNNER_TEMP is required in GitHub Actions}"
+          INIT_SCRIPT="$RUNNER_TEMP/moviebox-kotlin-target.init.gradle"
+          test -s "$INIT_SCRIPT" || {
+            echo "ERROR: Kotlin target init script is missing: $INIT_SCRIPT" >&2
+            exit 1
+          }
+          exec "$(dirname "$0")/gradlew-upstream" --init-script "$INIT_SCRIPT" "$@"
+          GRADLE_SH
+          chmod +x android/gradlew
+          test -x android/gradlew-upstream
+          echo "Kotlin plugin bytecode target will match Android Java 17 in the emulator job."
+
+      - name: Create a real MP4 and seed a deterministic local torrent
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-libtorrent
+
+          seed_dir="$RUNNER_TEMP/moviebox-local-seed"
+          state_file="$RUNNER_TEMP/moviebox-local-seed.json"
+          mkdir -p "$seed_dir"
+
+          # Keep the CI fixture inside the emulator's default 320x240 H.264
+          # decoder configuration and omit audio so headless CI does not depend
+          # on a host audio device. CBR keeps the file above libtorrent's 8 MiB
+          # video-selection threshold while retaining real decodable video frames.
+          ffmpeg -hide_banner -loglevel error -y \
+            -f lavfi -i "testsrc2=size=320x240:rate=24" \
+            -t 48 -an -c:v libx264 -preset ultrafast -tune zerolatency \
+            -profile:v baseline -level 3.0 -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
+            -b:v 1800k -minrate 1800k -maxrate 1800k -bufsize 3600k \
+            -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p \
+            -movflags +faststart "$seed_dir/moviebox-ci-video.mp4"
+
+          test "$(stat -c %s "$seed_dir/moviebox-ci-video.mp4")" -gt 8388608
+          video_probe="$(ffprobe -v error -select_streams v:0 -count_frames \
+            -show_entries stream=codec_name,profile,width,height,nb_read_frames \
+            -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4")"
+          printf '%s\n' "$video_probe"
+          video_frames="$(printf '%s\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
+          test "${video_frames:-0}" -ge 1000
+          audio_codec="$(ffprobe -v error -select_streams a:0 \
+            -show_entries stream=codec_name -of csv=p=0 "$seed_dir/moviebox-ci-video.mp4")"
+          test -z "$audio_codec"
+          ffmpeg -hide_banner -v error -i "$seed_dir/moviebox-ci-video.mp4" -f null -
+
+          # Serve the same known-good MP4 to Media3 over a real HTTP byte-range
+          # endpoint. The Android emulator reaches the runner host via 10.0.2.2.
+          cat > "$RUNNER_TEMP/moviebox-range-server.py" <<'PY'
+          from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+          from pathlib import Path
+          import re
+          import sys
+
+          video = Path(sys.argv[1]).resolve()
+          size = video.stat().st_size
+
+          class Handler(BaseHTTPRequestHandler):
+              protocol_version = "HTTP/1.1"
+
+              def _send_file(self, include_body):
+                  start, end, status = 0, size - 1, 200
+                  value = self.headers.get("Range")
+                  if value:
+                      match = re.fullmatch(r"bytes=(\d*)-(\d*)", value.strip())
+                      if not match:
+                          self.send_response(416)
+                          self.send_header("Content-Range", f"bytes */{size}")
+                          self.send_header("Content-Length", "0")
+                          self.end_headers()
+                          return
+                      first, last = match.groups()
+                      if not first:
+                          suffix = int(last or "0")
+                          if suffix <= 0:
+                              self.send_response(416)
+                              self.send_header("Content-Range", f"bytes */{size}")
+                              self.send_header("Content-Length", "0")
+                              self.end_headers()
+                              return
+                          start = max(0, size - suffix)
+                      else:
+                          start = int(first)
+                      end = min(int(last) if last else size - 1, size - 1)
+                      if start >= size or end < start:
+                          self.send_response(416)
+                          self.send_header("Content-Range", f"bytes */{size}")
+                          self.send_header("Content-Length", "0")
+                          self.end_headers()
+                          return
+                      status = 206
+
+                  length = end - start + 1
+                  self.send_response(status)
+                  self.send_header("Content-Type", "video/mp4")
+                  self.send_header("Accept-Ranges", "bytes")
+                  self.send_header("Content-Length", str(length))
+                  self.send_header("Connection", "close")
+                  if status == 206:
+                      self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                  self.end_headers()
+                  if include_body:
+                      with video.open("rb") as stream:
+                          stream.seek(start)
+                          remaining = length
+                          while remaining:
+                              chunk = stream.read(min(128 * 1024, remaining))
+                              if not chunk:
+                                  break
+                              self.wfile.write(chunk)
+                              remaining -= len(chunk)
+
+              def do_GET(self):
+                  self._send_file(True)
+
+              def do_HEAD(self):
+                  self._send_file(False)
+
+              def log_message(self, _format, *_args):
+                  pass
+
+          ThreadingHTTPServer(("0.0.0.0", 18765), Handler).serve_forever()
+          PY
+          python3 "$RUNNER_TEMP/moviebox-range-server.py" "$seed_dir/moviebox-ci-video.mp4" \
+            > "$RUNNER_TEMP/moviebox-range-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/moviebox-range-server.pid"
+
+          range_ready=0
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --header 'Range: bytes=0-31' http://127.0.0.1:18765/moviebox-ci-video.mp4 || true)"
+            if [ "$status" = "206" ]; then
+              range_ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$range_ready" -eq 1 || {
+            cat "$RUNNER_TEMP/moviebox-range-server.log"
+            echo "::error::The real MP4 HTTP range server did not become ready."
+            exit 1
+          }
+
+          # Run a real libtorrent seeder on the runner host. The Android
+          # emulator reaches it at 10.0.2.2:6881 via the magnet x.pe extension.
+          /usr/bin/python3 scripts/ci_seed_torrent.py \
+            --video "$seed_dir/moviebox-ci-video.mp4" \
+            --seed-dir "$seed_dir" \
+            --state-file "$state_file" \
+            --port 6881 > "$RUNNER_TEMP/moviebox-local-seed.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/moviebox-local-seed.pid"
+
+          for attempt in $(seq 1 90); do
+            if [ -s "$state_file" ]; then break; fi
+            if ! kill -0 "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null; then
+              cat "$RUNNER_TEMP/moviebox-local-seed.log"
+              echo "::error::Local libtorrent seeder exited before becoming ready."
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$state_file" || {
+            cat "$RUNNER_TEMP/moviebox-local-seed.log"
+            echo "::error::Local libtorrent seeder did not become ready."
+            exit 1
+          }
+
+          info_hash="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["info_hash"])' "$state_file")"
+          peer_endpoint="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["peer_endpoint"])' "$state_file")"
+          first_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["first_hex"])' "$state_file")"
+          seek_hex="$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["seek_hex"])' "$state_file")"
+
+          echo "MOVIEBOX_TEST_INFO_HASH=$info_hash" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_PEER=$peer_endpoint" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_FIRST_HEX=$first_hex" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_SEEK_HEX=$seek_hex" >> "$GITHUB_ENV"
+          echo "MOVIEBOX_TEST_MP4_URL=http://10.0.2.2:18765/moviebox-ci-video.mp4" >> "$GITHUB_ENV"
+          cat "$state_file"
+          echo "Deterministic local torrent seeder is ready."
+
+      - name: Reclaim runner disk space for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h /
+          # Release build has already completed. Remove large preinstalled tools
+          # that the Android emulator smoke test does not need.
+          sudo rm -rf /usr/share/dotnet /usr/local/share/boost /usr/share/swift
+          sudo rm -rf /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          # Keep the preinstalled NDK/CMake: flutter test's Android debug
+          # build needs them. Removing them here forced a multi-minute NDK
+          # redownload alongside the emulator and contributed to runner loss.
+          sudo rm -rf "$android_sdk/system-images"
+          sudo apt-get clean
+          echo "Disk after cleanup:"
+          df -h /
+          available_kb="$(df --output=avail / | tail -n 1 | tr -d ' ')"
+          if [ "$available_kb" -lt 5000000 ]; then
+            echo "::error::Less than 5 GB is available for the Android emulator system image."
+            exit 1
+          fi
+
+      - name: Enable KVM for Android emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Prepare Android emulator test script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/moviebox-emulator-script.sh" <<'MOVIEBOX_EMULATOR_SCRIPT'
+          set -euo pipefail
+          diagnostics_dir="$RUNNER_TEMP/moviebox-emulator-diagnostics"
+          mkdir -p "$diagnostics_dir"
+          collect_moviebox_diagnostics() {
+            exit_code=$?
+            set +e
+            printf 'exit_code=%s\n' "$exit_code" > "$diagnostics_dir/run-summary.txt"
+            printf 'commit=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)" >> "$diagnostics_dir/run-summary.txt"
+            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
+            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
+            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
+            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
+            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
+            cp "$RUNNER_TEMP/moviebox-local-seed.log" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-range-server.log" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-local-seed.json" "$diagnostics_dir/" 2>/dev/null || true
+            cp "$RUNNER_TEMP/moviebox-emulator-script.sh" "$diagnostics_dir/" 2>/dev/null || true
+            return 0
+          }
+          trap collect_moviebox_diagnostics EXIT
+
+          # Route emulator loopback peer traffic to the runner-host seeder.
+          adb reverse tcp:6881 tcp:6881
+          adb reverse --list
+
+          # Run the complete Flutter integration suite as one Bash process.
+          # The emulator-runner action splits its "script" input into individual
+          # lines, so control-flow blocks must live in a separate script file.
+          set +e
+          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart 2>&1 | tee "$diagnostics_dir/flutter-integration.log"
+          integration_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$integration_status" -ne 0 ]; then
+            echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
+            adb logcat -d -v time > "$diagnostics_dir/logcat-on-integration-failure.txt" || true
+            grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$diagnostics_dir/logcat-on-integration-failure.txt" | tail -n 300 || true
+            echo "----- deterministic torrent seeder log -----"
+            cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
+            echo "----- direct MP4 range server log -----"
+            cat "$RUNNER_TEMP/moviebox-range-server.log" || true
+            exit "$integration_status"
+          fi
+
+          echo "Android seeded torrent, byte-range seek and Media3 integration tests completed."
+
+          if [ -f "$RUNNER_TEMP/moviebox-local-seed.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/moviebox-local-seed.pid")" 2>/dev/null || true
+          fi
+          if [ -f "$RUNNER_TEMP/moviebox-range-server.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/moviebox-range-server.pid")" 2>/dev/null || true
+          fi
+          MOVIEBOX_EMULATOR_SCRIPT
+          chmod +x "$RUNNER_TEMP/moviebox-emulator-script.sh"
+
+      - name: Android emulator integration tests
+        # Independent of android-release so media regressions are still exercised
+        # when APK packaging or signing fails.
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: default
+          arch: x86_64
+          profile: pixel_2
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -memory 2048
+          disable-animations: true
+          # android-emulator-runner parses this input as one command per line.
+          # Keep it to a single Bash invocation so loops/if blocks retain state.
+          script: bash "$RUNNER_TEMP/moviebox-emulator-script.sh"
+
+      - name: Upload emulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MovieBox-Emulator-Diagnostics
+          path: ${{ runner.temp }}/moviebox-emulator-diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
