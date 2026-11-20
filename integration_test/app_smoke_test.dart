@@ -237,7 +237,9 @@ void main() {
         'MovieBox CI lifecycle before 503 retry player: ${tester.binding.lifecycleState}',
       );
       if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
-        tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
         await tester.pump();
       }
 
