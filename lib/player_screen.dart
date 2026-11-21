@@ -10,6 +10,25 @@ const Color _movieBoxRed = Color(0xFFE50914);
 const Color _movieBoxCyan = Color(0xFF20DDF2);
 const Color _playerSurface = Color(0xFF11131C);
 
+/// Resolve a safe format hint before BetterPlayer inspects a network URL.
+/// better_player_plus 1.4.1 can fail when its Android extension resolver sees
+/// an extensionless source. Known adaptive formats remain explicit; extensionless
+/// URLs use the plugin's generic data source rather than unsafe inference.
+BetterPlayerVideoFormat? mediaFormatHintForUrl(String rawUrl) {
+  final path = Uri.tryParse(rawUrl)?.path.toLowerCase() ?? '';
+  if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
+  if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
+  if (path.endsWith('.ism') || path.endsWith('.isml')) {
+    return BetterPlayerVideoFormat.ss;
+  }
+  final lastSegment = path.split('/').last;
+  final extensionSeparator = lastSegment.lastIndexOf('.');
+  if (extensionSeparator <= 0 || extensionSeparator == lastSegment.length - 1) {
+    return BetterPlayerVideoFormat.other;
+  }
+  return null;
+}
+
 /// In-app dual-engine playback:
 /// 1) Media3/ExoPlayer via Better Player Plus for adaptive HLS/DASH, headers,
 ///    quality selection, subtitles and audio tracks.
@@ -59,12 +78,16 @@ class _PlayerScreenState extends State<PlayerScreen>
   static const MethodChannel _torrentDiagnostics = MethodChannel(
     'moviebox_nexus/torrent',
   );
+  static const MethodChannel _externalPlayer = MethodChannel(
+    'moviebox_nexus/external_player',
+  );
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
   bool _disposed = false;
   bool _nextCalled = false;
   bool _vlcInitStarted = false;
+  bool _canOpenExternalVlc = false;
   String? _error;
   String _engineLabel = 'Media3 / ExoPlayer';
   int _pendingPositionMs = 0;
@@ -243,30 +266,56 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  BetterPlayerVideoFormat? _formatHint() {
-    // Embedded torrent URLs end in an opaque stream token rather than a file
-    // extension. better_player_plus 1.4.1's Android source resolver assumes
-    // every extensionless URL contains a dot and otherwise throws an
-    // IndexOutOfBoundsException before Media3 can prepare the progressive MP4.
-    if (_isEmbeddedTorrent) return BetterPlayerVideoFormat.other;
-    final path = Uri.tryParse(widget.url)?.path.toLowerCase() ?? '';
-    if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
-    if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
-    if (path.endsWith('.ism') || path.endsWith('.isml')) {
-      return BetterPlayerVideoFormat.ss;
-    }
-    return null;
-  }
+  BetterPlayerVideoFormat? _formatHint() => mediaFormatHintForUrl(widget.url);
 
   bool get _isLive => widget.isLive;
 
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
-    // A connected BitTorrent swarm can still contain a codec/container that
-    // Media3 cannot decode. Try the bundled VLC engine against the same
-    // loopback HTTP stream before declaring the source unusable.
-    unawaited(_switchToVlc(reason));
+    _offerExternalVlc(reason);
+  }
+
+  void _offerExternalVlc(String reason) {
+    final uri = Uri.tryParse(widget.url);
+    final supportedUri = uri != null &&
+        {'http', 'https'}.contains(uri.scheme) &&
+        uri.host.isNotEmpty;
+    final headersRequired = widget.headers.isNotEmpty;
+    if (!mounted || _disposed) return;
+    setState(() {
+      _loading = false;
+      _canOpenExternalVlc = supportedUri && !headersRequired;
+      _error = headersRequired
+          ? 'Media3 could not play this source. It requires provider HTTP headers, which Android VLC cannot reliably inherit from MovieBox. Choose another source or retry in MovieBox.'
+          : 'Media3 could not start this source. You can retry, or open the same HTTP stream in the VLC app installed on this phone. DRM-protected streams may still be unavailable.';
+    });
+    debugPrint('MovieBox Media3 fallback offered external VLC: $reason');
+  }
+
+  Future<void> _openExternalVlc() async {
+    if (!_canOpenExternalVlc || _disposed) return;
+    final controller = _media3;
+    final position = controller?.videoPlayerController?.value.position.inMilliseconds ?? 0;
+    try {
+      await _externalPlayer.invokeMethod<bool>('openVlc', <String, Object>{
+        'url': widget.url,
+        'title': widget.title,
+        'positionMs': position,
+      });
+    } on PlatformException catch (error) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _canOpenExternalVlc = false;
+        _error = error.message ?? 'The installed VLC app could not be opened.';
+      });
+    } catch (error) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _canOpenExternalVlc = false;
+        _error = 'Could not open the installed VLC app: $error';
+      });
+    }
   }
 
   Future<void> _handleMedia3Exception(String reason) async {
@@ -336,7 +385,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_isEmbeddedTorrent) {
       _startMedia3();
     } else {
-      unawaited(_switchToVlc('Retrying with VLC compatibility engine'));
+      _startMedia3();
     }
   }
 
@@ -362,6 +411,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _loading = true;
     _error = null;
     _engineLabel = 'Media3 / ExoPlayer';
+    _canOpenExternalVlc = false;
     _nextCalled = false;
     _preparedReported = false;
     _playStartedAt = DateTime.now();
@@ -463,7 +513,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             );
           } else {
-            unawaited(_switchToVlc('Media3 initialization timed out'));
+            _offerExternalVlc('Media3 initialization timed out');
           }
         }
       });
@@ -471,7 +521,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_isEmbeddedTorrent) {
         unawaited(_handleMedia3Exception('Media3 setup failed: $error'));
       } else {
-        unawaited(_switchToVlc('Media3 setup failed: $error'));
+        _offerExternalVlc('Media3 setup failed: $error');
       }
     }
   }
@@ -1167,7 +1217,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     return '$minutes:$seconds';
   }
 
-  Widget _errorPanel(String message, {VoidCallback? onRetry}) {
+  Widget _errorPanel(
+    String message, {
+    VoidCallback? onRetry,
+    VoidCallback? onOpenInVlc,
+  }) {
     return Center(
       child: Container(
         constraints: const BoxConstraints(maxWidth: 620),
@@ -1202,9 +1256,17 @@ class _PlayerScreenState extends State<PlayerScreen>
             FilledButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry playback'),
+              label: const Text('Retry in MovieBox'),
               style: FilledButton.styleFrom(backgroundColor: _movieBoxRed),
             ),
+            if (onOpenInVlc != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: onOpenInVlc,
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Open in installed VLC'),
+              ),
+            ],
           ],
         ),
       ),
@@ -1526,7 +1588,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                   ),
               ],
               if (_error != null)
-                _errorPanel(_error!, onRetry: _retryCurrentEngine),
+                _errorPanel(
+                  _error!,
+                  onRetry: _retryCurrentEngine,
+                  onOpenInVlc: _canOpenExternalVlc ? _openExternalVlc : null,
+                ),
               if (!_usingVlc && _media3 != null)
                 Positioned(
                   top: MediaQuery.of(context).padding.top + 4,

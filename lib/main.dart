@@ -3044,12 +3044,13 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _smartPlay(Meta m) async {
-    final streams = await widget.engine.resolveStreams(
-      m.type,
-      m.id,
-      widget.addons,
-    );
-    if (!mounted) return;
+    try {
+      final streams = await widget.engine.resolveStreams(
+        m.type,
+        m.id,
+        widget.addons,
+      );
+      if (!mounted) return;
 
     if (streams.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3070,22 +3071,32 @@ class _HomeScreenState extends State<HomeScreen> {
       final workingIndex = checks.indexWhere((isWorking) => isWorking);
       if (workingIndex >= 0 && mounted) {
         final stream = direct[workingIndex];
-        widget.onPlay(m.name, stream.url!, m.id);
+        widget.onPlay(m.name, stream.url!, m.id, headers: stream.headers);
         return;
       }
     }
     if (!mounted) return;
     final torrentOnly = streams.every((stream) => stream.isTorrent);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          torrentOnly
-              ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
-              : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.',
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            torrentOnly
+                ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
+                : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.',
+          ),
+          duration: const Duration(seconds: 7),
         ),
-        duration: const Duration(seconds: 7),
-      ),
-    );
+      );
+    } catch (error, stackTrace) {
+      debugPrint('MovieBox Smart Play failed for ${m.id}: $error\\n$stackTrace');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not start ${m.name}: $error'),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    }
   }
 
   String _fmt(int ms) {
@@ -4202,21 +4213,36 @@ class _DetailsSheetState extends State<DetailsSheet> {
       _streams = [];
     });
 
-    final streams = await widget.engine.resolveStreams(
-      widget.meta.type,
-      id,
-      widget.addons,
-      onUpdate: (partial) {
-        if (!mounted) return;
-        setState(() => _streams = partial);
-      },
-    );
+    try {
+      final streams = await widget.engine.resolveStreams(
+        widget.meta.type,
+        id,
+        widget.addons,
+        onUpdate: (partial) {
+          if (!mounted) return;
+          setState(() => _streams = partial);
+        },
+      );
 
-    if (!mounted) return;
-    setState(() {
-      _streams = streams;
-      _loadingStreams = false;
-    });
+      if (!mounted) return;
+      setState(() {
+        _streams = streams;
+        _loadingStreams = false;
+      });
+    } catch (error, stackTrace) {
+      debugPrint('MovieBox stream resolution failed for ${id}: $error\\n$stackTrace');
+      if (!mounted) return;
+      setState(() {
+        _streams = [];
+        _loadingStreams = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not load streams for ${widget.meta.name}: $error'),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    }
   }
 
   @override

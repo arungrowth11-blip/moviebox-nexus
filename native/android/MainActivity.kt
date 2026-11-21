@@ -1,5 +1,8 @@
 package com.moviebox.nexus
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -63,6 +66,40 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "moviebox_nexus/external_player"
+        ).setMethodCallHandler { call, result ->
+            if (call.method != "openVlc") {
+                result.notImplemented()
+                return@setMethodCallHandler
+            }
+            val rawUrl = call.argument<String>("url")?.trim().orEmpty()
+            val uri = runCatching { Uri.parse(rawUrl) }.getOrNull()
+            if (uri == null || uri.host.isNullOrBlank() || uri.scheme !in setOf("http", "https")) {
+                result.error("INVALID_MEDIA_URL", "Only valid HTTP or HTTPS media URLs can be opened in VLC.", null)
+                return@setMethodCallHandler
+            }
+            val title = call.argument<String>("title")?.takeIf { it.isNotBlank() } ?: "MovieBox Nexus"
+            val positionMs = call.argument<Number>("positionMs")?.toLong()?.coerceAtLeast(0L) ?: 0L
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setPackage("org.videolan.vlc")
+                setDataAndType(uri, "video/*")
+                putExtra("title", title)
+                putExtra(Intent.EXTRA_TITLE, title)
+                putExtra("from_start", positionMs <= 0L)
+                if (positionMs > 0L) putExtra("position", positionMs)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                startActivity(intent)
+                result.success(true)
+            } catch (_: ActivityNotFoundException) {
+                result.error("VLC_NOT_INSTALLED", "VLC for Android is not installed or its media activity is unavailable.", null)
+            } catch (error: Exception) {
+                result.error("VLC_OPEN_FAILED", error.message ?: "Could not hand the stream to VLC.", null)
+            }
+        }
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "moviebox_nexus/torrent"
