@@ -732,7 +732,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
-  // Retained as a deliberate, non-default compatibility path.\n  // ignore: unused_element\n  Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
+  // Retained as a deliberate, non-default compatibility path.
+  // ignore: unused_element
+  Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
