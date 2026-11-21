@@ -76,7 +76,7 @@ def patch_data_source_utils(source: str) -> str:
     patched_setting = ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)"
     marker = "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000"
     timeout_pattern = re.compile(
-        r"\\.setReadTimeoutMs\\(\\s*DefaultHttpDataSource\\.DEFAULT_READ_TIMEOUT_MILLIS\\s*\\)"
+        r"\.setReadTimeoutMs\(\s*DefaultHttpDataSource\.DEFAULT_READ_TIMEOUT_MILLIS\s*\)"
     )
 
     if marker in source:
@@ -169,7 +169,9 @@ internal object DataSourceUtils {
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patched
     multiline_fixture = fixture.replace(
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
-        ".setReadTimeoutMs(\\n            DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS\\n        )",
+        """.setReadTimeoutMs(
+            DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS
+        )""",
     )
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patch_data_source_utils(
         multiline_fixture
