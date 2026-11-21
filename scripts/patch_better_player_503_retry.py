@@ -260,18 +260,26 @@ def main() -> int:
     patched_data_source = patch_data_source_utils(data_source_original)
 
     # Validate both transformations before writing either plugin file.
+    if "setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())" not in patched_better_player:
+        raise SystemExit("Bounded Media3 503 policy installation verification failed.")
+    final_timeout_constants = list(
+        re.finditer(
+            r"^\\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\\s*=\\s*(\\d+)\\s*$",
+            patched_data_source,
+            re.MULTILINE,
+        )
+    )
+    if (
+        len(final_timeout_constants) != 1
+        or int(final_timeout_constants[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
+        or ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" not in patched_data_source
+    ):
+        raise SystemExit("Media3 torrent HTTP read-timeout installation verification failed.")
+
     if patched_better_player != better_player_original:
         better_player_path.write_text(patched_better_player, encoding="utf-8")
     if patched_data_source != data_source_original:
         data_source_path.write_text(patched_data_source, encoding="utf-8")
-
-    if "setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())" not in patched_better_player:
-        raise SystemExit("Bounded Media3 503 policy installation verification failed.")
-    if (
-        "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000" not in patched_data_source
-        or ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" not in patched_data_source
-    ):
-        raise SystemExit("Media3 torrent HTTP read-timeout installation verification failed.")
 
     print(f"Installed bounded Media3 503 retry policy in {better_player_path}")
     print(
