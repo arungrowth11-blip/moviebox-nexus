@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:moviebox_nexus/src/addons/stremio_manifest.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -703,6 +704,7 @@ class AddonCatalog {
   final String catalogName;
   final String id;
   final String baseUrl;
+  final String manifestUrl;
   final Set<String> types;
 
   AddonCatalog({
@@ -710,12 +712,78 @@ class AddonCatalog {
     required this.catalogName,
     required this.id,
     required this.baseUrl,
+    required this.manifestUrl,
     Set<String>? types,
   }) : types = types ?? <String>{};
 }
 
+class _CachedAddonManifest {
+  const _CachedAddonManifest(this.manifest, this.fetchedAt);
+
+  final StremioAddonManifest manifest;
+  final DateTime fetchedAt;
+}
+
 class CatalogEngine {
+  CatalogEngine({DateTime Function()? clock}) : _clock = clock ?? DateTime.now;
+
   final http.Client _client = http.Client();
+  final DateTime Function() _clock;
+  static const Duration _manifestCacheTtl = Duration(minutes: 15);
+  static const Duration _manifestStaleLimit = Duration(days: 7);
+  final Map<String, _CachedAddonManifest> _manifestCache =
+      <String, _CachedAddonManifest>{};
+  final Map<String, Future<StremioAddonManifest?>> _manifestRequests =
+      <String, Future<StremioAddonManifest?>>{};
+
+  Future<StremioAddonManifest?> _loadAddonManifest(
+    ManagedAddon addon, {
+    bool forceRefresh = false,
+  }) async {
+    final key = addon.manifestUrl.trim();
+    if (key.isEmpty) return null;
+    final cached = _manifestCache[key];
+    final now = _clock();
+    if (!forceRefresh &&
+        cached != null &&
+        now.difference(cached.fetchedAt) < _manifestCacheTtl) {
+      return cached.manifest;
+    }
+
+    final inFlight = _manifestRequests[key];
+    if (inFlight != null) return inFlight;
+
+    late final Future<StremioAddonManifest?> request;
+    request = () async {
+      try {
+        final response = await _client
+            .get(Uri.parse(key))
+            .timeout(const Duration(seconds: 7));
+        if (response.statusCode == 200) {
+          final parsed = StremioAddonManifest.fromJson(
+            jsonDecode(response.body),
+          );
+          _manifestCache[key] = _CachedAddonManifest(parsed, _clock());
+          return parsed;
+        }
+      } catch (_) {
+        // A temporarily unavailable manifest may use its last known-good copy.
+      }
+      if (cached != null &&
+          _clock().difference(cached.fetchedAt) < _manifestStaleLimit) {
+        return cached.manifest;
+      }
+      return null;
+    }();
+    _manifestRequests[key] = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_manifestRequests[key], request)) {
+        _manifestRequests.remove(key);
+      }
+    }
+  }
 
   Future<List<Meta>> fetchRow(
     String primary,
@@ -744,51 +812,37 @@ class CatalogEngine {
   /// Reads catalog IDs and media types from an addon's own Stremio manifest.
   /// Catalog IDs are addon-defined; never infer them from provider display names.
   Future<List<AddonCatalog>> fetchAddonCatalogs(ManagedAddon addon) async {
-    try {
-      final response = await _client
-          .get(Uri.parse(addon.manifestUrl))
-          .timeout(const Duration(seconds: 10));
-      if (response.statusCode != 200) return <AddonCatalog>[];
-      final decoded = jsonDecode(response.body);
-      if (decoded is! Map) return <AddonCatalog>[];
-      final manifest = Map<String, dynamic>.from(decoded);
-      final resources = manifest['resources'];
-      if (resources is List &&
-          !resources.any(
-            (resource) =>
-                resource == 'catalog' ||
-                (resource is Map &&
-                    (resource['name'] == 'catalog' ||
-                        resource['resource'] == 'catalog')),
-          )) {
-        return <AddonCatalog>[];
-      }
-      final declaredCatalogs = manifest['catalogs'];
-      if (declaredCatalogs is! List) return <AddonCatalog>[];
+    final manifest = await _loadAddonManifest(addon);
+    if (manifest == null) return <AddonCatalog>[];
 
-      final grouped = <String, AddonCatalog>{};
-      for (final raw in declaredCatalogs.whereType<Map>()) {
-        final item = Map<String, dynamic>.from(raw);
-        final type = (item['type'] ?? '').toString().toLowerCase();
-        final id = (item['id'] ?? '').toString().trim();
-        if (!{'movie', 'series'}.contains(type) || id.isEmpty) continue;
-        final name = (item['name'] ?? id).toString().trim();
-        final key = '${addon.baseUrl}|$id|$name';
-        final catalog = grouped.putIfAbsent(
-          key,
-          () => AddonCatalog(
-            addonName: addon.name,
-            catalogName: name.isEmpty ? id : name,
-            id: id,
-            baseUrl: addon.baseUrl,
-          ),
-        );
-        catalog.types.add(type);
+    final grouped = <String, AddonCatalog>{};
+    for (final definition in manifest.catalogs) {
+      final type = definition.type;
+      final id = definition.id.trim();
+      if (!{'movie', 'series'}.contains(type) ||
+          id.isEmpty ||
+          !manifest.supportsResource(
+            'catalog',
+            type: type,
+            checkIdPrefix: false,
+          )) {
+        continue;
       }
-      return grouped.values.toList();
-    } catch (_) {
-      return <AddonCatalog>[];
+      final name = definition.name.trim().isEmpty ? id : definition.name.trim();
+      final key = '${addon.manifestUrl}|$id|$name';
+      final catalog = grouped.putIfAbsent(
+        key,
+        () => AddonCatalog(
+          addonName: addon.name,
+          catalogName: name,
+          id: id,
+          baseUrl: addon.baseUrl,
+          manifestUrl: addon.manifestUrl,
+        ),
+      );
+      catalog.types.add(type);
     }
+    return grouped.values.toList();
   }
 
   Future<List<Meta>> search(String query) async {
@@ -840,11 +894,8 @@ class CatalogEngine {
     List<ManagedAddon> addons, {
     void Function(List<StreamLink> streams)? onUpdate,
   }) async {
-    final eligible = addons.where((addon) {
-      final name = addon.name.toLowerCase();
-      return !name.contains('cinemeta') && !name.contains('streaming catalogs');
-    }).toList();
-
+    // Route by Stremio manifest capabilities instead of addon display names.
+    // Each addon resolves as soon as its parallel manifest request completes.
     final accumulated = <String, StreamLink>{};
     List<StreamLink> ranked() {
       final streams = accumulated.values.toList()
@@ -854,10 +905,14 @@ class CatalogEngine {
 
     Future<List<StreamLink>> resolveAddon(ManagedAddon addon) async {
       try {
-        final endpoint =
-            '${addon.baseUrl}/stream/$type/${Uri.encodeComponent(id)}.json';
+        final endpoint = StremioAddonManifest.resourceUri(
+          addon.manifestUrl,
+          resource: 'stream',
+          type: type,
+          id: id,
+        );
         final response = await _client
-            .get(Uri.parse(endpoint))
+            .get(endpoint)
             .timeout(const Duration(seconds: 5));
         if (response.statusCode != 200) return <StreamLink>[];
         final decoded = jsonDecode(response.body);
@@ -996,7 +1051,12 @@ class CatalogEngine {
     // start a stream from the first usable provider without waiting for the
     // slowest add-on in the parallel fan-out.
     await Future.wait(
-      eligible.map((addon) async {
+      addons.map((addon) async {
+        final manifest = await _loadAddonManifest(addon);
+        if (manifest == null ||
+            !manifest.supportsResource('stream', type: type, id: id)) {
+          return;
+        }
         final streams = await resolveAddon(addon);
         for (final stream in streams) {
           final key =
@@ -1327,7 +1387,11 @@ class CatalogEngine {
     List<Map<String, String>> candidates,
   ) async => (await probeLiveTvSources(candidates)).working;
 
-  void close() => _client.close();
+  void close() {
+    _manifestCache.clear();
+    _manifestRequests.clear();
+    _client.close();
+  }
 
   /// Cached public IPTV playlist enriched with structured country/category data.
   Future<List<Map<String, String>>> fetchIptv({
@@ -3554,16 +3618,14 @@ class _HubScreenState extends State<HubScreen> {
         _message = null;
       });
     }
-    final eligible = widget.addons
-        .where((addon) => !addon.name.toLowerCase().contains('cinemeta'))
-        .toList();
     final results = await Future.wait(
-      eligible.map(widget.engine.fetchAddonCatalogs),
+      widget.addons.map(widget.engine.fetchAddonCatalogs),
     );
     final merged = <String, AddonCatalog>{};
     for (final list in results) {
       for (final catalog in list) {
-        final key = '${catalog.baseUrl}|${catalog.id}|${catalog.catalogName}';
+        final key =
+            '${catalog.manifestUrl}|${catalog.id}|${catalog.catalogName}';
         final existing = merged.putIfAbsent(key, () => catalog);
         existing.types.addAll(catalog.types);
       }
@@ -3592,15 +3654,25 @@ class _HubScreenState extends State<HubScreen> {
       _movies = [];
       _series = [];
     });
-    final base = catalog.baseUrl.replaceFirst(RegExp(r'/+$'), '');
-    final encodedId = Uri.encodeComponent(catalog.id);
+    final movieCatalogUri = StremioAddonManifest.resourceUri(
+      catalog.manifestUrl,
+      resource: 'catalog',
+      type: 'movie',
+      id: catalog.id,
+    );
+    final seriesCatalogUri = StremioAddonManifest.resourceUri(
+      catalog.manifestUrl,
+      resource: 'catalog',
+      type: 'series',
+      id: catalog.id,
+    );
     final results = await Future.wait([
       catalog.types.contains('movie')
-          ? widget.engine.fetchRow('$base/catalog/movie/$encodedId.json', null)
+          ? widget.engine.fetchRow(movieCatalogUri.toString(), null)
           : Future.value(<Meta>[]),
       catalog.types.contains('series')
           ? widget.engine.fetchRow(
-              '$base/catalog/series/$encodedId.json',
+              seriesCatalogUri.toString(),
               null,
               type: 'series',
             )

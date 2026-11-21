@@ -222,7 +222,7 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   testWidgets(
-    'Media3 retries two bounded HTTP 503 responses and then plays valid 206 bytes',
+    'Media3 retries two bounded HTTP 503 responses and survives a 12-second first-byte wait',
     (tester) async {
       const mediaUrl = String.fromEnvironment('MOVIEBOX_TEST_MP4_URL');
       final parsedSourceUri = Uri.tryParse(mediaUrl);
@@ -247,12 +247,16 @@ void main() {
         ..connectionTimeout = const Duration(seconds: 15);
       final retryStatuses = <int>[];
       var getRequests = 0;
+      var torrentMarkerForwarded = false;
       String? successful206ContentRange;
       var successful206BodyBytes = 0;
       final first206BodyBytes = <int>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((incoming) async {
         try {
+          if (incoming.headers.value('X-MovieBox-Torrent-Stream') != null) {
+            torrentMarkerForwarded = true;
+          }
           if (incoming.method == 'GET') {
             getRequests++;
             if (getRequests <= 2) {
@@ -263,6 +267,14 @@ void main() {
               await incoming.response.close();
               return;
             }
+          }
+
+          // Media3's stock HTTP read timeout is 8 seconds. The MovieBox
+          // torrent bridge can need longer to verify a complete first piece.
+          // This 12-second delayed first-byte response proves the patched
+          // 60-second read timeout is actually installed in the Android plugin.
+          if (incoming.method == 'GET' && getRequests == 3) {
+            await Future<void>.delayed(const Duration(seconds: 12));
           }
 
           final upstreamRequest = await upstreamClient.openUrl(
@@ -336,7 +348,10 @@ void main() {
             home: PlayerScreen(
               title: 'MovieBox Media3 bounded 503 retry QA',
               url: retryUrl,
-              headers: const <String, String>{'Range': 'bytes=0-'},
+              headers: const <String, String>{
+                'Range': 'bytes=0-',
+                'X-MovieBox-Torrent-Stream': 'true',
+              },
               onSave: (_) async {},
               onPrepared: (elapsed) {
                 if (!prepared.isCompleted) prepared.complete(elapsed);
@@ -384,7 +399,13 @@ void main() {
           timeout: const Duration(seconds: 25),
           diagnostic: () => _media3Diagnostic(controller),
         );
-        expect(getRequests, greaterThanOrEqualTo(3));
+        expect(getRequests, 3);
+        expect(
+          torrentMarkerForwarded,
+          isFalse,
+          reason:
+              'The plugin-only torrent timeout marker must never reach the media origin.',
+        );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await server.close(force: true);
