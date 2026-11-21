@@ -73,9 +73,11 @@ def resolve_package_root(package_root: str | None) -> Path:
 
 def patch_data_source_utils(source: str) -> str:
     """Raise Media3's HTTP read timeout above the native first-piece wait."""
-    timeout_setting = ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)"
     patched_setting = ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)"
     marker = "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000"
+    timeout_pattern = re.compile(
+        r"\\.setReadTimeoutMs\\(\\s*DefaultHttpDataSource\\.DEFAULT_READ_TIMEOUT_MILLIS\\s*\\)"
+    )
 
     if marker in source:
         if patched_setting not in source:
@@ -84,10 +86,15 @@ def patch_data_source_utils(source: str) -> str:
             )
         return source
 
-    if source.count(timeout_setting) != 1:
+    matches = list(timeout_pattern.finditer(source))
+    if not matches:
+        relevant_lines = [
+            line for line in source.splitlines()
+            if "ReadTimeout" in line or "DEFAULT_READ_TIMEOUT" in line
+        ]
         raise SystemExit(
-            "Expected exactly one DefaultHttpDataSource default read-timeout setting "
-            "in DataSourceUtils.kt; refusing an unsafe plugin patch."
+            "Could not find DataSourceUtils read-timeout expression. "
+            f"Observed timeout lines: {relevant_lines!r}"
         )
     object_pattern = re.compile(r"^(internal\s+)?object DataSourceUtils\s*\{", re.MULTILINE)
     object_match = object_pattern.search(source)
@@ -100,7 +107,9 @@ def patch_data_source_utils(source: str) -> str:
         + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\n"
         + source[object_match.end():]
     )
-    source = source.replace(timeout_setting, patched_setting, 1)
+    source, replaced = timeout_pattern.subn(patched_setting, source)
+    if replaced != len(matches):
+        raise SystemExit("Could not replace every DataSourceUtils read-timeout setting.")
     return source
 
 
@@ -158,6 +167,13 @@ internal object DataSourceUtils {
     patched = patch_data_source_utils(fixture)
     assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in patched
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patched
+    multiline_fixture = fixture.replace(
+        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
+        ".setReadTimeoutMs(\\n            DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS\\n        )",
+    )
+    assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patch_data_source_utils(
+        multiline_fixture
+    )
     assert patch_data_source_utils(patched) == patched
     bad_fixture = fixture.replace(
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
