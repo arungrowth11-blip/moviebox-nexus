@@ -561,7 +561,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           }),
         );
       }
-      if (elapsed < Media3StartupPolicy.startupTimeout || resolving) return;
+      final startupTimeout = Media3StartupPolicy.timeoutFor(
+        isEmbeddedTorrent: _isEmbeddedTorrent,
+      );
+      if (elapsed < startupTimeout || resolving) return;
       resolving = true;
       unawaited(
         _resolveMedia3StartupStall(
@@ -663,7 +666,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     _handleMedia3Problem(
       'Media3 initialized but its playback clock did not advance after '
-      '${Media3StartupPolicy.startupTimeout.inSeconds}s; '
+      '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: _isEmbeddedTorrent).inSeconds}s; '
       'loopback body bytes sent=$httpBytesSent. Trying VLC compatibility playback.',
     );
   }
