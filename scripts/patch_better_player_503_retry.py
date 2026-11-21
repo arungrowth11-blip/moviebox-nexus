@@ -74,12 +74,11 @@ def resolve_package_root(package_root: str | None) -> Path:
 def patch_data_source_utils(source: str) -> str:
     """Install the torrent read timeout, repairing original or half-patched caches."""
     patched_setting = ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)"
-    marker = "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000"
     timeout_pattern = re.compile(
         r"\.setReadTimeoutMs\(\s*DefaultHttpDataSource\.DEFAULT_READ_TIMEOUT_MILLIS\s*\)"
     )
     constant_pattern = re.compile(
-        r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*(\d+)\s*$",
+        r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*([0-9][0-9_]*)\s*$",
         re.MULTILINE,
     )
     object_pattern = re.compile(
@@ -98,7 +97,7 @@ def patch_data_source_utils(source: str) -> str:
     constant_matches = list(constant_pattern.finditer(source))
     if len(constant_matches) > 1:
         raise SystemExit("Duplicate MovieBox torrent read-timeout declarations found.")
-    if constant_matches and int(constant_matches[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS:
+    if constant_matches and int(constant_matches[0].group(1).replace("_", "")) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS:
         raise SystemExit("Existing MovieBox torrent read timeout has an unexpected value.")
 
     original_matches = list(timeout_pattern.finditer(source))
@@ -131,7 +130,7 @@ def patch_data_source_utils(source: str) -> str:
     if (
         patched_setting not in source
         or len(final_constants) != 1
-        or int(final_constants[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
+        or int(final_constants[0].group(1).replace("_", "")) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
     ):
         raise SystemExit("Torrent HTTP read-timeout patch is incomplete after transformation.")
     return source
@@ -200,9 +199,22 @@ internal object DataSourceUtils {
         ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)",
     )
     repaired = patch_data_source_utils(half_patched)
-    assert "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000" in repaired
+    assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in repaired
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in repaired
     assert patch_data_source_utils(repaired) == repaired
+
+    # Accept a cached Kotlin constant that uses numeric separators.
+    underscored_constant = fixture.replace(
+        "internal object DataSourceUtils {",
+        "internal object DataSourceUtils {\n"
+        "    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000",
+    ).replace(
+        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
+        ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)",
+    )
+    normalized = patch_data_source_utils(underscored_constant)
+    assert normalized.count("private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS =") == 1
+    assert "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000" in normalized
 
     bad_fixture = fixture.replace(
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
