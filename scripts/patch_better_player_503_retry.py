@@ -264,7 +264,7 @@ def main() -> int:
         raise SystemExit("Bounded Media3 503 policy installation verification failed.")
     final_timeout_constants = list(
         re.finditer(
-            r"^\\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\\s*=\\s*(\\d+)\\s*$",
+            r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*([0-9][0-9_]*)\s*$",
             patched_data_source,
             re.MULTILINE,
         )
