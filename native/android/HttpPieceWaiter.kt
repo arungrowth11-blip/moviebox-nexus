@@ -54,6 +54,8 @@ internal data class HttpByteRange(
 
 /** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
 internal object HttpRangePolicy {
+    // Do not reject a torrent startup before a normal full piece can be verified.
+    const val FIRST_RESPONSE_PIECE_WAIT_MS = 45_000L
     const val RETRY_AFTER_SECONDS = 1
 
     fun shouldWaitForFirstPiece(method: String): Boolean =
