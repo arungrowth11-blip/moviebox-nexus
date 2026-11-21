@@ -146,7 +146,8 @@ void main() {
             isPlaying: false,
             initialPosition: Duration.zero,
             currentPosition: Duration.zero,
-            elapsed: Media3StartupPolicy.torrentStartupTimeout +
+            elapsed:
+                Media3StartupPolicy.torrentStartupTimeout +
                 const Duration(seconds: 1),
             isEmbeddedTorrent: true,
             httpBytesSent: 65536,
