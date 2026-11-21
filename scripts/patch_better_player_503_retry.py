@@ -127,7 +127,12 @@ def patch_data_source_utils(source: str) -> str:
     if replaced != len(original_matches):
         raise SystemExit("Could not replace every original DataSourceUtils read-timeout setting.")
 
-    if patched_setting not in source or marker not in source:
+    final_constants = list(constant_pattern.finditer(source))
+    if (
+        patched_setting not in source
+        or len(final_constants) != 1
+        or int(final_constants[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
+    ):
         raise SystemExit("Torrent HTTP read-timeout patch is incomplete after transformation.")
     return source
 
