@@ -322,7 +322,9 @@ class _PlayerScreenState extends State<PlayerScreen>
             ? 'Media3 failed while opening the torrent stream, and native diagnostics could not be read. VLC was not started because an alternate decoder cannot fix an unverified or undelivered torrent piece. $reason'
             : 'Torrent transport has not delivered video bytes to the player. VLC was not started because it would request the same incomplete torrent stream. Retry keeps the embedded torrent source active. $details';
       });
-      debugPrint('MovieBox torrent transport failure (no VLC fallback): $reason; $details');
+      debugPrint(
+        'MovieBox torrent transport failure (no VLC fallback): $reason; $details',
+      );
       return;
     }
 
@@ -447,7 +449,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (mounted && !_disposed && !_usingVlc && _loading) {
           if (_isEmbeddedTorrent) {
             unawaited(
-              _handleMedia3Exception('Torrent startup timed out after 150 seconds'),
+              _handleMedia3Exception(
+                'Torrent startup timed out after 150 seconds',
+              ),
             );
           } else {
             unawaited(_switchToVlc('Media3 initialization timed out'));

@@ -3,15 +3,18 @@ import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 void main() {
   group('Media3StartupPolicy', () {
-    test('does not switch torrent transport failures to VLC before bytes arrive', () {
-      expect(
-        Media3StartupPolicy.canFallbackToCompatibilityPlayer(
-          isEmbeddedTorrent: true,
-          httpBytesSent: 0,
-        ),
-        isFalse,
-      );
-    });
+    test(
+      'does not switch torrent transport failures to VLC before bytes arrive',
+      () {
+        expect(
+          Media3StartupPolicy.canFallbackToCompatibilityPlayer(
+            isEmbeddedTorrent: true,
+            httpBytesSent: 0,
+          ),
+          isFalse,
+        );
+      },
+    );
 
     test('allows VLC compatibility after torrent bytes reach the player', () {
       expect(
