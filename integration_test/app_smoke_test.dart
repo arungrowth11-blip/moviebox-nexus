@@ -247,12 +247,16 @@ void main() {
         ..connectionTimeout = const Duration(seconds: 15);
       final retryStatuses = <int>[];
       var getRequests = 0;
+      var torrentMarkerForwarded = false;
       String? successful206ContentRange;
       var successful206BodyBytes = 0;
       final first206BodyBytes = <int>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((incoming) async {
         try {
+          if (incoming.headers.value('X-MovieBox-Torrent-Stream') != null) {
+            torrentMarkerForwarded = true;
+          }
           if (incoming.method == 'GET') {
             getRequests++;
             if (getRequests <= 2) {
@@ -344,7 +348,10 @@ void main() {
             home: PlayerScreen(
               title: 'MovieBox Media3 bounded 503 retry QA',
               url: retryUrl,
-              headers: const <String, String>{'Range': 'bytes=0-'},
+              headers: const <String, String>{
+                'Range': 'bytes=0-',
+                'X-MovieBox-Torrent-Stream': 'true',
+              },
               onSave: (_) async {},
               onPrepared: (elapsed) {
                 if (!prepared.isCompleted) prepared.complete(elapsed);
@@ -393,6 +400,11 @@ void main() {
           diagnostic: () => _media3Diagnostic(controller),
         );
         expect(getRequests, 3);
+        expect(
+          torrentMarkerForwarded,
+          isFalse,
+          reason: 'The plugin-only torrent timeout marker must never reach the media origin.',
+        );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
         await server.close(force: true);
