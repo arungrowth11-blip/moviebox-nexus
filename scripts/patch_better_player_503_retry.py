@@ -72,44 +72,63 @@ def resolve_package_root(package_root: str | None) -> Path:
 
 
 def patch_data_source_utils(source: str) -> str:
-    """Raise Media3's HTTP read timeout above the native first-piece wait."""
+    """Install the torrent read timeout, repairing original or half-patched caches."""
     patched_setting = ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)"
     marker = "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000"
     timeout_pattern = re.compile(
         r"\.setReadTimeoutMs\(\s*DefaultHttpDataSource\.DEFAULT_READ_TIMEOUT_MILLIS\s*\)"
     )
+    constant_pattern = re.compile(
+        r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*(\d+)\s*$",
+        re.MULTILINE,
+    )
+    object_pattern = re.compile(
+        r"^(internal\s+)?object DataSourceUtils\s*\{",
+        re.MULTILINE,
+    )
 
-    if marker in source:
-        if patched_setting not in source:
-            raise SystemExit(
-                "Torrent read-timeout marker exists but the DataSource factory is not using it."
-            )
-        return source
+    object_match = object_pattern.search(source)
+    if object_match is None:
+        raise SystemExit(
+            "Could not locate DataSourceUtils object; refusing an unsafe plugin patch."
+        )
 
-    matches = list(timeout_pattern.finditer(source))
-    if not matches:
+    # Pub cache may be restored from a job that applied only part of an earlier
+    # patch. Recognize all three states: untouched, setter-only, and complete.
+    constant_matches = list(constant_pattern.finditer(source))
+    if len(constant_matches) > 1:
+        raise SystemExit("Duplicate MovieBox torrent read-timeout declarations found.")
+    if constant_matches and int(constant_matches[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS:
+        raise SystemExit("Existing MovieBox torrent read timeout has an unexpected value.")
+
+    original_matches = list(timeout_pattern.finditer(source))
+    has_patched_setter = patched_setting in source
+    if not original_matches and not has_patched_setter:
         relevant_lines = [
             line for line in source.splitlines()
             if "ReadTimeout" in line or "DEFAULT_READ_TIMEOUT" in line
         ]
         raise SystemExit(
-            "Could not find DataSourceUtils read-timeout expression. "
+            "Could not find a supported DataSourceUtils read-timeout setter. "
             f"Observed timeout lines: {relevant_lines!r}"
         )
-    object_pattern = re.compile(r"^(internal\s+)?object DataSourceUtils\s*\{", re.MULTILINE)
-    object_match = object_pattern.search(source)
-    if object_match is None:
-        raise SystemExit("Could not locate DataSourceUtils object; refusing an unsafe plugin patch.")
 
-    source = (
-        source[:object_match.end()]
-        + "\n    // Must exceed EmbeddedTorrentEngine's 45-second verified-piece wait.\n"
-        + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\n"
-        + source[object_match.end():]
-    )
+    # Insert the declaration before the method even when the setter was already
+    # rewritten in a restored Pub cache but the declaration was not.
+    if not constant_matches:
+        source = (
+            source[:object_match.end()]
+            + "\n    // Must exceed EmbeddedTorrentEngine's 45-second verified-piece wait.\n"
+            + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\n"
+            + source[object_match.end():]
+        )
+
     source, replaced = timeout_pattern.subn(patched_setting, source)
-    if replaced != len(matches):
-        raise SystemExit("Could not replace every DataSourceUtils read-timeout setting.")
+    if replaced != len(original_matches):
+        raise SystemExit("Could not replace every original DataSourceUtils read-timeout setting.")
+
+    if patched_setting not in source or marker not in source:
+        raise SystemExit("Torrent HTTP read-timeout patch is incomplete after transformation.")
     return source
 
 
@@ -154,7 +173,7 @@ def patch_better_player(source: str) -> str:
 
 
 def self_test() -> None:
-    """Fail fast if the plugin source patch stops matching its expected API."""
+    """Exercise original, half-patched, full-patched, and unexpected source layouts."""
     fixture = """package uz.shs.better_player_plus
 
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -167,16 +186,19 @@ internal object DataSourceUtils {
     patched = patch_data_source_utils(fixture)
     assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in patched
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patched
-    multiline_fixture = fixture.replace(
-        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
-        """.setReadTimeoutMs(
-            DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS
-        )""",
-    )
-    assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patch_data_source_utils(
-        multiline_fixture
-    )
     assert patch_data_source_utils(patched) == patched
+
+    # Repaired partial Pub-cache state: the setter is present but its constant
+    # declaration is absent. This was the exact shape reported by the failed CI.
+    half_patched = fixture.replace(
+        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
+        ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)",
+    )
+    repaired = patch_data_source_utils(half_patched)
+    assert "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000" in repaired
+    assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in repaired
+    assert patch_data_source_utils(repaired) == repaired
+
     bad_fixture = fixture.replace(
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
         ".setReadTimeoutMs(8_000)",
