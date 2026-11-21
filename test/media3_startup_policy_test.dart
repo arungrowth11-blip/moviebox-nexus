@@ -122,7 +122,7 @@ void main() {
     );
 
     test(
-      'uses compatibility player when torrent bytes exist but clock is frozen',
+      'keeps torrent startup pending inside retry budget after bytes arrive',
       () {
         expect(
           Media3StartupPolicy.evaluate(
@@ -130,6 +130,24 @@ void main() {
             initialPosition: Duration.zero,
             currentPosition: Duration.zero,
             elapsed: const Duration(seconds: 25),
+            isEmbeddedTorrent: true,
+            httpBytesSent: 65536,
+          ),
+          Media3StartupDecision.wait,
+        );
+      },
+    );
+
+    test(
+      'uses compatibility player when torrent bytes exist but clock is frozen',
+      () {
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: false,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: Media3StartupPolicy.torrentStartupTimeout +
+                const Duration(seconds: 1),
             isEmbeddedTorrent: true,
             httpBytesSent: 65536,
           ),
