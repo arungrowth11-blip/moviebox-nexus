@@ -12,6 +12,11 @@ enum Media3StartupDecision {
 /// a transport/peer stall from a decoder/player stall.
 class Media3StartupPolicy {
   static const Duration startupTimeout = Duration(seconds: 20);
+  // Three 45-second first-piece attempts plus bounded retry gaps and cleanup margin.
+  static const Duration torrentStartupTimeout = Duration(seconds: 140);
+
+  static Duration timeoutFor({required bool isEmbeddedTorrent}) =>
+      isEmbeddedTorrent ? torrentStartupTimeout : startupTimeout;
   static const Duration progressThreshold = Duration(milliseconds: 700);
 
   /// A different decoder cannot repair a torrent transport that has emitted no
@@ -34,7 +39,9 @@ class Media3StartupPolicy {
     if (isPlaying || currentPosition > initialPosition + progressThreshold) {
       return Media3StartupDecision.started;
     }
-    if (elapsed < startupTimeout) return Media3StartupDecision.wait;
+    if (elapsed < timeoutFor(isEmbeddedTorrent: isEmbeddedTorrent)) {
+      return Media3StartupDecision.wait;
+    }
     if (isEmbeddedTorrent && httpBytesSent <= 0) {
       return Media3StartupDecision.noTorrentBytes;
     }
