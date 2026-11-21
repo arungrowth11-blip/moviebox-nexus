@@ -161,14 +161,17 @@ def patch_data_source_utils(source: str) -> str:
     filtered_assignment = """if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)) {
                     notNullHeaders[entry.key] = entry.value
                 }"""
-    filter_marker = "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)"
+    # Match the negated copy-loop guard, not the same key comparison used
+    # by isMovieBoxTorrentStream(). The helper is inserted above, so matching
+    # only entry.key.equals(...) would falsely claim the forwarding filter exists.
+    filter_marker = "if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true))"
     if filter_marker not in source:
         if source.count(assignment) != 1:
             raise SystemExit(
                 "Could not safely locate the single DataSourceUtils request-header copy loop."
             )
         source = source.replace(assignment, filtered_assignment, 1)
-    elif assignment not in source:
+    elif filtered_assignment not in source:
         raise SystemExit("Torrent marker header filter exists but request headers are not copied as expected.")
 
     if (
@@ -178,6 +181,7 @@ def patch_data_source_utils(source: str) -> str:
         or conditional_marker not in source
         or "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" not in source
         or filter_marker not in source
+        or filtered_assignment not in source
     ):
         raise SystemExit("Torrent-only Media3 read-timeout installation is incomplete.")
     return source
@@ -253,6 +257,15 @@ internal object DataSourceUtils {
     assert "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS" in patched
     assert "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" in patched
     assert "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)" in patched
+    assert (
+        "if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true))"
+        in patched
+    )
+    assert (
+        "if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)) {\n"
+        "                    notNullHeaders[entry.key] = entry.value\n"
+        "                }"
+    ) in patched
     assert patch_data_source_utils(patched) == patched
 
     # Repair the previous global 60-second cache patch and make it torrent-only.
@@ -324,7 +337,7 @@ def main() -> int:
         or f'private const val MOVIEBOX_TORRENT_STREAM_HEADER = "{MOVIEBOX_TORRENT_STREAM_HEADER}"' not in patched_data_source
         or "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS" not in patched_data_source
         or "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" not in patched_data_source
-        or "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)" not in patched_data_source
+        or "if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true))" not in patched_data_source
     ):
         raise SystemExit("Torrent-only Media3 read-timeout installation verification failed.")
 
