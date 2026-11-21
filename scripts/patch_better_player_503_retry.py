@@ -89,15 +89,15 @@ def patch_data_source_utils(source: str) -> str:
             "Expected exactly one DefaultHttpDataSource default read-timeout setting "
             "in DataSourceUtils.kt; refusing an unsafe plugin patch."
         )
-    object_pattern = re.compile(r"^(internal\\s+)?object DataSourceUtils\\s*\\{", re.MULTILINE)
+    object_pattern = re.compile(r"^(internal\s+)?object DataSourceUtils\s*\{", re.MULTILINE)
     object_match = object_pattern.search(source)
     if object_match is None:
         raise SystemExit("Could not locate DataSourceUtils object; refusing an unsafe plugin patch.")
 
     source = (
         source[:object_match.end()]
-        + f"\\n    // Must exceed EmbeddedTorrentEngine's 45-second verified-piece wait.\\n"
-        + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\\n"
+        + "\n    // Must exceed EmbeddedTorrentEngine's 45-second verified-piece wait.\n"
+        + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\n"
         + source[object_match.end():]
     )
     source = source.replace(timeout_setting, patched_setting, 1)
@@ -112,27 +112,27 @@ def patch_better_player(source: str) -> str:
             )
         return source
 
-    package_match = re.search(r"^package [^\\n]+\\n", source, re.MULTILINE)
+    package_match = re.search(r"^package [^\n]+\n", source, re.MULTILINE)
     if package_match is None:
         raise SystemExit("BetterPlayer.kt has no Kotlin package declaration.")
-    import_text = "".join(item + "\\n" for item in IMPORTS if item not in source)
+    import_text = "".join(item + "\n" for item in IMPORTS if item not in source)
     source = source[:package_match.end()] + import_text + source[package_match.end():]
 
     class_match = re.search(
-        r"^(?:internal\\s+)?class BetterPlayer\\s*\\(",
+        r"^(?:internal\s+)?class BetterPlayer\s*\(",
         source,
         re.MULTILINE,
     )
     if class_match is None:
         raise SystemExit("Could not locate BetterPlayer class declaration.")
-    source = source[:class_match.start()] + POLICY_CLASS + "\\n" + source[class_match.start():]
+    source = source[:class_match.start()] + POLICY_CLASS + "\n" + source[class_match.start():]
 
     factory_pattern = re.compile(
-        r"(C\\.CONTENT_TYPE_OTHER\\s*->\\s*ProgressiveMediaSource\\.Factory\\([\\s\\S]*?\\)\\.apply\\s*\\{)",
+        r"(C\.CONTENT_TYPE_OTHER\s*->\s*ProgressiveMediaSource\.Factory\([\s\S]*?\)\.apply\s*\{)",
         re.MULTILINE,
     )
     source, count = factory_pattern.subn(
-        r"\\1\\n                setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())",
+        r"\1\n                setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())",
         source,
         count=1,
     )
@@ -159,11 +159,12 @@ internal object DataSourceUtils {
     assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in patched
     assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patched
     assert patch_data_source_utils(patched) == patched
+    bad_fixture = fixture.replace(
+        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
+        ".setReadTimeoutMs(8_000)",
+    )
     try:
-        patch_data_source_utils(fixture.replace(
-            ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
-            ".setReadTimeoutMs(8_000)",
-        ))
+        patch_data_source_utils(bad_fixture)
     except SystemExit:
         pass
     else:
@@ -201,7 +202,7 @@ def main() -> int:
     patched_better_player = patch_better_player(better_player_original)
     patched_data_source = patch_data_source_utils(data_source_original)
 
-    # Write both plugin files only after both transformations validate.
+    # Validate both transformations before writing either plugin file.
     if patched_better_player != better_player_original:
         better_player_path.write_text(patched_better_player, encoding="utf-8")
     if patched_data_source != data_source_original:
