@@ -4,7 +4,7 @@
 Media3's stock DefaultHttpDataSource read timeout is 8 seconds. MovieBox's
 loopback torrent bridge waits for a verified full piece before committing HTTP
 headers, so the plugin's read timeout must exceed that bounded wait. This script
-sets it to 60 seconds and installs a bounded HTTP 503 retry policy for opaque
+sets a torrent-only 120-second read timeout and installs a bounded HTTP 503 retry policy for opaque
 progressive (CONTENT_TYPE_OTHER) streams.
 
 Run after flutter pub get and before Gradle compiles the Android plugin.
@@ -18,8 +18,10 @@ import re
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000
+MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 120_000
+REQUIRED_METADATA_WAIT_MS = 65_000
 REQUIRED_FIRST_PIECE_WAIT_MS = 45_000
+MOVIEBOX_TORRENT_STREAM_HEADER = "X-MovieBox-Torrent-Stream"
 
 IMPORTS = (
     "import androidx.media3.common.C",
@@ -72,67 +74,112 @@ def resolve_package_root(package_root: str | None) -> Path:
 
 
 def patch_data_source_utils(source: str) -> str:
-    """Install the torrent read timeout, repairing original or half-patched caches."""
-    patched_setting = ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)"
-    timeout_pattern = re.compile(
-        r"\.setReadTimeoutMs\(\s*DefaultHttpDataSource\.DEFAULT_READ_TIMEOUT_MILLIS\s*\)"
-    )
-    constant_pattern = re.compile(
-        r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*([0-9][0-9_]*)\s*$",
-        re.MULTILINE,
-    )
+    """Install a torrent-only read timeout and strip its internal marker header."""
     object_pattern = re.compile(
         r"^(internal\s+)?object DataSourceUtils\s*\{",
         re.MULTILINE,
     )
-
     object_match = object_pattern.search(source)
     if object_match is None:
-        raise SystemExit(
-            "Could not locate DataSourceUtils object; refusing an unsafe plugin patch."
-        )
+        raise SystemExit("Could not locate DataSourceUtils object; refusing an unsafe plugin patch.")
 
-    # Pub cache may be restored from a job that applied only part of an earlier
-    # patch. Recognize all three states: untouched, setter-only, and complete.
-    constant_matches = list(constant_pattern.finditer(source))
-    if len(constant_matches) > 1:
-        raise SystemExit("Duplicate MovieBox torrent read-timeout declarations found.")
-    if constant_matches and int(constant_matches[0].group(1).replace("_", "")) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS:
-        raise SystemExit("Existing MovieBox torrent read timeout has an unexpected value.")
+    timeout_decl = re.compile(
+        r"^[ \t]*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*[0-9][0-9_]*[ \t]*$",
+        re.MULTILINE,
+    )
+    marker_decl = re.compile(
+        r'^[ \t]*private const val MOVIEBOX_TORRENT_STREAM_HEADER\s*=\s*"[^"]+"[ \t]*$',
+        re.MULTILINE,
+    )
+    timeout_declarations = list(timeout_decl.finditer(source))
+    marker_declarations = list(marker_decl.finditer(source))
+    if len(timeout_declarations) > 1 or len(marker_declarations) > 1:
+        raise SystemExit("Duplicate MovieBox torrent HTTP configuration declarations found.")
 
-    original_matches = list(timeout_pattern.finditer(source))
-    has_patched_setter = patched_setting in source
-    if not original_matches and not has_patched_setter:
-        relevant_lines = [
-            line for line in source.splitlines()
-            if "ReadTimeout" in line or "DEFAULT_READ_TIMEOUT" in line
-        ]
-        raise SystemExit(
-            "Could not find a supported DataSourceUtils read-timeout setter. "
-            f"Observed timeout lines: {relevant_lines!r}"
-        )
+    timeout_line = f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}"
+    marker_line = (
+        f'    private const val MOVIEBOX_TORRENT_STREAM_HEADER = "{MOVIEBOX_TORRENT_STREAM_HEADER}"'
+    )
+    if timeout_declarations:
+        source = timeout_decl.sub(timeout_line, source, count=1)
+    else:
+        source = source[:object_match.end()] + "\n" + timeout_line + source[object_match.end():]
+    if marker_declarations:
+        source = marker_decl.sub(marker_line, source, count=1)
+    else:
+        refreshed_object = object_pattern.search(source)
+        assert refreshed_object is not None
+        source = source[:refreshed_object.end()] + "\n" + marker_line + source[refreshed_object.end():]
 
-    # Insert the declaration before the method even when the setter was already
-    # rewritten in a restored Pub cache but the declaration was not.
-    if not constant_matches:
-        source = (
-            source[:object_match.end()]
-            + "\n    // Must exceed EmbeddedTorrentEngine's 45-second verified-piece wait.\n"
-            + f"    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}\n"
-            + source[object_match.end():]
-        )
-
-    source, replaced = timeout_pattern.subn(patched_setting, source)
-    if replaced != len(original_matches):
-        raise SystemExit("Could not replace every original DataSourceUtils read-timeout setting.")
-
-    final_constants = list(constant_pattern.finditer(source))
-    if (
-        patched_setting not in source
-        or len(final_constants) != 1
-        or int(final_constants[0].group(1).replace("_", "")) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
+    helper_signature = "private fun isMovieBoxTorrentStream(headers: Map<String, String>?): Boolean"
+    if helper_signature not in source:
+        refreshed_object = object_pattern.search(source)
+        assert refreshed_object is not None
+        helper = """
+    private fun isMovieBoxTorrentStream(headers: Map<String, String>?): Boolean =
+        headers?.entries?.any { entry ->
+            entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true) &&
+                entry.value.equals("true", ignoreCase = true)
+        } == true
+"""
+        source = source[:refreshed_object.end()] + helper + source[refreshed_object.end():]
+    elif (
+        "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)" not in source
+        or 'entry.value.equals("true", ignoreCase = true)' not in source
     ):
-        raise SystemExit("Torrent HTTP read-timeout patch is incomplete after transformation.")
+        raise SystemExit("Existing torrent-stream marker helper has an unexpected implementation.")
+
+    original_setter = re.compile(
+        r"\.setReadTimeoutMs\(\s*(?:"
+        r"DefaultHttpDataSource\.DEFAULT_READ_TIMEOUT_MILLIS|"
+        r"MOVIEBOX_TORRENT_READ_TIMEOUT_MS"
+        r")\s*\)"
+    )
+    conditional_setter = """.setReadTimeoutMs(
+                if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS
+                else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS
+            )"""
+    conditional_marker = "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS"
+    if conditional_marker not in source:
+        source, replaced = original_setter.subn(conditional_setter, source)
+        if replaced != 1:
+            relevant = [
+                line for line in source.splitlines()
+                if "ReadTimeout" in line or "DEFAULT_READ_TIMEOUT" in line
+            ]
+            raise SystemExit(
+                "Could not safely patch exactly one DataSourceUtils read-timeout setter. "
+                f"Observed timeout lines: {relevant!r}"
+            )
+    elif (
+        "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" not in source
+        or ".setReadTimeoutMs(" not in source
+    ):
+        raise SystemExit("Existing torrent-aware Media3 read-timeout setter is incomplete.")
+
+    assignment = "notNullHeaders[entry.key] = entry.value"
+    filtered_assignment = """if (!entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)) {
+                    notNullHeaders[entry.key] = entry.value
+                }"""
+    filter_marker = "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)"
+    if filter_marker not in source:
+        if source.count(assignment) != 1:
+            raise SystemExit(
+                "Could not safely locate the single DataSourceUtils request-header copy loop."
+            )
+        source = source.replace(assignment, filtered_assignment, 1)
+    elif assignment not in source:
+        raise SystemExit("Torrent marker header filter exists but request headers are not copied as expected.")
+
+    if (
+        timeout_line not in source
+        or marker_line not in source
+        or helper_signature not in source
+        or conditional_marker not in source
+        or "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" not in source
+        or filter_marker not in source
+    ):
+        raise SystemExit("Torrent-only Media3 read-timeout installation is incomplete.")
     return source
 
 
@@ -177,34 +224,39 @@ def patch_better_player(source: str) -> str:
 
 
 def self_test() -> None:
-    """Exercise original, half-patched, full-patched, and unexpected source layouts."""
+    """Exercise original, global-timeout, partial-cache, and unknown source layouts."""
     fixture = """package uz.shs.better_player_plus
 
 import androidx.media3.datasource.DefaultHttpDataSource
 
 internal object DataSourceUtils {
-    fun source() = DefaultHttpDataSource.Factory()
-        .setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)
+    fun getDataSourceFactory(
+        userAgent: String?,
+        headers: Map<String, String>?
+    ): DataSource.Factory {
+        val dataSourceFactory = DefaultHttpDataSource.Factory()
+            .setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)
+        if (headers != null) {
+            val notNullHeaders = mutableMapOf<String, String>()
+            headers.forEach { entry ->
+                notNullHeaders[entry.key] = entry.value
+            }
+            dataSourceFactory.setDefaultRequestProperties(notNullHeaders)
+        }
+        return dataSourceFactory
+    }
 }
 """
     patched = patch_data_source_utils(fixture)
     assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in patched
-    assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in patched
+    assert f'private const val MOVIEBOX_TORRENT_STREAM_HEADER = "{MOVIEBOX_TORRENT_STREAM_HEADER}"' in patched
+    assert "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS" in patched
+    assert "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" in patched
+    assert "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)" in patched
     assert patch_data_source_utils(patched) == patched
 
-    # Repaired partial Pub-cache state: the setter is present but its constant
-    # declaration is absent. This was the exact shape reported by the failed CI.
-    half_patched = fixture.replace(
-        ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
-        ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)",
-    )
-    repaired = patch_data_source_utils(half_patched)
-    assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in repaired
-    assert ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" in repaired
-    assert patch_data_source_utils(repaired) == repaired
-
-    # Accept a cached Kotlin constant that uses numeric separators.
-    underscored_constant = fixture.replace(
+    # Repair the previous global 60-second cache patch and make it torrent-only.
+    legacy_global = fixture.replace(
         "internal object DataSourceUtils {",
         "internal object DataSourceUtils {\n"
         "    private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000",
@@ -212,9 +264,10 @@ internal object DataSourceUtils {
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
         ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)",
     )
-    normalized = patch_data_source_utils(underscored_constant)
-    assert normalized.count("private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS =") == 1
-    assert "private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 60_000" in normalized
+    repaired = patch_data_source_utils(legacy_global)
+    assert f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" in repaired
+    assert "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS" in repaired
+    assert patch_data_source_utils(repaired) == repaired
 
     bad_fixture = fixture.replace(
         ".setReadTimeoutMs(DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS)",
@@ -233,8 +286,12 @@ def main() -> int:
     parser.add_argument("--package-root", help="Resolved better_player_plus package root (for tests)")
     args = parser.parse_args()
 
-    if MOVIEBOX_TORRENT_READ_TIMEOUT_MS <= REQUIRED_FIRST_PIECE_WAIT_MS:
-        raise SystemExit("Media3 read timeout must exceed the native first-piece wait.")
+    if MOVIEBOX_TORRENT_READ_TIMEOUT_MS <= (
+        REQUIRED_METADATA_WAIT_MS + REQUIRED_FIRST_PIECE_WAIT_MS
+    ):
+        raise SystemExit(
+            "Torrent read timeout must exceed the metadata wait plus first verified-piece wait."
+        )
     self_test()
 
     root = resolve_package_root(args.package_root)
@@ -262,19 +319,14 @@ def main() -> int:
     # Validate both transformations before writing either plugin file.
     if "setLoadErrorHandlingPolicy(MovieBox503RetryPolicy())" not in patched_better_player:
         raise SystemExit("Bounded Media3 503 policy installation verification failed.")
-    final_timeout_constants = list(
-        re.finditer(
-            r"^\s*private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS\s*=\s*([0-9][0-9_]*)\s*$",
-            patched_data_source,
-            re.MULTILINE,
-        )
-    )
     if (
-        len(final_timeout_constants) != 1
-        or int(final_timeout_constants[0].group(1)) != MOVIEBOX_TORRENT_READ_TIMEOUT_MS
-        or ".setReadTimeoutMs(MOVIEBOX_TORRENT_READ_TIMEOUT_MS)" not in patched_data_source
+        f"private const val MOVIEBOX_TORRENT_READ_TIMEOUT_MS = {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}" not in patched_data_source
+        or f'private const val MOVIEBOX_TORRENT_STREAM_HEADER = "{MOVIEBOX_TORRENT_STREAM_HEADER}"' not in patched_data_source
+        or "if (isMovieBoxTorrentStream(headers)) MOVIEBOX_TORRENT_READ_TIMEOUT_MS" not in patched_data_source
+        or "else DefaultHttpDataSource.DEFAULT_READ_TIMEOUT_MILLIS" not in patched_data_source
+        or "entry.key.equals(MOVIEBOX_TORRENT_STREAM_HEADER, ignoreCase = true)" not in patched_data_source
     ):
-        raise SystemExit("Media3 torrent HTTP read-timeout installation verification failed.")
+        raise SystemExit("Torrent-only Media3 read-timeout installation verification failed.")
 
     if patched_better_player != better_player_original:
         better_player_path.write_text(patched_better_player, encoding="utf-8")
@@ -283,8 +335,8 @@ def main() -> int:
 
     print(f"Installed bounded Media3 503 retry policy in {better_player_path}")
     print(
-        f"Installed {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}ms Media3 HTTP read timeout "
-        f"in {data_source_path} (native piece wait: {REQUIRED_FIRST_PIECE_WAIT_MS}ms)"
+        f"Installed torrent-only {MOVIEBOX_TORRENT_READ_TIMEOUT_MS}ms Media3 HTTP read timeout "
+        f"in {data_source_path}; ordinary HTTP retains the stock timeout."
     )
     return 0
 
