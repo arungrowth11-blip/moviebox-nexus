@@ -366,9 +366,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     _preparedReported = false;
     _playStartedAt = DateTime.now();
 
+    // This private marker configures only Media3's local torrent read timeout.
+    // DataSourceUtils strips it before forwarding HTTP request headers.
+    final media3Headers = <String, String>{
+      ...widget.headers,
+      if (_isEmbeddedTorrent) 'X-MovieBox-Torrent-Stream': 'true',
+    };
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
-      headers: widget.headers.isEmpty ? null : widget.headers,
+      headers: media3Headers.isEmpty ? null : media3Headers,
       liveStream: _isLive,
       useAsmsTracks: true,
       useAsmsAudioTracks: true,
@@ -441,16 +447,19 @@ class _PlayerScreenState extends State<PlayerScreen>
         betterPlayerDataSource: dataSource,
       );
       if (mounted) setState(() {});
-      // Three bounded 45-second first-piece attempts need a little margin.
+      // Cold start can require 65s for metadata, then three first-piece
+      // waits (45s each) with two one-second retry gaps: 202s worst case.
+      // The 120s HTTP read timeout covers metadata + one piece attempt;
+      // this outer watchdog must cover the bounded retry sequence.
       final watchdogDelay = _isEmbeddedTorrent
-          ? const Duration(seconds: 150)
+          ? const Duration(seconds: 220)
           : const Duration(seconds: 35);
       _media3Watchdog = Timer(watchdogDelay, () {
         if (mounted && !_disposed && !_usingVlc && _loading) {
           if (_isEmbeddedTorrent) {
             unawaited(
               _handleMedia3Exception(
-                'Torrent startup timed out after 150 seconds',
+                'Torrent startup timed out after 220 seconds',
               ),
             );
           } else {
