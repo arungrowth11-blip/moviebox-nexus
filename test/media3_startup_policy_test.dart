@@ -3,19 +3,22 @@ import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 void main() {
   group('Media3StartupPolicy', () {
-    test('keeps torrent startup pending while bounded first-piece retries run', () {
-      expect(
-        Media3StartupPolicy.evaluate(
-          isPlaying: false,
-          initialPosition: Duration.zero,
-          currentPosition: Duration.zero,
-          elapsed: const Duration(seconds: 120),
-          isEmbeddedTorrent: true,
-          httpBytesSent: 0,
-        ),
-        Media3StartupDecision.wait,
-      );
-    });
+    test(
+      'keeps torrent startup pending while bounded first-piece retries run',
+      () {
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: false,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: const Duration(seconds: 120),
+            isEmbeddedTorrent: true,
+            httpBytesSent: 0,
+          ),
+          Media3StartupDecision.wait,
+        );
+      },
+    );
 
     test('uses separate startup budgets for torrent and ordinary streams', () {
       expect(
