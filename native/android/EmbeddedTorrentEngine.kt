@@ -533,7 +533,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     Log.w(
                         TAG,
                         "Returning HTTP 503 before committing stream headers; " +
-                            "range=$requestedRange timeoutMs=$FIRST_RESPONSE_PIECE_WAIT_MS"
+                            "range=$requestedRange timeoutMs=${HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS}"
                     )
                     writeSimpleResponse(
                         client,
