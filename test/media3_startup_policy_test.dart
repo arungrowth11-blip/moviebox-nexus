@@ -162,7 +162,7 @@ void main() {
           isPlaying: false,
           initialPosition: Duration.zero,
           currentPosition: Duration.zero,
-          elapsed: const Duration(seconds: 25),
+          elapsed: const Duration(seconds: 141),
           isEmbeddedTorrent: false,
           httpBytesSent: 0,
         ),
