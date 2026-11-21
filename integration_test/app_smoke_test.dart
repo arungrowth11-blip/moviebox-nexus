@@ -403,7 +403,8 @@ void main() {
         expect(
           torrentMarkerForwarded,
           isFalse,
-          reason: 'The plugin-only torrent timeout marker must never reach the media origin.',
+          reason:
+              'The plugin-only torrent timeout marker must never reach the media origin.',
         );
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
