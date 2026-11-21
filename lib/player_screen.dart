@@ -278,7 +278,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _offerExternalVlc(String reason) {
     final uri = Uri.tryParse(widget.url);
-    final supportedUri = uri != null &&
+    final supportedUri =
+        uri != null &&
         {'http', 'https'}.contains(uri.scheme) &&
         uri.host.isNotEmpty;
     final headersRequired = widget.headers.isNotEmpty;
@@ -296,7 +297,8 @@ class _PlayerScreenState extends State<PlayerScreen>
   Future<void> _openExternalVlc() async {
     if (!_canOpenExternalVlc || _disposed) return;
     final controller = _media3;
-    final position = controller?.videoPlayerController?.value.position.inMilliseconds ?? 0;
+    final position =
+        controller?.videoPlayerController?.value.position.inMilliseconds ?? 0;
     try {
       await _externalPlayer.invokeMethod<bool>('openVlc', <String, Object>{
         'url': widget.url,

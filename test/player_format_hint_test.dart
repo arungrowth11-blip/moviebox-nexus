@@ -26,11 +26,14 @@ void main() {
       );
     });
 
-    test('leaves known file extensions to BetterPlayer native format detection', () {
-      expect(
-        mediaFormatHintForUrl('https://cdn.example/video.mp4?signature=abc'),
-        isNull,
-      );
-    });
+    test(
+      'leaves known file extensions to BetterPlayer native format detection',
+      () {
+        expect(
+          mediaFormatHintForUrl('https://cdn.example/video.mp4?signature=abc'),
+          isNull,
+        );
+      },
+    );
   });
 }

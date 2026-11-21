@@ -3052,31 +3052,34 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (!mounted) return;
 
-    if (streams.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'No stream results. Check addon status and configuration.',
+      if (streams.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No stream results. Check addon status and configuration.',
+            ),
           ),
-        ),
-      );
-      return;
-    }
-
-    final direct = streams.where((stream) => stream.isDirect).take(8).toList();
-    if (direct.isNotEmpty) {
-      final checks = await Future.wait(
-        direct.map(widget.engine.probeDirectStream),
-      );
-      final workingIndex = checks.indexWhere((isWorking) => isWorking);
-      if (workingIndex >= 0 && mounted) {
-        final stream = direct[workingIndex];
-        widget.onPlay(m.name, stream.url!, m.id, headers: stream.headers);
+        );
         return;
       }
-    }
-    if (!mounted) return;
-    final torrentOnly = streams.every((stream) => stream.isTorrent);
+
+      final direct = streams
+          .where((stream) => stream.isDirect)
+          .take(8)
+          .toList();
+      if (direct.isNotEmpty) {
+        final checks = await Future.wait(
+          direct.map(widget.engine.probeDirectStream),
+        );
+        final workingIndex = checks.indexWhere((isWorking) => isWorking);
+        if (workingIndex >= 0 && mounted) {
+          final stream = direct[workingIndex];
+          widget.onPlay(m.name, stream.url!, m.id, headers: stream.headers);
+          return;
+        }
+      }
+      if (!mounted) return;
+      final torrentOnly = streams.every((stream) => stream.isTorrent);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -3088,7 +3091,9 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       );
     } catch (error, stackTrace) {
-      debugPrint('MovieBox Smart Play failed for ${m.id}: $error\\n$stackTrace');
+      debugPrint(
+        'MovieBox Smart Play failed for ${m.id}: $error\\n$stackTrace',
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -4230,7 +4235,9 @@ class _DetailsSheetState extends State<DetailsSheet> {
         _loadingStreams = false;
       });
     } catch (error, stackTrace) {
-      debugPrint('MovieBox stream resolution failed for ${id}: $error\\n$stackTrace');
+      debugPrint(
+        'MovieBox stream resolution failed for ${id}: $error\\n$stackTrace',
+      );
       if (!mounted) return;
       setState(() {
         _streams = [];
@@ -4238,7 +4245,9 @@ class _DetailsSheetState extends State<DetailsSheet> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Could not load streams for ${widget.meta.name}: $error'),
+          content: Text(
+            'Could not load streams for ${widget.meta.name}: $error',
+          ),
           duration: const Duration(seconds: 8),
         ),
       );
