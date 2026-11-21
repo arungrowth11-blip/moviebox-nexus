@@ -14,6 +14,15 @@ class Media3StartupPolicy {
   static const Duration startupTimeout = Duration(seconds: 20);
   static const Duration progressThreshold = Duration(milliseconds: 700);
 
+  /// A different decoder cannot repair a torrent transport that has emitted no
+  /// video bytes. Keep embedded torrent failures on the Media3 retry path.
+  static bool canFallbackToCompatibilityPlayer({
+    required bool isEmbeddedTorrent,
+    required int httpBytesSent,
+  }) {
+    return !isEmbeddedTorrent || httpBytesSent > 0;
+  }
+
   static Media3StartupDecision evaluate({
     required bool isPlaying,
     required Duration initialPosition,
