@@ -305,7 +305,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 "currentTracker" to "", "lastError" to (pending.error ?: "")
             ) + httpDiagnostics(pending)
         }
-        val status = runCatching { handle.status() }.getOrNull()
+        // Include in-flight blocks: default counters can stay at zero until a full piece completes.
+        val status = runCatching {
+            handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+        }.getOrNull()
         if (status == null) {
             return mapOf(
                 "active" to true, "metadataReady" to (pending.target != null),
@@ -340,7 +343,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "firstByteAtMs" to pending.firstByteAtMs,
         "lastPieceIndex" to pending.lastPieceIndex,
         "lastPieceWaitMs" to pending.lastPieceWaitMs,
-        "lastHttpError" to pending.lastHttpError
+        "lastHttpError" to pending.lastHttpError,
+        "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0)
     )
 
     fun stopPlayback() {
@@ -510,7 +514,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         pending,
                         target,
                         start,
-                        FIRST_RESPONSE_PIECE_WAIT_MS,
+                        HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS,
                         requestCancelled
                     )
                 ) {
@@ -747,8 +751,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
-        private const val FIRST_RESPONSE_PIECE_WAIT_MS = 4_000L
-        private const val STREAM_PIECE_TIMEOUT_MS = 45_000L
+        private const val STREAM_PIECE_TIMEOUT_MS = HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
         private const val STARTUP_PRIORITY_PIECES = 12
         private const val STARTUP_DEADLINE_STEP_MS = 750
