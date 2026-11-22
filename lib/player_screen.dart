@@ -837,7 +837,6 @@ class _PlayerScreenState extends State<PlayerScreen>
       final seeds = number('connectedSeeds');
       final knownPeers = number('knownPeers');
       final downloaded = number('downloadedBytes');
-      final status = number('lastHttpStatus');
       final lastError = (snapshot['lastHttpError'] ?? '').toString();
       final tracker = (snapshot['currentTracker'] ?? '').toString();
       final details = <String>[

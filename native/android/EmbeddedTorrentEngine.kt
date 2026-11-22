@@ -693,7 +693,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             isCancelled = isRequestCancelled
         )
         pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-        if (!available && !requestCancelled.get() && !pending.cancelled && activePending === pending) {
+        if (!available && !isRequestCancelled() && !pending.cancelled && activePending === pending) {
             pending.lastHttpError =
                 "Timed out waiting for torrent piece=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
             Log.w(
