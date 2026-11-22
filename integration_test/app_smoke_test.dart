@@ -384,6 +384,9 @@ void main() {
         expect(successful206ContentRange, startsWith('bytes 0-'));
         expect(successful206BodyBytes, greaterThan(0));
         expect(first206BodyBytes, hasLength(16));
+        // Assert the bounded 503 -> 503 -> 206 prepare sequence before playback.
+        // Media3 may issue additional range GETs after playback starts to refill its buffer.
+        expect(getRequests, 3);
 
         await controller.play().timeout(const Duration(seconds: 10));
         final beforePlayback =
@@ -399,7 +402,6 @@ void main() {
           timeout: const Duration(seconds: 25),
           diagnostic: () => _media3Diagnostic(controller),
         );
-        expect(getRequests, 3);
         expect(
           torrentMarkerForwarded,
           isFalse,
