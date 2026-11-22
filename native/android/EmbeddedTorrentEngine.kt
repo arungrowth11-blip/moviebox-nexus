@@ -53,6 +53,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val fileSize: Long,
         val fileOffset: Long,
         val pieceLength: Int,
+        val firstPiece: Int,
+        val lastPiece: Int,
         val token: String
     )
 
@@ -63,6 +65,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val ready = CountDownLatch(1)
         val httpRequestCount = AtomicLong(0L)
         val httpBytesSent = AtomicLong(0L)
+        val requestGeneration = AtomicLong(0L)
+        val priorityLock = Any()
+        val prioritizedPieces = linkedSetOf<Int>()
         @Volatile var target: StreamTarget? = null
         @Volatile var error: String? = null
         @Volatile var lastHttpStatus = 0
@@ -258,19 +263,6 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val selectedFileOffset = storage.fileOffset(selected.first)
         val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
         val lastPiece = ((selectedFileOffset + selected.third - 1L) / torrentInfo.pieceLength()).toInt()
-        val startupLastPiece = minOf(lastPiece, firstPiece + STARTUP_PRIORITY_PIECES - 1)
-        if (firstPiece >= 0 && firstPiece <= startupLastPiece) {
-            for (piece in firstPiece..startupLastPiece) {
-                torrentHandle.piecePriority(piece, Priority.SEVEN)
-                runCatching {
-                    torrentHandle.setPieceDeadline(
-                        piece,
-                        (piece - firstPiece) * STARTUP_DEADLINE_STEP_MS
-                    )
-                }
-            }
-        }
-
         val canonicalRoot = saveDir.canonicalFile
         val mediaFile = File(saveDir, selected.second).canonicalFile
         if (!mediaFile.path.startsWith(canonicalRoot.path + File.separator)) {
@@ -282,6 +274,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             fileSize = selected.third,
             fileOffset = selectedFileOffset,
             pieceLength = torrentInfo.pieceLength(),
+            firstPiece = firstPiece,
+            lastPiece = lastPiece,
             token = token
         )
     }
@@ -471,7 +465,30 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     return
                 }
 
-                if (!pending.ready.await(METADATA_TIMEOUT_MS + HTTP_METADATA_GRACE_MS, TimeUnit.MILLISECONDS)) {
+                // A newer GET (normally a user seek) supersedes the old progressive
+                // response and its obsolete piece priorities.
+                val requestGeneration = if (method == "GET") {
+                    pending.requestGeneration.incrementAndGet()
+                } else {
+                    -1L
+                }
+                val isRequestCancelled = {
+                    requestCancelled.get() ||
+                        pending.cancelled ||
+                        activePending !== pending ||
+                        Thread.currentThread().isInterrupted ||
+                        (method == "GET" && pending.requestGeneration.get() != requestGeneration)
+                }
+
+                val metadataDeadline = System.currentTimeMillis() +
+                    METADATA_TIMEOUT_MS + HTTP_METADATA_GRACE_MS
+                var metadataReady = pending.ready.count == 0L
+                while (!metadataReady && System.currentTimeMillis() < metadataDeadline) {
+                    if (isRequestCancelled()) return
+                    metadataReady = pending.ready.await(250, TimeUnit.MILLISECONDS)
+                }
+                metadataReady = metadataReady || pending.ready.count == 0L
+                if (!metadataReady) {
                     pending.lastHttpStatus = 504
                     pending.lastHttpError = "Timed out waiting for torrent metadata."
                     writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\r\n")
@@ -515,12 +532,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         target,
                         start,
                         HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS,
-                        requestCancelled
+                        requestGeneration,
+                        isRequestCancelled
                     )
                 ) {
                     when (HttpRangePolicy.beforeHeaders(
                         pieceReady = false,
-                        cancelled = requestCancelled.get() || pending.cancelled || activePending !== pending
+                        cancelled = isRequestCancelled()
                     )) {
                         HttpPieceDecision.CANCELLED -> return
                         HttpPieceDecision.RETRY -> Unit
@@ -584,13 +602,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                                 target,
                                 position,
                                 STREAM_PIECE_TIMEOUT_MS,
-                                requestCancelled
+                                requestGeneration,
+                                isRequestCancelled
                             )
                         ) {
                             when (HttpRangePolicy.afterHeaders(
                                 pieceReady = false,
-                                cancelled = requestCancelled.get() || pending.cancelled ||
-                                    activePending !== pending || Thread.currentThread().isInterrupted
+                                cancelled = isRequestCancelled()
                             )) {
                                 HttpPieceDecision.CANCELLED -> return
                                 HttpPieceDecision.ABORT ->
@@ -653,16 +671,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         target: StreamTarget,
         filePosition: Long,
         timeoutMs: Long,
-        requestCancelled: AtomicBoolean
+        requestGeneration: Long,
+        isRequestCancelled: () -> Boolean
     ): Boolean {
         val globalOffset = target.fileOffset + filePosition
         val pieceIndex = (globalOffset / target.pieceLength).toInt()
         val waitStartedAt = System.currentTimeMillis()
         pending.lastPieceIndex = pieceIndex
-        // Each HTTP range (including a user seek) reprioritizes the exact piece
-        // being requested so a distant seek is not stuck behind sequential data.
-        runCatching { target.handle.piecePriority(pieceIndex, Priority.SEVEN) }
-        runCatching { target.handle.setPieceDeadline(pieceIndex, PIECE_REQUEST_DEADLINE_MS) }
+        if (!prioritizePlaybackWindow(pending, target, pieceIndex, requestGeneration, isRequestCancelled)) {
+            return false
+        }
 
         val waiter = HttpPieceWaiter(
             hasPiece = { index ->
@@ -672,12 +690,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val available = waiter.await(
             pieceIndex = pieceIndex,
             timeoutMs = timeoutMs,
-            isCancelled = {
-                requestCancelled.get() ||
-                    pending.cancelled ||
-                    activePending !== pending ||
-                    Thread.currentThread().isInterrupted
-            }
+            isCancelled = isRequestCancelled
         )
         pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
         if (!available && !requestCancelled.get() && !pending.cancelled && activePending === pending) {
@@ -691,6 +704,54 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
         }
         return available
+    }
+
+    /**
+     * Keep the current piece urgent and prefetch a contiguous forward window.
+     * A seek clears old deadlines and lowers obsolete pieces so they cannot
+     * starve the newly requested position.
+     */
+    private fun prioritizePlaybackWindow(
+        pending: PendingStream,
+        target: StreamTarget,
+        currentPiece: Int,
+        requestGeneration: Long,
+        isRequestCancelled: () -> Boolean
+    ): Boolean {
+        synchronized(pending.priorityLock) {
+            if (isRequestCancelled() || pending.requestGeneration.get() != requestGeneration) {
+                return false
+            }
+            val window = HttpRangePolicy.playbackWindow(
+                currentPiece = currentPiece,
+                firstPiece = target.firstPiece,
+                lastPiece = target.lastPiece,
+                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+            )
+            if (window.isEmpty()) return false
+            val wanted = window.toSet()
+
+            pending.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
+                runCatching { target.handle.resetPieceDeadline(stalePiece) }
+                runCatching { target.handle.piecePriority(stalePiece, Priority.NORMAL) }
+            }
+            pending.prioritizedPieces.clear()
+            window.forEachIndexed { offset, piece ->
+                if (runCatching { target.handle.havePiece(piece) }.getOrDefault(false)) {
+                    runCatching { target.handle.resetPieceDeadline(piece) }
+                } else {
+                    runCatching { target.handle.piecePriority(piece, Priority.SEVEN) }
+                    runCatching {
+                        target.handle.setPieceDeadline(
+                            piece,
+                            HttpRangePolicy.deadlineForWindowOffset(offset)
+                        )
+                    }
+                    pending.prioritizedPieces.add(piece)
+                }
+            }
+            return !isRequestCancelled()
+        }
     }
 
     private fun parseRange(header: String?, size: Long): HttpByteRange? =
@@ -751,10 +812,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
-        private const val STREAM_PIECE_TIMEOUT_MS = HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS
+        private const val STREAM_PIECE_TIMEOUT_MS = HttpRangePolicy.STREAM_PIECE_WAIT_MS
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
-        private const val STARTUP_PRIORITY_PIECES = 12
-        private const val STARTUP_DEADLINE_STEP_MS = 750
-        private const val PIECE_REQUEST_DEADLINE_MS = 0
+
     }
 }

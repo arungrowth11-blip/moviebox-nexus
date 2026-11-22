@@ -14,6 +14,50 @@ class HttpPieceWaiterTest {
     }
 
     @Test
+    fun playbackPriorityWindowStartsAtSeekPieceAndPrefetchesThreePieces() {
+        assertEquals(
+            listOf(1979, 1980, 1981, 1982),
+            HttpRangePolicy.playbackWindow(
+                currentPiece = 1979,
+                firstPiece = 1900,
+                lastPiece = 2200,
+                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+            )
+        )
+        assertEquals(
+            listOf(2199, 2200),
+            HttpRangePolicy.playbackWindow(
+                currentPiece = 2199,
+                firstPiece = 1900,
+                lastPiece = 2200,
+                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+            )
+        )
+        assertTrue(
+            HttpRangePolicy.playbackWindow(
+                currentPiece = 1899,
+                firstPiece = 1900,
+                lastPiece = 2200,
+                lookAheadPieces = 3
+            ).isEmpty()
+        )
+    }
+
+    @Test
+    fun playbackPriorityDeadlinesAreStaggeredAcrossPrefetchWindow() {
+        assertEquals(0, HttpRangePolicy.deadlineForWindowOffset(0))
+        assertEquals(2_500, HttpRangePolicy.deadlineForWindowOffset(1))
+        assertEquals(5_000, HttpRangePolicy.deadlineForWindowOffset(2))
+        assertEquals(7_500, HttpRangePolicy.deadlineForWindowOffset(3))
+    }
+
+    @Test
+    fun bodyPieceWaitBudgetIsLongerThanFirstResponseRetryBudget() {
+        assertEquals(45_000L, HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS)
+        assertEquals(180_000L, HttpRangePolicy.STREAM_PIECE_WAIT_MS)
+    }
+
+    @Test
     fun headRequestSkipsPieceWait() {
         assertFalse(HttpRangePolicy.shouldWaitForFirstPiece("HEAD"))
         assertTrue(HttpRangePolicy.shouldWaitForFirstPiece("GET"))

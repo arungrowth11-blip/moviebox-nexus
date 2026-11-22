@@ -14,6 +14,7 @@ class Media3StartupPolicy {
   static const Duration startupTimeout = Duration(seconds: 20);
   // Three 45-second first-piece attempts plus bounded retry gaps and cleanup margin.
   static const Duration torrentStartupTimeout = Duration(seconds: 140);
+  static const Duration torrentPlaybackStallTimeout = Duration(seconds: 35);
 
   static Duration timeoutFor({required bool isEmbeddedTorrent}) =>
       isEmbeddedTorrent ? torrentStartupTimeout : startupTimeout;

@@ -4,7 +4,7 @@
 Media3's stock DefaultHttpDataSource read timeout is 8 seconds. MovieBox's
 loopback torrent bridge waits for a verified full piece before committing HTTP
 headers, so the plugin's read timeout must exceed that bounded wait. This script
-sets a torrent-only 120-second read timeout and installs a bounded HTTP 503 retry policy for opaque
+sets a torrent-only 240-second read timeout and installs a bounded HTTP 503 retry policy for opaque
 progressive (CONTENT_TYPE_OTHER) streams.
 
 Run after flutter pub get and before Gradle compiles the Android plugin.
@@ -18,9 +18,10 @@ import re
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 120_000
+MOVIEBOX_TORRENT_READ_TIMEOUT_MS = 240_000
 REQUIRED_METADATA_WAIT_MS = 65_000
 REQUIRED_FIRST_PIECE_WAIT_MS = 45_000
+REQUIRED_STREAM_PIECE_WAIT_MS = 180_000
 MOVIEBOX_TORRENT_STREAM_HEADER = "X-MovieBox-Torrent-Stream"
 
 IMPORTS = (
@@ -299,11 +300,9 @@ def main() -> int:
     parser.add_argument("--package-root", help="Resolved better_player_plus package root (for tests)")
     args = parser.parse_args()
 
-    if MOVIEBOX_TORRENT_READ_TIMEOUT_MS <= (
-        REQUIRED_METADATA_WAIT_MS + REQUIRED_FIRST_PIECE_WAIT_MS
-    ):
+    if MOVIEBOX_TORRENT_READ_TIMEOUT_MS <= REQUIRED_STREAM_PIECE_WAIT_MS + 30_000:
         raise SystemExit(
-            "Torrent read timeout must exceed the metadata wait plus first verified-piece wait."
+            "Torrent read timeout must exceed the in-body piece wait by at least 30 seconds."
         )
     self_test()
 

@@ -73,6 +73,13 @@ class _PlayerScreenState extends State<PlayerScreen>
   Timer? _media3Watchdog;
   Timer? _media3PlaybackStartWatchdog;
   Timer? _torrentStatusTimer;
+  Timer? _torrentPlaybackStallTimer;
+  Timer? _torrentRecoveryResetTimer;
+  bool _torrentRecoveryInProgress = false;
+  bool _torrentPlaybackProgressObserved = false;
+  int _torrentRecoveryAttempts = 0;
+  Duration _lastTorrentObservedPosition = Duration.zero;
+  DateTime _lastTorrentProgressAt = DateTime.now();
   String _torrentStatusMessage = '';
   String _torrentTechnicalLine = '';
   static const MethodChannel _torrentDiagnostics = MethodChannel(
@@ -273,6 +280,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
     _offerExternalVlc(reason);
   }
 
@@ -337,6 +345,18 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     if (!mounted || _disposed) return;
     final bytesSent = (snapshot?['httpBytesSent'] as num?)?.toInt() ?? 0;
+    final lastHttpStatus = (snapshot?['lastHttpStatus'] as num?)?.toInt() ?? 0;
+    if (snapshot != null &&
+        (lastHttpStatus == 200 ||
+            lastHttpStatus == 206 ||
+            lastHttpStatus == 503 ||
+            lastHttpStatus == 504 ||
+            bytesSent > 0)) {
+      // Keep the embedded torrent source in-app. Reopen the same loopback URL
+      // at the last confirmed position so the native bridge can reprioritize it.
+      await _recoverEmbeddedTorrentPlayback(reason);
+      return;
+    }
     if (snapshot == null ||
         !Media3StartupPolicy.canFallbackToCompatibilityPlayer(
           isEmbeddedTorrent: true,
@@ -379,16 +399,63 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
 
-    // Only try another decoder after the torrent bridge has delivered bytes.
-    _handleMedia3Problem(reason);
+    // A confirmed body delivery with a frozen Media3 clock is a player stall,
+    // not proof that VLC is required. Try bounded in-app recovery first.
+    await _recoverEmbeddedTorrentPlayback(reason);
+  }
+
+  Future<void> _recoverEmbeddedTorrentPlayback(String reason) async {
+    if (!mounted || _disposed || !_isEmbeddedTorrent || _torrentRecoveryInProgress) {
+      return;
+    }
+    if (_torrentRecoveryAttempts >= 2) {
+      _handleMedia3Problem(
+        'Embedded torrent playback remained unstable after two in-app recovery attempts. $reason',
+      );
+      return;
+    }
+
+    _torrentRecoveryInProgress = true;
+    _torrentRecoveryAttempts++;
+    final currentPosition =
+        _media3?.videoPlayerController?.value.position.inMilliseconds ??
+        _pendingPositionMs;
+    if (currentPosition > 0) _pendingPositionMs = currentPosition;
+
+    _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    setState(() {
+      _loading = true;
+      _error = null;
+      _torrentStatusMessage =
+          'Recovering torrent playback at ${_timeText(Duration(milliseconds: _pendingPositionMs))}…';
+    });
+    debugPrint(
+      'MovieBox embedded torrent recovery '
+      '${_torrentRecoveryAttempts}/2 at ${_pendingPositionMs}ms: $reason',
+    );
+
+    await Future<void>.delayed(
+      Duration(milliseconds: 700 * _torrentRecoveryAttempts),
+    );
+    if (!mounted || _disposed) {
+      _torrentRecoveryInProgress = false;
+      return;
+    }
+    _torrentRecoveryInProgress = false;
+    _startMedia3();
   }
 
   void _retryPlayback() {
     if (_isEmbeddedTorrent) {
-      _startMedia3();
-    } else {
-      _startMedia3();
+      final position =
+          _media3?.videoPlayerController?.value.position.inMilliseconds;
+      if (position != null && position > 0) _pendingPositionMs = position;
+      _torrentRecoveryAttempts = 0;
+      _torrentRecoveryInProgress = false;
     }
+    _startMedia3();
   }
 
   void _reportPrepared() {
@@ -408,6 +475,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    _torrentPlaybackProgressObserved = false;
     _vlcInitStarted = false;
     _usingVlc = false;
     _loading = true;
@@ -537,6 +606,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (initializedController != null) {
           widget.onMedia3ControllerReady?.call(initializedController);
           _startMedia3PlaybackStartWatchdog(initializedController);
+          _startTorrentPlaybackStallWatchdog(initializedController);
           // AutoPlay is configured on BetterPlayer; issue one explicit play
           // command after initialization to recover a stale lifecycle play gate.
           unawaited(
@@ -580,6 +650,64 @@ class _PlayerScreenState extends State<PlayerScreen>
       default:
         break;
     }
+  }
+
+  void _startTorrentPlaybackStallWatchdog(BetterPlayerController controller) {
+    if (!_isEmbeddedTorrent) return;
+    _torrentPlaybackStallTimer?.cancel();
+    _lastTorrentObservedPosition =
+        controller.videoPlayerController?.value.position ?? Duration.zero;
+    _lastTorrentProgressAt = DateTime.now();
+    _torrentPlaybackProgressObserved = false;
+
+    _torrentPlaybackStallTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) {
+        if (!mounted ||
+            _disposed ||
+            _usingVlc ||
+            !identical(_media3, controller)) {
+          _torrentPlaybackStallTimer?.cancel();
+          return;
+        }
+        final value = controller.videoPlayerController?.value;
+        if (value == null || !value.initialized) return;
+
+        final positionDelta =
+            (value.position - _lastTorrentObservedPosition).inMilliseconds.abs();
+        if (positionDelta > 250) {
+          _lastTorrentObservedPosition = value.position;
+          _lastTorrentProgressAt = DateTime.now();
+          _torrentPlaybackProgressObserved = true;
+          if (_torrentRecoveryResetTimer?.isActive != true) {
+            _torrentRecoveryResetTimer = Timer(
+              const Duration(seconds: 30),
+              () {
+                if (mounted && !_disposed) _torrentRecoveryAttempts = 0;
+              },
+            );
+          }
+          return;
+        }
+
+        // Do not treat a user pause as a transport stall. A seek/rebuffer that
+        // remains buffering without clock progress is recovered after 35s.
+        if (!_torrentPlaybackProgressObserved || !value.isBuffering) {
+          if (!value.isBuffering) _lastTorrentProgressAt = DateTime.now();
+          return;
+        }
+        if (DateTime.now().difference(_lastTorrentProgressAt) >=
+            Media3StartupPolicy.torrentPlaybackStallTimeout) {
+          _lastTorrentProgressAt = DateTime.now();
+          unawaited(
+            _handleMedia3Exception(
+              'Torrent playback/seek remained buffering for '
+              '${Media3StartupPolicy.torrentPlaybackStallTimeout.inSeconds}s.',
+            ),
+          );
+        }
+      },
+    );
   }
 
   void _startMedia3PlaybackStartWatchdog(BetterPlayerController controller) {
@@ -696,6 +824,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     watchdog.cancel();
     if (decision == Media3StartupDecision.noTorrentBytes) {
       int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final status = number('lastHttpStatus');
+      if (status == 503 || status == 504) {
+        unawaited(
+          _recoverEmbeddedTorrentPlayback(
+            'Torrent first-piece HTTP $status retry budget was exhausted.',
+          ),
+        );
+        return;
+      }
       final peers = number('connectedPeers');
       final seeds = number('connectedSeeds');
       final knownPeers = number('knownPeers');
@@ -725,11 +862,21 @@ class _PlayerScreenState extends State<PlayerScreen>
       });
       return;
     }
-    _handleMedia3Problem(
-      'Media3 initialized but its playback clock did not advance after '
-      '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: _isEmbeddedTorrent).inSeconds}s; '
-      'loopback body bytes sent=$httpBytesSent. Trying VLC compatibility playback.',
-    );
+    if (_isEmbeddedTorrent) {
+      unawaited(
+        _recoverEmbeddedTorrentPlayback(
+          'Media3 playback clock stalled after '
+          '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: true).inSeconds}s; '
+          'loopback body bytes sent=$httpBytesSent.',
+        ),
+      );
+    } else {
+      _handleMedia3Problem(
+        'Media3 initialized but its playback clock did not advance after '
+        '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: false).inSeconds}s; '
+        'trying VLC compatibility playback.',
+      );
+    }
   }
 
   // Retained as a deliberate, non-default compatibility path.
@@ -1481,6 +1628,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentStatusTimer?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    _torrentRecoveryResetTimer?.cancel();
     _media3?.dispose(forceDispose: true);
 
     final vlc = _vlc;
