@@ -522,6 +522,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 val (start, end, partial) = range
                 pending.lastHttpRangeStart = start
                 pending.lastHttpRangeEnd = end
+                val pieceReadGate = HttpPieceReadGate()
+                val firstPieceIndex =
+                    ((target.fileOffset + start) / target.pieceLength).toInt()
 
                 // HEAD is metadata-only and must never wait for a torrent piece.
                 // For GET, keep the HTTP status uncommitted until the first requested
@@ -563,6 +566,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     return
                 }
 
+                if (HttpRangePolicy.shouldWaitForFirstPiece(method)) {
+                    pieceReadGate.markVerified(firstPieceIndex)
+                }
+
                 val extension = target.file.extension.lowercase(Locale.US)
                 val contentType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
                     ?: "application/octet-stream"
@@ -595,28 +602,35 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     var position = start
                     var bytesSent = 0L
                     // GET already passed the pre-header piece gate above.
+                    // Wait only when entering a new torrent piece. Multiple 128 KiB
+                    // reads inside a verified piece must not repeat an 80 ms delay
+                    // or reset the libtorrent playback-priority window.
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
-                        if (!waitForPiece(
-                                pending,
-                                target,
-                                position,
-                                STREAM_PIECE_TIMEOUT_MS,
-                                requestGeneration,
-                                isRequestCancelled
-                            )
-                        ) {
-                            when (HttpRangePolicy.afterHeaders(
-                                pieceReady = false,
-                                cancelled = isRequestCancelled()
-                            )) {
-                                HttpPieceDecision.CANCELLED -> return
-                                HttpPieceDecision.ABORT ->
-                                    throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
-                                else -> return
-                            }
-                        }
                         val globalOffset = target.fileOffset + position
+                        val pieceIndex = (globalOffset / target.pieceLength).toInt()
+                        if (pieceReadGate.needsWait(pieceIndex)) {
+                            if (!waitForPiece(
+                                    pending,
+                                    target,
+                                    position,
+                                    STREAM_PIECE_TIMEOUT_MS,
+                                    requestGeneration,
+                                    isRequestCancelled
+                                )
+                            ) {
+                                when (HttpRangePolicy.afterHeaders(
+                                    pieceReady = false,
+                                    cancelled = isRequestCancelled()
+                                )) {
+                                    HttpPieceDecision.CANCELLED -> return
+                                    HttpPieceDecision.ABORT ->
+                                        throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
+                                    else -> return
+                                }
+                            }
+                            pieceReadGate.markVerified(pieceIndex)
+                        }
                         val amount = HttpRangePolicy.bytesToPieceEnd(
                             globalOffset = globalOffset,
                             pieceLength = target.pieceLength,

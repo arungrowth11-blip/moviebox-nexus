@@ -161,3 +161,22 @@ internal object HttpRangePolicy {
         return min(min(remainingBytes, pieceRemaining.toLong()), maxBufferBytes.toLong()).toInt()
     }
 }
+
+
+/**
+ * Tracks the last piece verified for one sequential HTTP response. The reader
+ * may split a piece into bounded buffers without waiting for it more than once.
+ */
+internal class HttpPieceReadGate {
+    private var lastVerifiedPieceIndex: Int? = null
+
+    fun needsWait(pieceIndex: Int): Boolean {
+        require(pieceIndex >= 0) { "pieceIndex must be non-negative" }
+        return lastVerifiedPieceIndex != pieceIndex
+    }
+
+    fun markVerified(pieceIndex: Int) {
+        require(pieceIndex >= 0) { "pieceIndex must be non-negative" }
+        lastVerifiedPieceIndex = pieceIndex
+    }
+}

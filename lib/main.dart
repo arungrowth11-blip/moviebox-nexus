@@ -2121,6 +2121,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     String key, {
     VoidCallback? onNext,
     Map<String, String>? headers,
+    bool isLive = false,
   }) {
     Navigator.push(
       context,
@@ -2136,6 +2137,7 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
           },
           onNext: onNext,
           headers: headers ?? const <String, String>{},
+          isLive: isLive,
         ),
       ),
     );
@@ -3120,6 +3122,7 @@ class LiveTvScreen extends StatefulWidget {
     String, {
     VoidCallback? onNext,
     Map<String, String>? headers,
+    required bool isLive,
   })
   onPlay;
   const LiveTvScreen({super.key, required this.engine, required this.onPlay});
@@ -3294,6 +3297,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         working['url'] ?? '',
         working['url'] ?? '',
         headers: headers,
+        isLive: true,
       );
     } catch (error) {
       if (!mounted) return;

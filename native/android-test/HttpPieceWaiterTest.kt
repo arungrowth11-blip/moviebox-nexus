@@ -65,6 +65,29 @@ class HttpPieceWaiterTest {
     }
 
     @Test
+    fun bodyReaderWaitsOnlyOnceForEachVerifiedPieceAcrossMultipleBuffers() {
+        val gate = HttpPieceReadGate()
+
+        assertTrue(gate.needsWait(10))
+        gate.markVerified(10)
+        assertFalse(gate.needsWait(10))
+        assertFalse(gate.needsWait(10))
+        assertTrue(gate.needsWait(11))
+        gate.markVerified(11)
+        assertFalse(gate.needsWait(11))
+        assertTrue(gate.needsWait(12))
+    }
+
+    @Test
+    fun failedPieceWaitIsNotMarkedAsVerified() {
+        val gate = HttpPieceReadGate()
+
+        assertTrue(gate.needsWait(42))
+        // Production marks a piece verified only after await() succeeds.
+        assertTrue(gate.needsWait(42))
+    }
+
+    @Test
     fun firstPieceBudgetAllowsACompletePieceToArriveAfterFourSeconds() {
         assertEquals(45_000L, HttpRangePolicy.FIRST_RESPONSE_PIECE_WAIT_MS)
 

@@ -277,11 +277,24 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   bool get _isLive => widget.isLive;
 
+  bool get _canSwitchToVlc {
+    final uri = Uri.tryParse(widget.url);
+    final supportedUri =
+        uri != null &&
+        {'http', 'https'}.contains(uri.scheme) &&
+        uri.host.isNotEmpty;
+    return supportedUri &&
+        widget.headers.keys.every((key) {
+          final normalized = key.toLowerCase();
+          return normalized == 'user-agent' || normalized == 'referer';
+        });
+  }
+
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentPlaybackStallTimer?.cancel();
-    _offerExternalVlc(reason);
+    unawaited(_switchToVlc(reason));
   }
 
   void _offerExternalVlc(String reason) {
@@ -291,15 +304,18 @@ class _PlayerScreenState extends State<PlayerScreen>
         {'http', 'https'}.contains(uri.scheme) &&
         uri.host.isNotEmpty;
     final headersRequired = widget.headers.isNotEmpty;
+    final externalVlcAvailable = supportedUri && !headersRequired;
     if (!mounted || _disposed) return;
     setState(() {
       _loading = false;
-      _canOpenExternalVlc = supportedUri && !headersRequired;
+      _canOpenExternalVlc = externalVlcAvailable;
       _error = headersRequired
-          ? 'Media3 could not play this source. It requires provider HTTP headers, which Android VLC cannot reliably inherit from MovieBox. Choose another source or retry in MovieBox.'
-          : 'Media3 could not start this source. You can retry, or open the same HTTP stream in the VLC app installed on this phone. DRM-protected streams may still be unavailable.';
+          ? 'Media3 and the in-app VLC engine could not play this source. It requires provider HTTP headers that this VLC plugin cannot forward. Choose another source or retry.'
+          : externalVlcAvailable
+          ? 'Media3 and the in-app VLC engine could not play this source. You can retry or open the same HTTP stream in the VLC app installed on this phone. DRM-protected streams may still be unavailable.'
+          : 'Media3 and the in-app VLC engine could not start this source. Retry or choose another source.';
     });
-    debugPrint('MovieBox Media3 fallback offered external VLC: $reason');
+    debugPrint('MovieBox in-app VLC fallback failed: $reason');
   }
 
   Future<void> _openExternalVlc() async {
@@ -587,7 +603,7 @@ class _PlayerScreenState extends State<PlayerScreen>
               ),
             );
           } else {
-            _offerExternalVlc('Media3 initialization timed out');
+            _handleMedia3Problem('Media3 initialization timed out');
           }
         }
       });
@@ -595,7 +611,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_isEmbeddedTorrent) {
         unawaited(_handleMedia3Exception('Media3 setup failed: $error'));
       } else {
-        _offerExternalVlc('Media3 setup failed: $error');
+        _handleMedia3Problem('Media3 setup failed: $error');
       }
     }
   }
@@ -878,8 +894,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  // Retained as a deliberate, non-default compatibility path.
-  // ignore: unused_element
+  /// Switch to the bundled LibVLC engine after a Media3 failure or
+  /// when the user explicitly requests the compatibility player.
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
     _media3Watchdog?.cancel();
@@ -967,15 +983,13 @@ class _PlayerScreenState extends State<PlayerScreen>
       }
       if (mounted) setState(() {});
     } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = _isEmbeddedTorrent
-            ? 'Media3 and VLC could not open this torrent stream: $error. '
+      _offerExternalVlc(
+        _isEmbeddedTorrent
+            ? 'VLC could not open this torrent stream: $error. '
                   '$_torrentStatusMessage. $_torrentTechnicalLine. '
                   'Peer count and download rate do not prove that the requested video pieces were delivered.'
-            : 'Media3 and VLC could not start this stream: $error';
-      });
+            : 'VLC could not start this stream: $error',
+      );
     }
   }
 
@@ -998,15 +1012,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     if (value.hasError) {
-      setState(() {
-        _loading = false;
-        final vlcReason = value.errorDescription.isEmpty
-            ? 'VLC could not decode or open this stream.'
-            : value.errorDescription;
-        _error = _isEmbeddedTorrent
+      final vlcReason = value.errorDescription.isEmpty
+          ? 'VLC could not decode or open this stream.'
+          : value.errorDescription;
+      _offerExternalVlc(
+        _isEmbeddedTorrent
             ? '$vlcReason. $_torrentStatusMessage. $_torrentTechnicalLine'
-            : vlcReason;
-      });
+            : vlcReason,
+      );
     }
 
     if (value.isEnded && !_nextCalled && widget.onNext != null) {
@@ -1071,6 +1084,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         controller.betterPlayerAsmsAudioTracks ??
         const <BetterPlayerAsmsAudioTrack>[];
     if (tracks.isEmpty) return;
+    // Live HLS feeds should keep the broadcaster's default rendition.
+    // Automatically overriding it with a secondary language rendition can
+    // mute streams whose alternate-audio metadata is present but unavailable.
+    if (_isLive) {
+      _preferredHindiAudioApplied = true;
+      return;
+    }
     final hindi = tracks.where((track) {
       final language = (track.language ?? '').toLowerCase();
       final label = (track.label ?? '').toLowerCase();
@@ -1744,6 +1764,24 @@ class _PlayerScreenState extends State<PlayerScreen>
                   _error!,
                   onRetry: _retryCurrentEngine,
                   onOpenInVlc: _canOpenExternalVlc ? _openExternalVlc : null,
+                ),
+              if (!_usingVlc && _media3 != null && _canSwitchToVlc)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 4,
+                  right: 58,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: IconButton(
+                      tooltip: 'Switch to VLC compatibility player',
+                      onPressed: () => unawaited(
+                        _switchToVlc('User selected VLC compatibility player'),
+                      ),
+                      icon: const Icon(Icons.switch_video, color: _movieBoxCyan),
+                    ),
+                  ),
                 ),
               if (!_usingVlc && _media3 != null)
                 Positioned(
