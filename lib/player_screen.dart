@@ -405,7 +405,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   Future<void> _recoverEmbeddedTorrentPlayback(String reason) async {
-    if (!mounted || _disposed || !_isEmbeddedTorrent || _torrentRecoveryInProgress) {
+    if (!mounted ||
+        _disposed ||
+        !_isEmbeddedTorrent ||
+        _torrentRecoveryInProgress) {
       return;
     }
     if (_torrentRecoveryAttempts >= 2) {
@@ -660,54 +663,51 @@ class _PlayerScreenState extends State<PlayerScreen>
     _lastTorrentProgressAt = DateTime.now();
     _torrentPlaybackProgressObserved = false;
 
-    _torrentPlaybackStallTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) {
-        if (!mounted ||
-            _disposed ||
-            _usingVlc ||
-            !identical(_media3, controller)) {
-          _torrentPlaybackStallTimer?.cancel();
-          return;
-        }
-        final value = controller.videoPlayerController?.value;
-        if (value == null || !value.initialized) return;
+    _torrentPlaybackStallTimer = Timer.periodic(const Duration(seconds: 5), (
+      _,
+    ) {
+      if (!mounted ||
+          _disposed ||
+          _usingVlc ||
+          !identical(_media3, controller)) {
+        _torrentPlaybackStallTimer?.cancel();
+        return;
+      }
+      final value = controller.videoPlayerController?.value;
+      if (value == null || !value.initialized) return;
 
-        final positionDelta =
-            (value.position - _lastTorrentObservedPosition).inMilliseconds.abs();
-        if (positionDelta > 250) {
-          _lastTorrentObservedPosition = value.position;
-          _lastTorrentProgressAt = DateTime.now();
-          _torrentPlaybackProgressObserved = true;
-          if (_torrentRecoveryResetTimer?.isActive != true) {
-            _torrentRecoveryResetTimer = Timer(
-              const Duration(seconds: 30),
-              () {
-                if (mounted && !_disposed) _torrentRecoveryAttempts = 0;
-              },
-            );
-          }
-          return;
+      final positionDelta = (value.position - _lastTorrentObservedPosition)
+          .inMilliseconds
+          .abs();
+      if (positionDelta > 250) {
+        _lastTorrentObservedPosition = value.position;
+        _lastTorrentProgressAt = DateTime.now();
+        _torrentPlaybackProgressObserved = true;
+        if (_torrentRecoveryResetTimer?.isActive != true) {
+          _torrentRecoveryResetTimer = Timer(const Duration(seconds: 30), () {
+            if (mounted && !_disposed) _torrentRecoveryAttempts = 0;
+          });
         }
+        return;
+      }
 
-        // Do not treat a user pause as a transport stall. A seek/rebuffer that
-        // remains buffering without clock progress is recovered after 35s.
-        if (!_torrentPlaybackProgressObserved || !value.isBuffering) {
-          if (!value.isBuffering) _lastTorrentProgressAt = DateTime.now();
-          return;
-        }
-        if (DateTime.now().difference(_lastTorrentProgressAt) >=
-            Media3StartupPolicy.torrentPlaybackStallTimeout) {
-          _lastTorrentProgressAt = DateTime.now();
-          unawaited(
-            _handleMedia3Exception(
-              'Torrent playback/seek remained buffering for '
-              '${Media3StartupPolicy.torrentPlaybackStallTimeout.inSeconds}s.',
-            ),
-          );
-        }
-      },
-    );
+      // Do not treat a user pause as a transport stall. A seek/rebuffer that
+      // remains buffering without clock progress is recovered after 35s.
+      if (!_torrentPlaybackProgressObserved || !value.isBuffering) {
+        if (!value.isBuffering) _lastTorrentProgressAt = DateTime.now();
+        return;
+      }
+      if (DateTime.now().difference(_lastTorrentProgressAt) >=
+          Media3StartupPolicy.torrentPlaybackStallTimeout) {
+        _lastTorrentProgressAt = DateTime.now();
+        unawaited(
+          _handleMedia3Exception(
+            'Torrent playback/seek remained buffering for '
+            '${Media3StartupPolicy.torrentPlaybackStallTimeout.inSeconds}s.',
+          ),
+        );
+      }
+    });
   }
 
   void _startMedia3PlaybackStartWatchdog(BetterPlayerController controller) {
