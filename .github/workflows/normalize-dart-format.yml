@@ -2,7 +2,7 @@ name: Normalize Dart formatting
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/frostwire-jlibtorrent-bridge]
     types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
@@ -60,5 +60,5 @@ jobs:
         if: steps.dart-format.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: gh api --method POST "repos/${GITHUB_REPOSITORY}/actions/workflows/build.yml/dispatches" -f ref="${HEAD_REF}"

@@ -10,6 +10,25 @@ const Color _movieBoxRed = Color(0xFFE50914);
 const Color _movieBoxCyan = Color(0xFF20DDF2);
 const Color _playerSurface = Color(0xFF11131C);
 
+/// Resolve a safe format hint before BetterPlayer inspects a network URL.
+/// better_player_plus 1.4.1 can fail when its Android extension resolver sees
+/// an extensionless source. Known adaptive formats remain explicit; extensionless
+/// URLs use the plugin's generic data source rather than unsafe inference.
+BetterPlayerVideoFormat? mediaFormatHintForUrl(String rawUrl) {
+  final path = Uri.tryParse(rawUrl)?.path.toLowerCase() ?? '';
+  if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
+  if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
+  if (path.endsWith('.ism') || path.endsWith('.isml')) {
+    return BetterPlayerVideoFormat.ss;
+  }
+  final lastSegment = path.split('/').last;
+  final extensionSeparator = lastSegment.lastIndexOf('.');
+  if (extensionSeparator <= 0 || extensionSeparator == lastSegment.length - 1) {
+    return BetterPlayerVideoFormat.other;
+  }
+  return null;
+}
+
 /// In-app dual-engine playback:
 /// 1) Media3/ExoPlayer via Better Player Plus for adaptive HLS/DASH, headers,
 ///    quality selection, subtitles and audio tracks.
@@ -54,10 +73,20 @@ class _PlayerScreenState extends State<PlayerScreen>
   Timer? _media3Watchdog;
   Timer? _media3PlaybackStartWatchdog;
   Timer? _torrentStatusTimer;
+  Timer? _torrentPlaybackStallTimer;
+  Timer? _torrentRecoveryResetTimer;
+  bool _torrentRecoveryInProgress = false;
+  bool _torrentPlaybackProgressObserved = false;
+  int _torrentRecoveryAttempts = 0;
+  Duration _lastTorrentObservedPosition = Duration.zero;
+  DateTime _lastTorrentProgressAt = DateTime.now();
   String _torrentStatusMessage = '';
   String _torrentTechnicalLine = '';
   static const MethodChannel _torrentDiagnostics = MethodChannel(
     'moviebox_nexus/torrent',
+  );
+  static const MethodChannel _externalPlayer = MethodChannel(
+    'moviebox_nexus/external_player',
   );
   bool _usingVlc = false;
   bool _loading = true;
@@ -65,6 +94,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _disposed = false;
   bool _nextCalled = false;
   bool _vlcInitStarted = false;
+  bool _canOpenExternalVlc = false;
   String? _error;
   String _engineLabel = 'Media3 / ExoPlayer';
   int _pendingPositionMs = 0;
@@ -212,7 +242,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       final technical = <String>[
         if (active) 'Connected: $connectedPeers peers / $connectedSeeds seeds',
         if (active) 'Discovered: $knownPeers peers / $knownSeeds seeds',
-        if (active) 'Downloaded: $downloaded bytes',
+        if (active) 'Received (including partial pieces): $downloaded bytes',
         if (tracker.isNotEmpty) 'Last working tracker: $tracker',
         if (lastHttpStatus > 0) 'HTTP: $lastHttpStatus',
         if (lastRangeStart >= 0) 'Last range: $lastRangeStart-$lastRangeEnd',
@@ -222,6 +252,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
         if (lastPieceIndex >= 0)
           'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
+        if (number('selectedPieceLengthBytes') > 0)
+          'Piece size: ${(number('selectedPieceLengthBytes') / (1024 * 1024)).toStringAsFixed(2)} MiB',
         if (lastHttpError.isNotEmpty) 'HTTP/piece error: $lastHttpError',
       ].join(' • ');
       if (message != _torrentStatusMessage ||
@@ -241,38 +273,192 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
-  BetterPlayerVideoFormat? _formatHint() {
-    // Embedded torrent URLs end in an opaque stream token rather than a file
-    // extension. better_player_plus 1.4.1's Android source resolver assumes
-    // every extensionless URL contains a dot and otherwise throws an
-    // IndexOutOfBoundsException before Media3 can prepare the progressive MP4.
-    if (_isEmbeddedTorrent) return BetterPlayerVideoFormat.other;
-    final path = Uri.tryParse(widget.url)?.path.toLowerCase() ?? '';
-    if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
-    if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
-    if (path.endsWith('.ism') || path.endsWith('.isml')) {
-      return BetterPlayerVideoFormat.ss;
-    }
-    return null;
-  }
+  BetterPlayerVideoFormat? _formatHint() => mediaFormatHintForUrl(widget.url);
 
   bool get _isLive => widget.isLive;
 
   void _handleMedia3Problem(String reason) {
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
-    // A connected BitTorrent swarm can still contain a codec/container that
-    // Media3 cannot decode. Try the bundled VLC engine against the same
-    // loopback HTTP stream before declaring the source unusable.
-    unawaited(_switchToVlc(reason));
+    _torrentPlaybackStallTimer?.cancel();
+    _offerExternalVlc(reason);
+  }
+
+  void _offerExternalVlc(String reason) {
+    final uri = Uri.tryParse(widget.url);
+    final supportedUri =
+        uri != null &&
+        {'http', 'https'}.contains(uri.scheme) &&
+        uri.host.isNotEmpty;
+    final headersRequired = widget.headers.isNotEmpty;
+    if (!mounted || _disposed) return;
+    setState(() {
+      _loading = false;
+      _canOpenExternalVlc = supportedUri && !headersRequired;
+      _error = headersRequired
+          ? 'Media3 could not play this source. It requires provider HTTP headers, which Android VLC cannot reliably inherit from MovieBox. Choose another source or retry in MovieBox.'
+          : 'Media3 could not start this source. You can retry, or open the same HTTP stream in the VLC app installed on this phone. DRM-protected streams may still be unavailable.';
+    });
+    debugPrint('MovieBox Media3 fallback offered external VLC: $reason');
+  }
+
+  Future<void> _openExternalVlc() async {
+    if (!_canOpenExternalVlc || _disposed) return;
+    final controller = _media3;
+    final position =
+        controller?.videoPlayerController?.value.position.inMilliseconds ?? 0;
+    try {
+      await _externalPlayer.invokeMethod<bool>('openVlc', <String, Object>{
+        'url': widget.url,
+        'title': widget.title,
+        'positionMs': position,
+      });
+    } on PlatformException catch (error) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _canOpenExternalVlc = false;
+        _error = error.message ?? 'The installed VLC app could not be opened.';
+      });
+    } catch (error) {
+      if (!mounted || _disposed) return;
+      setState(() {
+        _canOpenExternalVlc = false;
+        _error = 'Could not open the installed VLC app: $error';
+      });
+    }
+  }
+
+  Future<void> _handleMedia3Exception(String reason) async {
+    if (!_isEmbeddedTorrent) {
+      _handleMedia3Problem(reason);
+      return;
+    }
+
+    Map<String, dynamic>? snapshot;
+    try {
+      snapshot = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('getStatus')
+          .timeout(const Duration(seconds: 4));
+    } catch (error) {
+      debugPrint('MovieBox torrent failure diagnostics unavailable: $error');
+    }
+
+    if (!mounted || _disposed) return;
+    final bytesSent = (snapshot?['httpBytesSent'] as num?)?.toInt() ?? 0;
+    final lastHttpStatus = (snapshot?['lastHttpStatus'] as num?)?.toInt() ?? 0;
+    if (snapshot != null &&
+        (lastHttpStatus == 200 ||
+            lastHttpStatus == 206 ||
+            lastHttpStatus == 503 ||
+            lastHttpStatus == 504 ||
+            bytesSent > 0)) {
+      // Keep the embedded torrent source in-app. Reopen the same loopback URL
+      // at the last confirmed position so the native bridge can reprioritize it.
+      await _recoverEmbeddedTorrentPlayback(reason);
+      return;
+    }
+    if (snapshot == null ||
+        !Media3StartupPolicy.canFallbackToCompatibilityPlayer(
+          isEmbeddedTorrent: true,
+          httpBytesSent: bytesSent,
+        )) {
+      int number(String key) => (snapshot?[key] as num?)?.toInt() ?? 0;
+      final status = number('lastHttpStatus');
+      final peers = number('connectedPeers');
+      final seeds = number('connectedSeeds');
+      final downloaded = number('downloadedBytes');
+      final piece = number('lastPieceIndex');
+      final pieceWait = number('lastPieceWaitMs');
+      final pieceLength = number('selectedPieceLengthBytes');
+      final nativeError = (snapshot?['lastHttpError'] ?? '').toString();
+      final details = <String>[
+        'HTTP: ${status == 0 ? 'no response' : status}',
+        'connected peers/seeds: $peers/$seeds',
+        'received bytes including partial pieces: $downloaded',
+        'loopback body bytes sent: $bytesSent',
+        if (piece >= 0) 'requested piece: $piece (${pieceWait}ms wait)',
+        if (pieceLength > 0)
+          'piece size: ${(pieceLength / (1024 * 1024)).toStringAsFixed(2)} MiB',
+        if (nativeError.isNotEmpty) 'torrent error: $nativeError',
+      ].join(' • ');
+      _media3Watchdog?.cancel();
+      _media3PlaybackStartWatchdog?.cancel();
+      setState(() {
+        _loading = false;
+        _torrentStatusMessage = snapshot == null
+            ? 'Torrent diagnostics are unavailable; playback engine was not switched.'
+            : 'Torrent has not delivered a complete first video piece yet.';
+        _torrentTechnicalLine = details;
+        _error = snapshot == null
+            ? 'Media3 failed while opening the torrent stream, and native diagnostics could not be read. VLC was not started because an alternate decoder cannot fix an unverified or undelivered torrent piece. $reason'
+            : 'Torrent transport has not delivered video bytes to the player. VLC was not started because it would request the same incomplete torrent stream. Retry keeps the embedded torrent source active. $details';
+      });
+      debugPrint(
+        'MovieBox torrent transport failure (no VLC fallback): $reason; $details',
+      );
+      return;
+    }
+
+    // A confirmed body delivery with a frozen Media3 clock is a player stall,
+    // not proof that VLC is required. Try bounded in-app recovery first.
+    await _recoverEmbeddedTorrentPlayback(reason);
+  }
+
+  Future<void> _recoverEmbeddedTorrentPlayback(String reason) async {
+    if (!mounted ||
+        _disposed ||
+        !_isEmbeddedTorrent ||
+        _torrentRecoveryInProgress) {
+      return;
+    }
+    if (_torrentRecoveryAttempts >= 2) {
+      _handleMedia3Problem(
+        'Embedded torrent playback remained unstable after two in-app recovery attempts. $reason',
+      );
+      return;
+    }
+
+    _torrentRecoveryInProgress = true;
+    _torrentRecoveryAttempts++;
+    final currentPosition =
+        _media3?.videoPlayerController?.value.position.inMilliseconds ??
+        _pendingPositionMs;
+    if (currentPosition > 0) _pendingPositionMs = currentPosition;
+
+    _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    setState(() {
+      _loading = true;
+      _error = null;
+      _torrentStatusMessage =
+          'Recovering torrent playback at ${_timeText(Duration(milliseconds: _pendingPositionMs))}…';
+    });
+    debugPrint(
+      'MovieBox embedded torrent recovery '
+      '${_torrentRecoveryAttempts}/2 at ${_pendingPositionMs}ms: $reason',
+    );
+
+    await Future<void>.delayed(
+      Duration(milliseconds: 700 * _torrentRecoveryAttempts),
+    );
+    if (!mounted || _disposed) {
+      _torrentRecoveryInProgress = false;
+      return;
+    }
+    _torrentRecoveryInProgress = false;
+    _startMedia3();
   }
 
   void _retryPlayback() {
     if (_isEmbeddedTorrent) {
-      _startMedia3();
-    } else {
-      unawaited(_switchToVlc('Retrying with VLC compatibility engine'));
+      final position =
+          _media3?.videoPlayerController?.value.position.inMilliseconds;
+      if (position != null && position > 0) _pendingPositionMs = position;
+      _torrentRecoveryAttempts = 0;
+      _torrentRecoveryInProgress = false;
     }
+    _startMedia3();
   }
 
   void _reportPrepared() {
@@ -292,18 +478,27 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    _torrentPlaybackProgressObserved = false;
     _vlcInitStarted = false;
     _usingVlc = false;
     _loading = true;
     _error = null;
     _engineLabel = 'Media3 / ExoPlayer';
+    _canOpenExternalVlc = false;
     _nextCalled = false;
     _preparedReported = false;
     _playStartedAt = DateTime.now();
 
+    // This private marker configures only Media3's local torrent read timeout.
+    // DataSourceUtils strips it before forwarding HTTP request headers.
+    final media3Headers = <String, String>{
+      ...widget.headers,
+      if (_isEmbeddedTorrent) 'X-MovieBox-Torrent-Stream': 'true',
+    };
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
-      headers: widget.headers.isEmpty ? null : widget.headers,
+      headers: media3Headers.isEmpty ? null : media3Headers,
       liveStream: _isLive,
       useAsmsTracks: true,
       useAsmsAudioTracks: true,
@@ -376,23 +571,31 @@ class _PlayerScreenState extends State<PlayerScreen>
         betterPlayerDataSource: dataSource,
       );
       if (mounted) setState(() {});
+      // Cold start can require 65s for metadata, then three first-piece
+      // waits (45s each) with two one-second retry gaps: 202s worst case.
+      // The 120s HTTP read timeout covers metadata + one piece attempt;
+      // this outer watchdog must cover the bounded retry sequence.
       final watchdogDelay = _isEmbeddedTorrent
-          ? const Duration(seconds: 105)
+          ? const Duration(seconds: 220)
           : const Duration(seconds: 35);
       _media3Watchdog = Timer(watchdogDelay, () {
         if (mounted && !_disposed && !_usingVlc && _loading) {
           if (_isEmbeddedTorrent) {
-            _handleMedia3Problem('Torrent startup timed out after 105 seconds');
+            unawaited(
+              _handleMedia3Exception(
+                'Torrent startup timed out after 220 seconds',
+              ),
+            );
           } else {
-            unawaited(_switchToVlc('Media3 initialization timed out'));
+            _offerExternalVlc('Media3 initialization timed out');
           }
         }
       });
     } catch (error) {
       if (_isEmbeddedTorrent) {
-        _handleMedia3Problem('Media3 setup failed: $error');
+        unawaited(_handleMedia3Exception('Media3 setup failed: $error'));
       } else {
-        unawaited(_switchToVlc('Media3 setup failed: $error'));
+        _offerExternalVlc('Media3 setup failed: $error');
       }
     }
   }
@@ -406,6 +609,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (initializedController != null) {
           widget.onMedia3ControllerReady?.call(initializedController);
           _startMedia3PlaybackStartWatchdog(initializedController);
+          _startTorrentPlaybackStallWatchdog(initializedController);
           // AutoPlay is configured on BetterPlayer; issue one explicit play
           // command after initialization to recover a stale lifecycle play gate.
           unawaited(
@@ -436,7 +640,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         // Defer fallback/disposal until that iteration has completed.
         scheduleMicrotask(() {
           if (mounted && !_disposed) {
-            _handleMedia3Problem('Media3 error: $details');
+            unawaited(_handleMedia3Exception('Media3 error: $details'));
           }
         });
         break;
@@ -449,6 +653,61 @@ class _PlayerScreenState extends State<PlayerScreen>
       default:
         break;
     }
+  }
+
+  void _startTorrentPlaybackStallWatchdog(BetterPlayerController controller) {
+    if (!_isEmbeddedTorrent) return;
+    _torrentPlaybackStallTimer?.cancel();
+    _lastTorrentObservedPosition =
+        controller.videoPlayerController?.value.position ?? Duration.zero;
+    _lastTorrentProgressAt = DateTime.now();
+    _torrentPlaybackProgressObserved = false;
+
+    _torrentPlaybackStallTimer = Timer.periodic(const Duration(seconds: 5), (
+      _,
+    ) {
+      if (!mounted ||
+          _disposed ||
+          _usingVlc ||
+          !identical(_media3, controller)) {
+        _torrentPlaybackStallTimer?.cancel();
+        return;
+      }
+      final value = controller.videoPlayerController?.value;
+      if (value == null || !value.initialized) return;
+
+      final positionDelta = (value.position - _lastTorrentObservedPosition)
+          .inMilliseconds
+          .abs();
+      if (positionDelta > 250) {
+        _lastTorrentObservedPosition = value.position;
+        _lastTorrentProgressAt = DateTime.now();
+        _torrentPlaybackProgressObserved = true;
+        if (_torrentRecoveryResetTimer?.isActive != true) {
+          _torrentRecoveryResetTimer = Timer(const Duration(seconds: 30), () {
+            if (mounted && !_disposed) _torrentRecoveryAttempts = 0;
+          });
+        }
+        return;
+      }
+
+      // Do not treat a user pause as a transport stall. A seek/rebuffer that
+      // remains buffering without clock progress is recovered after 35s.
+      if (!_torrentPlaybackProgressObserved || !value.isBuffering) {
+        if (!value.isBuffering) _lastTorrentProgressAt = DateTime.now();
+        return;
+      }
+      if (DateTime.now().difference(_lastTorrentProgressAt) >=
+          Media3StartupPolicy.torrentPlaybackStallTimeout) {
+        _lastTorrentProgressAt = DateTime.now();
+        unawaited(
+          _handleMedia3Exception(
+            'Torrent playback/seek remained buffering for '
+            '${Media3StartupPolicy.torrentPlaybackStallTimeout.inSeconds}s.',
+          ),
+        );
+      }
+    });
   }
 
   void _startMedia3PlaybackStartWatchdog(BetterPlayerController controller) {
@@ -491,7 +750,10 @@ class _PlayerScreenState extends State<PlayerScreen>
           }),
         );
       }
-      if (elapsed < Media3StartupPolicy.startupTimeout || resolving) return;
+      final startupTimeout = Media3StartupPolicy.timeoutFor(
+        isEmbeddedTorrent: _isEmbeddedTorrent,
+      );
+      if (elapsed < startupTimeout || resolving) return;
       resolving = true;
       unawaited(
         _resolveMedia3StartupStall(
@@ -562,11 +824,19 @@ class _PlayerScreenState extends State<PlayerScreen>
     watchdog.cancel();
     if (decision == Media3StartupDecision.noTorrentBytes) {
       int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final status = number('lastHttpStatus');
+      if (status == 503 || status == 504) {
+        unawaited(
+          _recoverEmbeddedTorrentPlayback(
+            'Torrent first-piece HTTP $status retry budget was exhausted.',
+          ),
+        );
+        return;
+      }
       final peers = number('connectedPeers');
       final seeds = number('connectedSeeds');
       final knownPeers = number('knownPeers');
       final downloaded = number('downloadedBytes');
-      final status = number('lastHttpStatus');
       final lastError = (snapshot['lastHttpError'] ?? '').toString();
       final tracker = (snapshot['currentTracker'] ?? '').toString();
       final details = <String>[
@@ -591,13 +861,25 @@ class _PlayerScreenState extends State<PlayerScreen>
       });
       return;
     }
-    _handleMedia3Problem(
-      'Media3 initialized but its playback clock did not advance after '
-      '${Media3StartupPolicy.startupTimeout.inSeconds}s; '
-      'loopback body bytes sent=$httpBytesSent. Trying VLC compatibility playback.',
-    );
+    if (_isEmbeddedTorrent) {
+      unawaited(
+        _recoverEmbeddedTorrentPlayback(
+          'Media3 playback clock stalled after '
+          '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: true).inSeconds}s; '
+          'loopback body bytes sent=$httpBytesSent.',
+        ),
+      );
+    } else {
+      _handleMedia3Problem(
+        'Media3 initialized but its playback clock did not advance after '
+        '${Media3StartupPolicy.timeoutFor(isEmbeddedTorrent: false).inSeconds}s; '
+        'trying VLC compatibility playback.',
+      );
+    }
   }
 
+  // Retained as a deliberate, non-default compatibility path.
+  // ignore: unused_element
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
     _media3Watchdog?.cancel();
@@ -1085,7 +1367,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     return '$minutes:$seconds';
   }
 
-  Widget _errorPanel(String message, {VoidCallback? onRetry}) {
+  Widget _errorPanel(
+    String message, {
+    VoidCallback? onRetry,
+    VoidCallback? onOpenInVlc,
+  }) {
     return Center(
       child: Container(
         constraints: const BoxConstraints(maxWidth: 620),
@@ -1120,9 +1406,17 @@ class _PlayerScreenState extends State<PlayerScreen>
             FilledButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
-              label: const Text('Retry playback'),
+              label: const Text('Retry in MovieBox'),
               style: FilledButton.styleFrom(backgroundColor: _movieBoxRed),
             ),
+            if (onOpenInVlc != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: onOpenInVlc,
+                icon: const Icon(Icons.open_in_new),
+                label: const Text('Open in installed VLC'),
+              ),
+            ],
           ],
         ),
       ),
@@ -1333,6 +1627,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentStatusTimer?.cancel();
+    _torrentPlaybackStallTimer?.cancel();
+    _torrentRecoveryResetTimer?.cancel();
     _media3?.dispose(forceDispose: true);
 
     final vlc = _vlc;
@@ -1444,7 +1740,11 @@ class _PlayerScreenState extends State<PlayerScreen>
                   ),
               ],
               if (_error != null)
-                _errorPanel(_error!, onRetry: _retryCurrentEngine),
+                _errorPanel(
+                  _error!,
+                  onRetry: _retryCurrentEngine,
+                  onOpenInVlc: _canOpenExternalVlc ? _openExternalVlc : null,
+                ),
               if (!_usingVlc && _media3 != null)
                 Positioned(
                   top: MediaQuery.of(context).padding.top + 4,

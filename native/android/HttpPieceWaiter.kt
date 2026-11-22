@@ -54,7 +54,31 @@ internal data class HttpByteRange(
 
 /** Pure HTTP policy: no Android, socket, or libtorrent dependencies. */
 internal object HttpRangePolicy {
+    // Do not reject a torrent startup before a normal full piece can be verified.
+    const val FIRST_RESPONSE_PIECE_WAIT_MS = 45_000L
+    const val STREAM_PIECE_WAIT_MS = 180_000L
+    const val PREFETCH_PIECES = 3
+    const val PREFETCH_DEADLINE_STEP_MS = 2_500
     const val RETRY_AFTER_SECONDS = 1
+
+    fun playbackWindow(
+        currentPiece: Int,
+        firstPiece: Int,
+        lastPiece: Int,
+        lookAheadPieces: Int
+    ): List<Int> {
+        if (firstPiece < 0 || lastPiece < firstPiece || currentPiece !in firstPiece..lastPiece) {
+            return emptyList()
+        }
+        require(lookAheadPieces >= 0) { "lookAheadPieces must be non-negative" }
+        val windowEnd = min(lastPiece.toLong(), currentPiece.toLong() + lookAheadPieces).toInt()
+        return (currentPiece..windowEnd).toList()
+    }
+
+    fun deadlineForWindowOffset(offset: Int): Int {
+        require(offset >= 0) { "offset must be non-negative" }
+        return offset * PREFETCH_DEADLINE_STEP_MS
+    }
 
     fun shouldWaitForFirstPiece(method: String): Boolean =
         method.equals("GET", ignoreCase = true)
