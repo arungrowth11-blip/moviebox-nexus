@@ -116,18 +116,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
-
   /// Apply the player orientation before creating Media3's Android surface.
   /// Starting ExoPlayer while Android is still rotating can invalidate the
   /// just-created SurfaceTexture on some devices and freeze playback at 0:00.
   Future<void> _preparePlayerSurface() async {
     try {
-      await SystemChrome.setPreferredOrientations(
-        const <DeviceOrientation>[
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-      ).timeout(const Duration(seconds: 5));
+      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]).timeout(const Duration(seconds: 5));
       await SystemChrome.setEnabledSystemUIMode(
         SystemUiMode.immersiveSticky,
       ).timeout(const Duration(seconds: 5));
@@ -1668,22 +1665,22 @@ class _PlayerScreenState extends State<PlayerScreen>
       // Stop the native range server and release its temporary video file when
       // the viewer leaves this route (including back navigation after errors).
       unawaited(
-        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError(
-          (Object error) {
-            debugPrint('MovieBox torrent cleanup on player exit failed: $error');
-          },
-        ),
+        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError((
+          Object error,
+        ) {
+          debugPrint('MovieBox torrent cleanup on player exit failed: $error');
+        }),
       );
     }
     if (_isEmbeddedTorrent) {
       // The native side owns temporary downloaded pieces; stopping on route
       // disposal prevents abandoned movies from occupying app storage.
       unawaited(
-        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError(
-          (Object error) {
-            debugPrint('MovieBox torrent cleanup on player exit failed: $error');
-          },
-        ),
+        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError((
+          Object error,
+        ) {
+          debugPrint('MovieBox torrent cleanup on player exit failed: $error');
+        }),
       );
     }
 
@@ -1815,7 +1812,10 @@ class _PlayerScreenState extends State<PlayerScreen>
                       onPressed: () => unawaited(
                         _switchToVlc('User selected VLC compatibility player'),
                       ),
-                      icon: const Icon(Icons.switch_video, color: _movieBoxCyan),
+                      icon: const Icon(
+                        Icons.switch_video,
+                        color: _movieBoxCyan,
+                      ),
                     ),
                   ),
                 ),
