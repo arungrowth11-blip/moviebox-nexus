@@ -1665,6 +1665,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentRecoveryResetTimer?.cancel();
     _media3?.dispose(forceDispose: true);
     if (_isEmbeddedTorrent) {
+      // Stop the native range server and release its temporary video file when
+      // the viewer leaves this route (including back navigation after errors).
+      unawaited(
+        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError(
+          (Object error) {
+            debugPrint('MovieBox torrent cleanup on player exit failed: $error');
+          },
+        ),
+      );
+    }
+    if (_isEmbeddedTorrent) {
       // The native side owns temporary downloaded pieces; stopping on route
       // disposal prevents abandoned movies from occupying app storage.
       unawaited(
