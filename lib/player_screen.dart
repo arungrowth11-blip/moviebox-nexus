@@ -516,7 +516,11 @@ class _PlayerScreenState extends State<PlayerScreen>
       return;
     }
     final native = controller.videoPlayerController;
-    if (native == null || !native.value.isInitialized) return;
+    if (native == null ||
+        (native.value.duration == Duration.zero &&
+            native.value.size == Size.zero)) {
+      return;
+    }
     final lifecycle = WidgetsBinding.instance.lifecycleState;
     if (lifecycle == AppLifecycleState.paused ||
         lifecycle == AppLifecycleState.hidden ||
