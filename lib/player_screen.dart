@@ -116,22 +116,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     });
   }
 
-  /// Apply the player orientation before creating Media3's Android surface.
-  /// Starting ExoPlayer while Android is still rotating can invalidate the
-  /// just-created SurfaceTexture on some devices and freeze playback at 0:00.
+  /// Wait for the first mounted frame before attaching the native player.
+  /// Display orientation and system bars are prepared by the route owner before
+  /// this screen is pushed, so Media3 never races an Activity rotation.
   Future<void> _preparePlayerSurface() async {
-    try {
-      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]).timeout(const Duration(seconds: 5));
-      await SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.immersiveSticky,
-      ).timeout(const Duration(seconds: 5));
-      await WidgetsBinding.instance.endOfFrame;
-    } catch (error) {
-      debugPrint('MovieBox player surface preparation warning: $error');
-    }
+    await WidgetsBinding.instance.endOfFrame;
     if (!mounted || _disposed) return;
     _startMedia3();
   }
@@ -1679,15 +1668,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     _focusNode.dispose();
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    unawaited(
-      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]),
-    );
+    // The route owner restores system bars and the catalog orientation only
+    // after Navigator.push completes; do not rotate while the native surface
+    // is being torn down.
     super.dispose();
   }
 

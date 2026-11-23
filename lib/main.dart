@@ -2128,6 +2128,40 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     } catch (_) {}
   }
 
+  /// Apply display configuration before the native video surface exists.
+  /// PlayerScreen itself never rotates the Activity during Media3 initialization.
+  Future<void> _preparePlayerDisplay() async {
+    try {
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.immersiveSticky,
+      ).timeout(const Duration(seconds: 5));
+      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]).timeout(const Duration(seconds: 5));
+
+      // setPreferredOrientations acknowledges the platform request; wait until
+      // Android has actually reported landscape metrics before creating ExoPlayer.
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (DateTime.now().isBefore(deadline)) {
+        final views = WidgetsBinding.instance.platformDispatcher.views;
+        if (views.isNotEmpty) {
+          final size = views.first.physicalSize;
+          if (size.width > size.height) {
+            await WidgetsBinding.instance.endOfFrame;
+            return;
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      debugPrint(
+        'MovieBox display did not confirm landscape; opening player in the stable current orientation.',
+      );
+    } catch (error) {
+      debugPrint('MovieBox player display preparation warning: $error');
+    }
+  }
+
   void _pushPlayer(
     String title,
     String url,
@@ -2136,24 +2170,69 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     Map<String, String>? headers,
     bool isLive = false,
   }) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PlayerScreen(
-          title: title,
-          url: url,
-          initialMs: resumeMs[key] ?? 0,
-          onSave: (ms) async {
-            resumeMs[key] = ms;
-            resumeTitles[key] = title;
-            await _save();
-          },
-          onNext: onNext,
-          headers: headers ?? const <String, String>{},
-          isLive: isLive,
-        ),
+    unawaited(
+      _pushPlayerAfterDisplayPreparation(
+        title,
+        url,
+        key,
+        onNext: onNext,
+        headers: headers,
+        isLive: isLive,
       ),
     );
+  }
+
+  Future<void> _pushPlayerAfterDisplayPreparation(
+    String title,
+    String url,
+    String key, {
+    VoidCallback? onNext,
+    Map<String, String>? headers,
+    bool isLive = false,
+  }) async {
+    await _preparePlayerDisplay();
+    if (!mounted) {
+      await _restoreCatalogDisplay();
+      return;
+    }
+    try {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => PlayerScreen(
+            title: title,
+            url: url,
+            initialMs: resumeMs[key] ?? 0,
+            onSave: (ms) async {
+              resumeMs[key] = ms;
+              resumeTitles[key] = title;
+              await _save();
+            },
+            onNext: onNext,
+            headers: headers ?? const <String, String>{},
+            isLive: isLive,
+          ),
+        ),
+      );
+    } finally {
+      await _restoreCatalogDisplay();
+    }
+  }
+
+  Future<void> _restoreCatalogDisplay() async {
+    try {
+      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]).timeout(const Duration(seconds: 5));
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.edgeToEdge,
+      ).timeout(const Duration(seconds: 5));
+    } catch (error) {
+      debugPrint('MovieBox catalog display restore warning: $error');
+    }
   }
 
   void _openDetails(Meta m) {
