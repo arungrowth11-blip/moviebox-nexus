@@ -1,5 +1,6 @@
 package com.moviebox.nexus
 
+import java.io.File
 import kotlin.math.min
 
 /**
@@ -178,5 +179,31 @@ internal class HttpPieceReadGate {
     fun markVerified(pieceIndex: Int) {
         require(pieceIndex >= 0) { "pieceIndex must be non-negative" }
         lastVerifiedPieceIndex = pieceIndex
+    }
+}
+
+
+/**
+ * Storage policy for temporary torrent media. Stream directories must be
+ * direct children of the dedicated cache root. Canonical-path checks prevent
+ * cleanup from escaping that root through malformed paths or symlinks.
+ */
+internal object TorrentCachePolicy {
+    const val DIRECTORY_NAME = "moviebox-torrents"
+
+    fun clearRoot(root: File, expectedParent: File): Boolean {
+        val canonicalRoot = root.canonicalFile
+        val canonicalParent = expectedParent.canonicalFile
+        if (canonicalRoot.parentFile != canonicalParent) return false
+        return !root.exists() || root.deleteRecursively()
+    }
+
+    fun deleteStreamDirectory(streamDir: File, cacheRoot: File): Boolean {
+        val canonicalRoot = cacheRoot.canonicalFile
+        val canonicalStream = streamDir.canonicalFile
+        if (canonicalStream.parentFile != canonicalRoot || canonicalStream == canonicalRoot) {
+            return false
+        }
+        return !streamDir.exists() || streamDir.deleteRecursively()
     }
 }

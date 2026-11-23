@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -37,6 +38,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private val requestPool = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "moviebox-torrent-http").apply { isDaemon = true }
     }
+    private val activeHttpSockets = CopyOnWriteArraySet<Socket>()
+    private val torrentCacheRoot = File(context.cacheDir, TorrentCachePolicy.DIRECTORY_NAME)
 
     @Volatile private var session: SessionManager? = null
     @Volatile private var activeHandle: TorrentHandle? = null
@@ -60,7 +63,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private class PendingStream(
         val token: String,
-        val infoHash: String
+        val infoHash: String,
+        val storageDir: File
     ) {
         val ready = CountDownLatch(1)
         val httpRequestCount = AtomicLong(0L)
@@ -84,6 +88,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     fun initialize() {
         synchronized(lock) {
             if (session != null) return
+            // A previous process may have been force-stopped while streaming.
+            // Sweep only our dedicated app-private temporary cache locations.
+            val cacheClean = TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
+            val legacyRoot = File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME)
+            val legacyClean = TorrentCachePolicy.clearRoot(legacyRoot, context.filesDir)
+            if (!cacheClean || !legacyClean) {
+                Log.w(TAG, "One or more stale torrent cache directories could not be fully removed.")
+            }
             val manager = SessionManager()
             manager.start()
             session = manager
@@ -108,14 +120,18 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         stopPlayback()
 
         val manager = session ?: throw IllegalStateException("Torrent session did not initialize.")
-        val saveDir = File(context.filesDir, "moviebox-torrents/$hashHex")
+        val saveDir = File(torrentCacheRoot, hashHex)
+        if (saveDir.exists() && !TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)) {
+            throw IllegalStateException("Unable to clear stale temporary torrent data.")
+        }
         if (!saveDir.exists() && !saveDir.mkdirs()) {
             throw IllegalStateException("Unable to create the app's torrent cache directory.")
         }
 
         val pending = PendingStream(
             token = UUID.randomUUID().toString().replace("-", ""),
-            infoHash = hashHex
+            infoHash = hashHex,
+            storageDir = saveDir
         )
         startHttpServer(pending)
         activePending = pending
@@ -218,6 +234,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 }
             } finally {
                 pending.ready.countDown()
+                // Failed or cancelled startups never become playable. Do not
+                // retain partial pieces or a preallocated media file.
+                if (pending.target == null || activePending !== pending) {
+                    if (!TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)) {
+                        Log.w(TAG, "Could not remove failed/cancelled torrent cache: " + saveDir.name)
+                    }
+                }
             }
         }
 
@@ -351,6 +374,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             pending?.cancelled = true
             pending?.ready?.countDown()
             stopHttpServer()
+            // Stop in-flight HTTP body readers before unlinking their backing file.
+            activeHttpSockets.toList().forEach { socket ->
+                runCatching { socket.close() }
+            }
 
             val oldHandle = activeHandle
             activeHandle = null
@@ -362,6 +389,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
                     }.getOrDefault(false)
                 }?.forEach { handle -> runCatching { session?.remove(handle) } }
+            }
+            pending?.let { stopped ->
+                if (!TorrentCachePolicy.deleteStreamDirectory(stopped.storageDir, torrentCacheRoot)) {
+                    Log.w(TAG, "Could not remove stopped torrent cache: " + stopped.storageDir.name)
+                }
             }
         }
     }
@@ -389,7 +421,18 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             while (!server.isClosed) {
                 try {
                     val socket = server.accept()
-                    requestPool.execute { serveRequest(socket, pending) }
+                    if (pending.cancelled || activePending !== pending) {
+                        runCatching { socket.close() }
+                        continue
+                    }
+                    activeHttpSockets.add(socket)
+                    requestPool.execute {
+                        try {
+                            serveRequest(socket, pending)
+                        } finally {
+                            activeHttpSockets.remove(socket)
+                        }
+                    }
                 } catch (_: Exception) {
                     // Closing the server socket is the normal way to leave this loop.
                 }

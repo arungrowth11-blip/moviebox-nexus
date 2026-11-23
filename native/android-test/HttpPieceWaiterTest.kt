@@ -1,11 +1,62 @@
 package com.moviebox.nexus
 
+import java.io.File
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpPieceWaiterTest {
+
+    @Test
+    fun torrentCacheCleanupRemovesOrphanedMovieFilesAtStartup() {
+        val parent = Files.createTempDirectory("moviebox-cache-parent").toFile()
+        try {
+            val root = File(parent, TorrentCachePolicy.DIRECTORY_NAME)
+            val oldStream = File(root, "a".repeat(40))
+            assertTrue(oldStream.mkdirs())
+            File(oldStream, "movie.mp4").writeBytes(ByteArray(4096) { 7 })
+            assertTrue(TorrentCachePolicy.clearRoot(root, parent))
+            assertFalse(root.exists())
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun stoppingPlaybackDeletesOnlyThatStreamDirectory() {
+        val parent = Files.createTempDirectory("moviebox-cache-stream").toFile()
+        try {
+            val root = File(parent, TorrentCachePolicy.DIRECTORY_NAME)
+            val active = File(root, "b".repeat(40))
+            val unrelated = File(root, "c".repeat(40))
+            assertTrue(active.mkdirs())
+            assertTrue(unrelated.mkdirs())
+            File(active, "movie.mkv").writeBytes(ByteArray(1024) { 1 })
+            File(unrelated, "movie.mkv").writeBytes(ByteArray(1024) { 2 })
+            assertTrue(TorrentCachePolicy.deleteStreamDirectory(active, root))
+            assertFalse(active.exists())
+            assertTrue(unrelated.exists())
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun torrentCacheCleanupCannotEscapeItsExpectedParent() {
+        val parent = Files.createTempDirectory("moviebox-cache-boundary").toFile()
+        try {
+            val cacheParent = File(parent, "cache").apply { mkdirs() }
+            val outside = File(parent, "outside").apply { mkdirs() }
+            File(outside, "keep.txt").writeText("keep")
+            assertFalse(TorrentCachePolicy.clearRoot(outside, cacheParent))
+            assertTrue(File(outside, "keep.txt").exists())
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
     private class FakeClock {
         var now = 0L
         fun sleep(durationMs: Long) {
