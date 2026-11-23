@@ -120,6 +120,20 @@ class HttpPieceWaiterTest {
     }
 
     @Test
+    fun requestSideEofDoesNotCancelResponsePieceWait() {
+        assertFalse(
+            HttpRequestReadPolicy.shouldCancel(HttpRequestReadOutcome.END_OF_STREAM)
+        )
+    }
+
+    @Test
+    fun socketReadFailureCancelsResponsePieceWait() {
+        assertTrue(
+            HttpRequestReadPolicy.shouldCancel(HttpRequestReadOutcome.IO_ERROR)
+        )
+    }
+
+    @Test
     fun headRequestSkipsPieceWait() {
         assertFalse(HttpRangePolicy.shouldWaitForFirstPiece("HEAD"))
         assertTrue(HttpRangePolicy.shouldWaitForFirstPiece("GET"))
