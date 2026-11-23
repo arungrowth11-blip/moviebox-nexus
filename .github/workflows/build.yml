@@ -569,7 +569,7 @@ jobs:
           PY
 
       - name: Run deterministic native JVM tests
-        run: ./android/gradlew -p android testDebugUnitTest
+        run: ./android/gradlew -p android :app:testDebugUnitTest
 
       - name: Format Dart source
         id: dart-format

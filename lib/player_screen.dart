@@ -1672,17 +1672,6 @@ class _PlayerScreenState extends State<PlayerScreen>
         }),
       );
     }
-    if (_isEmbeddedTorrent) {
-      // The native side owns temporary downloaded pieces; stopping on route
-      // disposal prevents abandoned movies from occupying app storage.
-      unawaited(
-        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError((
-          Object error,
-        ) {
-          debugPrint('MovieBox torrent cleanup on player exit failed: $error');
-        }),
-      );
-    }
 
     final vlc = _vlc;
     if (vlc != null) {
