@@ -124,11 +124,23 @@ class _PlayerScreenState extends State<PlayerScreen>
   /// resume explicitly from this screen's actual Flutter lifecycle.
   bool _resumeMedia3AfterLifecyclePause = false;
 
+  void _setTorrentBackgroundPaused(bool paused) {
+    if (!_isEmbeddedTorrent) return;
+    final method = paused ? 'pausePlayback' : 'resumePlayback';
+    unawaited(
+      _torrentDiagnostics.invokeMethod<void>(method).catchError((Object error) {
+        debugPrint('MovieBox torrent background state change failed: $error');
+      }),
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_disposed || _usingVlc) return;
-    final controller = _media3;
+    if (_disposed) return;
     if (state == AppLifecycleState.resumed) {
+      _setTorrentBackgroundPaused(false);
+      if (_usingVlc) return;
+      final controller = _media3;
       if (_resumeMedia3AfterLifecyclePause && controller != null) {
         _resumeMedia3AfterLifecyclePause = false;
         unawaited(() async {
@@ -144,6 +156,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
+      _setTorrentBackgroundPaused(true);
+      if (_usingVlc) return;
+      final controller = _media3;
       _resumeMedia3AfterLifecyclePause = controller?.isPlaying() == true;
       if (_resumeMedia3AfterLifecyclePause && controller != null) {
         unawaited(() async {

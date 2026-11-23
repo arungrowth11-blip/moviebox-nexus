@@ -149,6 +149,22 @@ class MainActivity : FlutterActivity() {
                     }
                     runOnUiThread { result.success(snapshot) }
                 }
+                "pausePlayback" -> torrentExecutor.execute {
+                    try {
+                        torrentEngine?.pausePlayback()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread { result.error("TORRENT_PAUSE_FAILED", error.message, null) }
+                    }
+                }
+                "resumePlayback" -> torrentExecutor.execute {
+                    try {
+                        torrentEngine?.resumePlayback()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread { result.error("TORRENT_RESUME_FAILED", error.message, null) }
+                    }
+                }
                 "stopPlayback" -> torrentExecutor.execute {
                     try {
                         torrentEngine?.stopPlayback()
