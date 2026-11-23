@@ -145,7 +145,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         _resumeMedia3AfterLifecyclePause = false;
         unawaited(() async {
           try {
-            await controller.play();
+            await _playMedia3Native(controller, reason: 'app resumed');
           } catch (error) {
             debugPrint('MovieBox Media3 resume failed: $error');
           }
@@ -496,6 +496,43 @@ class _PlayerScreenState extends State<PlayerScreen>
         uri.path.startsWith('/stream/');
   }
 
+  bool get _usesExtendedReadTimeout {
+    if (_isEmbeddedTorrent) return true;
+    return widget.headers.entries.any(
+      (entry) =>
+          entry.key.toLowerCase() == 'x-moviebox-torrent-stream' &&
+          entry.value.toLowerCase() == 'true',
+    );
+  }
+
+  /// Play through the native video controller. BetterPlayer's wrapper may
+  /// suppress play() when its private lifecycle flag is stale, especially
+  /// after a delayed HTTP retry while MovieBox owns lifecycle handling.
+  Future<void> _playMedia3Native(
+    BetterPlayerController controller, {
+    required String reason,
+  }) async {
+    if (!mounted ||
+        _disposed ||
+        _usingVlc ||
+        !identical(_media3, controller)) {
+      return;
+    }
+    final native = controller.videoPlayerController;
+    if (native == null || !native.value.isInitialized) return;
+    final lifecycle = WidgetsBinding.instance.lifecycleState;
+    if (lifecycle == AppLifecycleState.paused ||
+        lifecycle == AppLifecycleState.hidden ||
+        lifecycle == AppLifecycleState.detached) {
+      return;
+    }
+    await native.play();
+    debugPrint(
+      'MovieBox Media3 native play [$reason]: '
+      'isPlaying=${native.value.isPlaying}, position=${native.value.position}',
+    );
+  }
+
   void _startMedia3() {
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
@@ -632,11 +669,15 @@ class _PlayerScreenState extends State<PlayerScreen>
           widget.onMedia3ControllerReady?.call(initializedController);
           _startMedia3PlaybackStartWatchdog(initializedController);
           _startTorrentPlaybackStallWatchdog(initializedController);
-          // AutoPlay is configured on BetterPlayer; issue one explicit play
-          // command after initialization to recover a stale lifecycle play gate.
+          // MovieBox owns lifecycle state (handleLifecycle=false), so invoke
+          // the native controller directly instead of BetterPlayer's gated
+          // play() wrapper. This also recovers after a retried HTTP 503 load.
           unawaited(
-            initializedController.play().catchError((Object error) {
-              debugPrint('MovieBox Media3 initial play command failed: $error');
+            _playMedia3Native(
+              initializedController,
+              reason: 'Media3 initialized',
+            ).catchError((Object error) {
+              debugPrint('MovieBox Media3 initial native play failed: $error');
             }),
           );
         }
@@ -759,6 +800,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         elapsed: elapsed,
         isEmbeddedTorrent: _isEmbeddedTorrent,
         isLive: _isLive,
+        isExtendedReadTimeout: _usesExtendedReadTimeout,
         httpBytesSent: 0,
       );
       if (decision == Media3StartupDecision.started) {
@@ -768,13 +810,17 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!playRetryAttempted && elapsed >= const Duration(seconds: 4)) {
         playRetryAttempted = true;
         unawaited(
-          controller.play().catchError((Object error) {
+          _playMedia3Native(
+            controller,
+            reason: 'startup clock retry',
+          ).catchError((Object error) {
             debugPrint('MovieBox Media3 playback-start retry failed: $error');
           }),
         );
       }
       final startupTimeout = Media3StartupPolicy.timeoutFor(
         isEmbeddedTorrent: _isEmbeddedTorrent,
+        isExtendedReadTimeout: _usesExtendedReadTimeout,
       );
       if (elapsed < startupTimeout || resolving) return;
       resolving = true;
@@ -838,6 +884,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       elapsed: DateTime.now().difference(startedAt),
       isEmbeddedTorrent: _isEmbeddedTorrent,
       isLive: _isLive,
+      isExtendedReadTimeout: _usesExtendedReadTimeout,
       httpBytesSent: httpBytesSent,
     );
     if (decision == Media3StartupDecision.started) {
@@ -1376,7 +1423,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (controller.isPlaying() == true) {
           unawaited(controller.pause());
         } else {
-          unawaited(controller.play());
+          unawaited(
+            _playMedia3Native(controller, reason: 'remote play key'),
+          );
         }
         return KeyEventResult.handled;
       }

@@ -36,6 +36,29 @@ void main() {
         const Duration(seconds: 20),
       );
     });
+
+    test('allows extended HTTP reads to finish before decoder fallback', () {
+      expect(
+        Media3StartupPolicy.timeoutFor(
+          isEmbeddedTorrent: false,
+          isExtendedReadTimeout: true,
+        ),
+        const Duration(seconds: 260),
+      );
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: false,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 25),
+          isEmbeddedTorrent: false,
+          isExtendedReadTimeout: true,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.wait,
+      );
+    });
+
     test(
       'does not switch torrent transport failures to VLC before bytes arrive',
       () {
