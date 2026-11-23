@@ -512,10 +512,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     BetterPlayerController controller, {
     required String reason,
   }) async {
-    if (!mounted ||
-        _disposed ||
-        _usingVlc ||
-        !identical(_media3, controller)) {
+    if (!mounted || _disposed || _usingVlc || !identical(_media3, controller)) {
       return;
     }
     final native = controller.videoPlayerController;
@@ -1423,9 +1420,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (controller.isPlaying() == true) {
           unawaited(controller.pause());
         } else {
-          unawaited(
-            _playMedia3Native(controller, reason: 'remote play key'),
-          );
+          unawaited(_playMedia3Native(controller, reason: 'remote play key'));
         }
         return KeyEventResult.handled;
       }

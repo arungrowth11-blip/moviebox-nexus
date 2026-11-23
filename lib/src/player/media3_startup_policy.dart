@@ -25,6 +25,7 @@ class Media3StartupPolicy {
     if (isExtendedReadTimeout) return extendedReadStartupTimeout;
     return isEmbeddedTorrent ? torrentStartupTimeout : startupTimeout;
   }
+
   static const Duration progressThreshold = Duration(milliseconds: 700);
 
   /// A different decoder cannot repair a torrent transport that has emitted no
@@ -54,10 +55,11 @@ class Media3StartupPolicy {
         (isLive && isPlaying)) {
       return Media3StartupDecision.started;
     }
-    if (elapsed < timeoutFor(
-      isEmbeddedTorrent: isEmbeddedTorrent,
-      isExtendedReadTimeout: isExtendedReadTimeout,
-    )) {
+    if (elapsed <
+        timeoutFor(
+          isEmbeddedTorrent: isEmbeddedTorrent,
+          isExtendedReadTimeout: isExtendedReadTimeout,
+        )) {
       return Media3StartupDecision.wait;
     }
     if (isEmbeddedTorrent && httpBytesSent <= 0) {
