@@ -4,6 +4,7 @@ import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 const Color _movieBoxRed = Color(0xFFE50914);
 const Color _movieBoxCyan = Color(0xFF20DDF2);
@@ -25,6 +26,8 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback? onNext;
   final Map<String, String> headers;
   final bool isLive;
+  final ValueChanged<Duration>? onPrepared;
+  final ValueChanged<BetterPlayerController>? onMedia3ControllerReady;
 
   const PlayerScreen({
     super.key,
@@ -35,17 +38,27 @@ class PlayerScreen extends StatefulWidget {
     this.onNext,
     this.headers = const <String, String>{},
     this.isLive = false,
+    this.onPrepared,
+    this.onMedia3ControllerReady,
   });
 
   @override
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen>
+    with WidgetsBindingObserver {
   BetterPlayerController? _media3;
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
   Timer? _media3Watchdog;
+  Timer? _media3PlaybackStartWatchdog;
+  Timer? _torrentStatusTimer;
+  String _torrentStatusMessage = '';
+  String _torrentTechnicalLine = '';
+  static const MethodChannel _torrentDiagnostics = MethodChannel(
+    'moviebox_nexus/torrent',
+  );
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
@@ -56,24 +69,184 @@ class _PlayerScreenState extends State<PlayerScreen> {
   String _engineLabel = 'Media3 / ExoPlayer';
   int _pendingPositionMs = 0;
   int _lastSavedMs = 0;
+  DateTime _playStartedAt = DateTime.now();
+  bool _preparedReported = false;
+  bool _preferredHindiAudioApplied = false;
   final FocusNode _focusNode = FocusNode(debugLabel: 'MovieBoxPlayer');
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _pendingPositionMs = widget.initialMs;
-    unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]));
-    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+    unawaited(
+      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
+    );
     _startMedia3();
+    _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_savePosition());
     });
   }
 
+  /// Own Media3 lifecycle handling instead of BetterPlayer's internal gate.
+  /// BetterPlayerController.play() is ignored unless its private lifecycle
+  /// state is resumed. In embedded/loopback playback that state can become
+  /// stale during Android activity/orientation transitions, leaving a READY
+  /// player permanently paused. Keep the controller's gate open and pause/
+  /// resume explicitly from this screen's actual Flutter lifecycle.
+  bool _resumeMedia3AfterLifecyclePause = false;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_disposed || _usingVlc) return;
+    final controller = _media3;
+    if (state == AppLifecycleState.resumed) {
+      if (_resumeMedia3AfterLifecyclePause && controller != null) {
+        _resumeMedia3AfterLifecyclePause = false;
+        unawaited(() async {
+          try {
+            await controller.play();
+          } catch (error) {
+            debugPrint('MovieBox Media3 resume failed: $error');
+          }
+        }());
+      }
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _resumeMedia3AfterLifecyclePause = controller?.isPlaying() == true;
+      if (_resumeMedia3AfterLifecyclePause && controller != null) {
+        unawaited(() async {
+          try {
+            await controller.pause();
+          } catch (error) {
+            debugPrint('MovieBox Media3 background pause failed: $error');
+          }
+        }());
+      }
+    }
+  }
+
+  void _startTorrentStatusPolling() {
+    if (!_isEmbeddedTorrent) return;
+    _torrentStatusTimer?.cancel();
+    unawaited(_refreshTorrentStatus());
+    _torrentStatusTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_refreshTorrentStatus()),
+    );
+  }
+
+  Future<void> _refreshTorrentStatus() async {
+    if (!mounted || _disposed || !_isEmbeddedTorrent) return;
+    try {
+      final snapshot = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('getStatus')
+          .timeout(const Duration(seconds: 4));
+      if (!mounted || snapshot == null) return;
+      int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final active = snapshot['active'] == true;
+      final metadataReady = snapshot['metadataReady'] == true;
+      final connectedPeers = number('connectedPeers');
+      final connectedSeeds = number('connectedSeeds');
+      final knownPeers = number('knownPeers');
+      final knownSeeds = number('knownSeeds');
+      final rate = number('downloadRate');
+      final downloaded = number('downloadedBytes');
+      final tracker = (snapshot['currentTracker'] ?? '').toString();
+      final lastError = (snapshot['lastError'] ?? '').toString();
+      final httpBytesSent = number('httpBytesSent');
+      final lastHttpStatus = number('lastHttpStatus');
+      final lastRangeStart = number('lastHttpRangeStart');
+      final lastRangeEnd = number('lastHttpRangeEnd');
+      final lastRequestBytesSent = number('lastRequestBytesSent');
+      final firstByteAtMs = number('firstByteAtMs');
+      final lastPieceIndex = number('lastPieceIndex');
+      final lastPieceWaitMs = number('lastPieceWaitMs');
+      final lastHttpError = (snapshot['lastHttpError'] ?? '').toString();
+
+      String formatRate(int bytesPerSecond) {
+        if (bytesPerSecond >= 1024 * 1024) {
+          return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MiB/s';
+        }
+        if (bytesPerSecond >= 1024) {
+          return '${(bytesPerSecond / 1024).toStringAsFixed(0)} KiB/s';
+        }
+        return '${bytesPerSecond} B/s';
+      }
+
+      String message;
+      if (lastError.isNotEmpty) {
+        message = 'Torrent engine: $lastError';
+      } else if (!active) {
+        message = 'Starting the built-in torrent engine…';
+      } else if (!metadataReady) {
+        if (connectedPeers > 0) {
+          message =
+              'Connected to $connectedPeers peers; receiving torrent metadata…';
+        } else if (knownPeers > 0) {
+          message =
+              'Found $knownPeers peers; waiting for a metadata connection…';
+        } else {
+          message = 'Discovering peers through DHT and public trackers…';
+        }
+      } else if (connectedPeers > 0) {
+        message =
+            'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
+      } else if (knownPeers > 0) {
+        message = 'Metadata ready • $knownPeers peers discovered • connecting…';
+      } else {
+        message =
+            'Metadata ready • waiting for a reachable peer to send verified video pieces…';
+      }
+
+      final technical = <String>[
+        if (active) 'Connected: $connectedPeers peers / $connectedSeeds seeds',
+        if (active) 'Discovered: $knownPeers peers / $knownSeeds seeds',
+        if (active) 'Downloaded: $downloaded bytes',
+        if (tracker.isNotEmpty) 'Last working tracker: $tracker',
+        if (lastHttpStatus > 0) 'HTTP: $lastHttpStatus',
+        if (lastRangeStart >= 0) 'Last range: $lastRangeStart-$lastRangeEnd',
+        if (httpBytesSent > 0) 'Loopback body bytes sent: $httpBytesSent',
+        if (lastRequestBytesSent > 0)
+          'Last response bytes: $lastRequestBytesSent',
+        if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
+        if (lastPieceIndex >= 0)
+          'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
+        if (lastHttpError.isNotEmpty) 'HTTP/piece error: $lastHttpError',
+      ].join(' • ');
+      if (message != _torrentStatusMessage ||
+          technical != _torrentTechnicalLine) {
+        setState(() {
+          _torrentStatusMessage = message;
+          _torrentTechnicalLine = technical;
+        });
+      }
+    } catch (error) {
+      if (!mounted || _disposed) return;
+      const message = 'Checking live peer status…';
+      if (message != _torrentStatusMessage) {
+        setState(() => _torrentStatusMessage = message);
+      }
+      debugPrint('MovieBox torrent status poll failed: $error');
+    }
+  }
+
   BetterPlayerVideoFormat? _formatHint() {
+    // Embedded torrent URLs end in an opaque stream token rather than a file
+    // extension. better_player_plus 1.4.1's Android source resolver assumes
+    // every extensionless URL contains a dot and otherwise throws an
+    // IndexOutOfBoundsException before Media3 can prepare the progressive MP4.
+    if (_isEmbeddedTorrent) return BetterPlayerVideoFormat.other;
     final path = Uri.tryParse(widget.url)?.path.toLowerCase() ?? '';
     if (path.endsWith('.m3u8')) return BetterPlayerVideoFormat.hls;
     if (path.endsWith('.mpd')) return BetterPlayerVideoFormat.dash;
@@ -85,14 +258,48 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   bool get _isLive => widget.isLive;
 
+  void _handleMedia3Problem(String reason) {
+    _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    // A connected BitTorrent swarm can still contain a codec/container that
+    // Media3 cannot decode. Try the bundled VLC engine against the same
+    // loopback HTTP stream before declaring the source unusable.
+    unawaited(_switchToVlc(reason));
+  }
+
+  void _retryPlayback() {
+    if (_isEmbeddedTorrent) {
+      _startMedia3();
+    } else {
+      unawaited(_switchToVlc('Retrying with VLC compatibility engine'));
+    }
+  }
+
+  void _reportPrepared() {
+    if (_preparedReported || _disposed) return;
+    _preparedReported = true;
+    widget.onPrepared?.call(DateTime.now().difference(_playStartedAt));
+  }
+
+  bool get _isEmbeddedTorrent {
+    final uri = Uri.tryParse(widget.url);
+    return uri != null &&
+        uri.host == '127.0.0.1' &&
+        uri.path.startsWith('/stream/');
+  }
+
   void _startMedia3() {
     if (_disposed || !mounted) return;
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    _vlcInitStarted = false;
     _usingVlc = false;
     _loading = true;
     _error = null;
     _engineLabel = 'Media3 / ExoPlayer';
     _nextCalled = false;
+    _preparedReported = false;
+    _playStartedAt = DateTime.now();
 
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
@@ -108,8 +315,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
         bufferForPlaybackMs: 1500,
         bufferForPlaybackAfterRebufferMs: 3000,
       ),
-      notificationConfiguration:
-          const BetterPlayerNotificationConfiguration(showNotification: false),
+      notificationConfiguration: const BetterPlayerNotificationConfiguration(
+        showNotification: false,
+      ),
     );
 
     final controls = BetterPlayerControlsConfiguration(
@@ -147,13 +355,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
       allowedScreenSleep: false,
       fullScreenByDefault: false,
       autoDetectFullscreenDeviceOrientation: true,
-      handleLifecycle: true,
+      // Lifecycle is handled by _PlayerScreenState below. BetterPlayer's
+      // private lifecycle gate can otherwise silently ignore play() after
+      // Android activity/orientation transitions on loopback torrent streams.
+      handleLifecycle: false,
+      playerVisibilityChangedBehavior: (_) {},
       autoDispose: false,
       controlsConfiguration: controls,
       eventListener: _onMedia3Event,
       errorBuilder: (context, message) => _errorPanel(
         message ?? 'Media3 could not load this source.',
-        onRetry: () => _switchToVlc('Media3 reported a playback error'),
+        onRetry: _retryPlayback,
       ),
     );
 
@@ -164,13 +376,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
         betterPlayerDataSource: dataSource,
       );
       if (mounted) setState(() {});
-      _media3Watchdog = Timer(const Duration(seconds: 35), () {
+      final watchdogDelay = _isEmbeddedTorrent
+          ? const Duration(seconds: 105)
+          : const Duration(seconds: 35);
+      _media3Watchdog = Timer(watchdogDelay, () {
         if (mounted && !_disposed && !_usingVlc && _loading) {
-          unawaited(_switchToVlc('Media3 initialization timed out'));
+          if (_isEmbeddedTorrent) {
+            _handleMedia3Problem('Torrent startup timed out after 105 seconds');
+          } else {
+            unawaited(_switchToVlc('Media3 initialization timed out'));
+          }
         }
       });
     } catch (error) {
-      unawaited(_switchToVlc('Media3 setup failed: $error'));
+      if (_isEmbeddedTorrent) {
+        _handleMedia3Problem('Media3 setup failed: $error');
+      } else {
+        unawaited(_switchToVlc('Media3 setup failed: $error'));
+      }
     }
   }
 
@@ -179,6 +402,25 @@ class _PlayerScreenState extends State<PlayerScreen> {
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.initialized:
         _media3Watchdog?.cancel();
+        final initializedController = _media3;
+        if (initializedController != null) {
+          widget.onMedia3ControllerReady?.call(initializedController);
+          _startMedia3PlaybackStartWatchdog(initializedController);
+          // AutoPlay is configured on BetterPlayer; issue one explicit play
+          // command after initialization to recover a stale lifecycle play gate.
+          unawaited(
+            initializedController.play().catchError((Object error) {
+              debugPrint('MovieBox Media3 initial play command failed: $error');
+            }),
+          );
+        }
+        _reportPrepared();
+        _preferredHindiAudioApplied = false;
+        _applyPreferredHindiAudio();
+        Future<void>.delayed(
+          const Duration(milliseconds: 900),
+          _applyPreferredHindiAudio,
+        );
         setState(() {
           _loading = false;
           _error = null;
@@ -186,8 +428,17 @@ class _PlayerScreenState extends State<PlayerScreen> {
         });
         break;
       case BetterPlayerEventType.exception:
-        final details = event.parameters?.toString() ?? 'Unsupported stream or network error';
-        unawaited(_switchToVlc('Media3 error: $details'));
+        final details =
+            event.parameters?.toString() ??
+            'Unsupported stream or network error';
+        debugPrint('MovieBox Media3 exception: $details');
+        // BetterPlayer dispatches events while iterating its listener list.
+        // Defer fallback/disposal until that iteration has completed.
+        scheduleMicrotask(() {
+          if (mounted && !_disposed) {
+            _handleMedia3Problem('Media3 error: $details');
+          }
+        });
         break;
       case BetterPlayerEventType.finished:
         if (!_nextCalled && widget.onNext != null) {
@@ -200,9 +451,157 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
+  void _startMedia3PlaybackStartWatchdog(BetterPlayerController controller) {
+    _media3PlaybackStartWatchdog?.cancel();
+    final startedAt = DateTime.now();
+    final initialPosition =
+        controller.videoPlayerController?.value.position ?? Duration.zero;
+    var playRetryAttempted = false;
+    var resolving = false;
+
+    late final Timer watchdog;
+    watchdog = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted ||
+          _disposed ||
+          _usingVlc ||
+          !identical(_media3, controller)) {
+        watchdog.cancel();
+        return;
+      }
+      final value = controller.videoPlayerController?.value;
+      if (value == null || !value.initialized) return;
+      final elapsed = DateTime.now().difference(startedAt);
+      final decision = Media3StartupPolicy.evaluate(
+        isPlaying: value.isPlaying,
+        initialPosition: initialPosition,
+        currentPosition: value.position,
+        elapsed: elapsed,
+        isEmbeddedTorrent: _isEmbeddedTorrent,
+        httpBytesSent: 0,
+      );
+      if (decision == Media3StartupDecision.started) {
+        watchdog.cancel();
+        return;
+      }
+      if (!playRetryAttempted && elapsed >= const Duration(seconds: 4)) {
+        playRetryAttempted = true;
+        unawaited(
+          controller.play().catchError((Object error) {
+            debugPrint('MovieBox Media3 playback-start retry failed: $error');
+          }),
+        );
+      }
+      if (elapsed < Media3StartupPolicy.startupTimeout || resolving) return;
+      resolving = true;
+      unawaited(
+        _resolveMedia3StartupStall(
+          controller,
+          watchdog,
+          startedAt,
+          initialPosition,
+        ),
+      );
+    });
+    _media3PlaybackStartWatchdog = watchdog;
+  }
+
+  Future<void> _resolveMedia3StartupStall(
+    BetterPlayerController controller,
+    Timer watchdog,
+    DateTime startedAt,
+    Duration initialPosition,
+  ) async {
+    Map<String, dynamic> snapshot = <String, dynamic>{};
+    var nativeSnapshotAvailable = false;
+    if (_isEmbeddedTorrent) {
+      try {
+        final result = await _torrentDiagnostics
+            .invokeMapMethod<String, dynamic>('getStatus')
+            .timeout(const Duration(seconds: 4));
+        if (result != null) {
+          snapshot = result;
+          nativeSnapshotAvailable = true;
+        }
+      } catch (error) {
+        debugPrint('MovieBox first-byte diagnostics unavailable: $error');
+      }
+    }
+    if (!mounted || _disposed || _usingVlc || !identical(_media3, controller)) {
+      watchdog.cancel();
+      return;
+    }
+    final value = controller.videoPlayerController?.value;
+    if (value == null || !value.initialized) {
+      watchdog.cancel();
+      return;
+    }
+    if (_isEmbeddedTorrent && !nativeSnapshotAvailable) {
+      watchdog.cancel();
+      setState(() {
+        _loading = false;
+        _error =
+            'The torrent engine diagnostics could not be read. '
+            'MovieBox will not guess whether video bytes arrived or switch players without evidence.';
+      });
+      return;
+    }
+    final httpBytesSent = (snapshot['httpBytesSent'] as num?)?.toInt() ?? 0;
+    final decision = Media3StartupPolicy.evaluate(
+      isPlaying: value.isPlaying,
+      initialPosition: initialPosition,
+      currentPosition: value.position,
+      elapsed: DateTime.now().difference(startedAt),
+      isEmbeddedTorrent: _isEmbeddedTorrent,
+      httpBytesSent: httpBytesSent,
+    );
+    if (decision == Media3StartupDecision.started) {
+      watchdog.cancel();
+      return;
+    }
+    if (decision == Media3StartupDecision.wait) return;
+    watchdog.cancel();
+    if (decision == Media3StartupDecision.noTorrentBytes) {
+      int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
+      final peers = number('connectedPeers');
+      final seeds = number('connectedSeeds');
+      final knownPeers = number('knownPeers');
+      final downloaded = number('downloadedBytes');
+      final status = number('lastHttpStatus');
+      final lastError = (snapshot['lastHttpError'] ?? '').toString();
+      final tracker = (snapshot['currentTracker'] ?? '').toString();
+      final details = <String>[
+        'HTTP status: ${status == 0 ? 'no response' : status}',
+        'loopback body bytes sent: 0',
+        'torrent downloaded bytes: $downloaded',
+        'connected peers/seeds: $peers/$seeds',
+        'discovered peers: $knownPeers',
+        if (tracker.isNotEmpty) 'tracker: $tracker',
+        if (lastError.isNotEmpty) 'last piece/HTTP error: $lastError',
+      ].join(' • ');
+      debugPrint('MovieBox torrent first-byte failure: $details');
+      setState(() {
+        _loading = false;
+        _torrentStatusMessage =
+            'Torrent metadata/player initialized, but no video body bytes were sent.';
+        _torrentTechnicalLine = details;
+        _error =
+            'No playable video bytes have been emitted by this torrent source yet. '
+            'Peer counts and HTTP response headers do not prove that the requested video pieces arrived. '
+            'Retry after the source or peer connection changes. $details';
+      });
+      return;
+    }
+    _handleMedia3Problem(
+      'Media3 initialized but its playback clock did not advance after '
+      '${Media3StartupPolicy.startupTimeout.inSeconds}s; '
+      'loopback body bytes sent=$httpBytesSent. Trying VLC compatibility playback.',
+    );
+  }
+
   Future<void> _switchToVlc([String reason = 'Media3 fallback']) async {
     if (!mounted || _disposed || _usingVlc || _vlcInitStarted) return;
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
 
     final unsupportedVlcHeaders = widget.headers.keys.where((key) {
       final normalized = key.toLowerCase();
@@ -212,7 +611,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (mounted) {
         setState(() {
           _loading = false;
-          _error = 'This stream requires custom HTTP headers (${unsupportedVlcHeaders.join(', ')}). '
+          _error =
+              'This stream requires custom HTTP headers (${unsupportedVlcHeaders.join(', ')}). '
               'Media3 could not play it, and this VLC plugin version cannot forward those headers.';
         });
       }
@@ -227,13 +627,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
     final oldMedia3 = _media3;
     _media3 = null;
-    oldMedia3?.dispose(forceDispose: true);
+    if (oldMedia3 != null) {
+      // Let BetterPlayer finish dispatching its current event before disposal
+      // mutates its internal listener collections.
+      await Future<void>.delayed(Duration.zero);
+      oldMedia3.dispose(forceDispose: true);
+    }
+    if (!mounted || _disposed) return;
 
     setState(() {
       _usingVlc = true;
       _loading = true;
       _error = null;
-      _engineLabel = 'VLC compatibility engine';
+      _engineLabel = _isEmbeddedTorrent
+          ? 'VLC torrent compatibility fallback'
+          : 'VLC compatibility engine';
     });
 
     try {
@@ -280,7 +688,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted) return;
       setState(() {
         _loading = false;
-        _error = 'Media3 and VLC could not start this stream: $error';
+        _error = _isEmbeddedTorrent
+            ? 'Media3 and VLC could not open this torrent stream: $error. '
+                  '$_torrentStatusMessage. $_torrentTechnicalLine. '
+                  'Peer count and download rate do not prove that the requested video pieces were delivered.'
+            : 'Media3 and VLC could not start this stream: $error';
       });
     }
   }
@@ -306,9 +718,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (value.hasError) {
       setState(() {
         _loading = false;
-        _error = value.errorDescription.isEmpty
+        final vlcReason = value.errorDescription.isEmpty
             ? 'VLC could not decode or open this stream.'
             : value.errorDescription;
+        _error = _isEmbeddedTorrent
+            ? '$vlcReason. $_torrentStatusMessage. $_torrentTechnicalLine'
+            : vlcReason;
       });
     }
 
@@ -354,7 +769,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   Future<void> _seekVlc(int seconds) async {
     final controller = _vlc;
-    if (controller == null || !controller.value.isInitialized || _isLive) return;
+    if (controller == null || !controller.value.isInitialized || _isLive)
+      return;
     final duration = controller.value.duration;
     if (duration <= Duration.zero) return;
     final target = controller.value.position + Duration(seconds: seconds);
@@ -363,6 +779,93 @@ class _PlayerScreenState extends State<PlayerScreen> {
         : (target > duration ? duration : target);
     await controller.seekTo(clamped);
     if (mounted) setState(() => _controlsVisible = true);
+  }
+
+  void _applyPreferredHindiAudio() {
+    if (_disposed || _preferredHindiAudioApplied) return;
+    final controller = _media3;
+    if (controller == null) return;
+    final tracks =
+        controller.betterPlayerAsmsAudioTracks ??
+        const <BetterPlayerAsmsAudioTrack>[];
+    if (tracks.isEmpty) return;
+    final hindi = tracks.where((track) {
+      final language = (track.language ?? '').toLowerCase();
+      final label = (track.label ?? '').toLowerCase();
+      return language == 'hi' ||
+          language.startsWith('hi-') ||
+          label.contains('hindi') ||
+          label.contains('हिंदी');
+    }).toList();
+    if (hindi.isNotEmpty) controller.setAudioTrack(hindi.first);
+    _preferredHindiAudioApplied = true;
+  }
+
+  String _audioTrackLabel(BetterPlayerAsmsAudioTrack track) {
+    final label = (track.label ?? '').trim();
+    final language = (track.language ?? '').trim();
+    if (label.isNotEmpty && language.isNotEmpty) return '$label ($language)';
+    if (label.isNotEmpty) return label;
+    if (language.isNotEmpty) return language.toUpperCase();
+    return 'Audio track ${track.id ?? ''}';
+  }
+
+  Future<void> _showMedia3AudioTracks() async {
+    final controller = _media3;
+    if (controller == null) return;
+    final tracks =
+        controller.betterPlayerAsmsAudioTracks ??
+        const <BetterPlayerAsmsAudioTrack>[];
+    if (!mounted) return;
+    if (tracks.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This stream exposes only its default audio. Hindi/other audio can be selected only when the source publishes alternate tracks.',
+          ),
+        ),
+      );
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _playerSurface,
+      builder: (sheetContext) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text(
+                'Audio language',
+                style: TextStyle(
+                  color: _movieBoxCyan,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              subtitle: Text(
+                'Hindi is preferred automatically when the stream provides it.',
+                style: TextStyle(color: Colors.white60),
+              ),
+            ),
+            for (final track in tracks)
+              ListTile(
+                leading: const Icon(Icons.audiotrack, color: Colors.white70),
+                title: Text(
+                  _audioTrackLabel(track),
+                  style: const TextStyle(color: Colors.white),
+                ),
+                trailing: controller.betterPlayerAsmsAudioTrack == track
+                    ? const Icon(Icons.check, color: _movieBoxCyan)
+                    : null,
+                onTap: () {
+                  controller.setAudioTrack(track);
+                  Navigator.pop(sheetContext);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _showVlcTracks({required bool subtitles}) async {
@@ -396,8 +899,14 @@ class _PlayerScreenState extends State<PlayerScreen> {
               ),
               if (subtitles)
                 ListTile(
-                  leading: const Icon(Icons.closed_caption_disabled, color: Colors.white),
-                  title: const Text('Off', style: TextStyle(color: Colors.white)),
+                  leading: const Icon(
+                    Icons.closed_caption_disabled,
+                    color: Colors.white,
+                  ),
+                  title: const Text(
+                    'Off',
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     unawaited(controller.setSpuTrack(-1));
                     Navigator.pop(sheetContext);
@@ -409,7 +918,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     subtitles ? Icons.subtitles : Icons.audiotrack,
                     color: Colors.white70,
                   ),
-                  title: Text(entry.value, style: const TextStyle(color: Colors.white)),
+                  title: Text(
+                    entry.value,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                   onTap: () {
                     if (subtitles) {
                       unawaited(controller.setSpuTrack(entry.key));
@@ -432,9 +944,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Track list unavailable: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Track list unavailable: $error')));
     }
   }
 
@@ -451,7 +963,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const ListTile(
-              title: Text('Playback speed', style: TextStyle(color: _movieBoxCyan)),
+              title: Text(
+                'Playback speed',
+                style: TextStyle(color: _movieBoxCyan),
+              ),
             ),
             for (final speed in speeds)
               ListTile(
@@ -528,7 +1043,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         key == LogicalKeyboardKey.arrowRight) {
       final controller = _media3;
       final value = controller?.videoPlayerController?.value;
-      if (controller != null && value != null && value.initialized && !_isLive) {
+      if (controller != null &&
+          value != null &&
+          value.initialized &&
+          !_isLive) {
         final delta = key == LogicalKeyboardKey.arrowLeft ? -10 : 10;
         final target = value.position + Duration(seconds: delta);
         final duration = value.duration;
@@ -581,7 +1099,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline, color: Colors.orangeAccent, size: 48),
+            const Icon(
+              Icons.error_outline,
+              color: Colors.orangeAccent,
+              size: 48,
+            ),
             const SizedBox(height: 12),
             Text(
               message,
@@ -678,8 +1200,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 24),
                     child: Row(
                       children: [
-                        Text(_timeText(value.position),
-                            style: const TextStyle(color: Colors.white)),
+                        Text(
+                          _timeText(value.position),
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         Expanded(
                           child: Slider(
                             value: positionMs.toDouble().clamp(0.0, maxValue),
@@ -689,14 +1213,16 @@ class _PlayerScreenState extends State<PlayerScreen> {
                             onChanged: durationMs <= 0
                                 ? null
                                 : (next) => unawaited(
-                                      controller.seekTo(
-                                        Duration(milliseconds: next.round()),
-                                      ),
+                                    controller.seekTo(
+                                      Duration(milliseconds: next.round()),
                                     ),
+                                  ),
                           ),
                         ),
-                        Text(_timeText(value.duration),
-                            style: const TextStyle(color: Colors.white)),
+                        Text(
+                          _timeText(value.duration),
+                          style: const TextStyle(color: Colors.white),
+                        ),
                       ],
                     ),
                   ),
@@ -715,7 +1241,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
                       iconSize: 62,
                       onPressed: _toggleVlcPlayback,
                       icon: Icon(
-                        value.isPlaying ? Icons.pause_circle : Icons.play_circle,
+                        value.isPlaying
+                            ? Icons.pause_circle
+                            : Icons.play_circle,
                         color: _movieBoxRed,
                       ),
                     ),
@@ -771,30 +1299,57 @@ class _PlayerScreenState extends State<PlayerScreen> {
     );
   }
 
+  Future<void> _releaseVlcSafely(VlcPlayerController controller) async {
+    try {
+      controller.removeListener(_onVlcChanged);
+    } catch (error) {
+      debugPrint('MovieBox VLC listener cleanup failed: $error');
+    }
+
+    try {
+      if (controller.value.isInitialized) {
+        await controller.stop();
+      }
+    } catch (error) {
+      // VLC may report a stale initialized value while native setup is still
+      // unwinding. Do not let that prevent the controller from being disposed.
+      debugPrint('MovieBox VLC stop during cleanup was skipped: $error');
+    }
+
+    try {
+      await controller.dispose();
+    } catch (error) {
+      debugPrint('MovieBox VLC dispose cleanup failed: $error');
+    }
+  }
+
   @override
   void dispose() {
     // Capture the last position synchronously before the disposed guard is set.
     unawaited(_savePosition());
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _media3Watchdog?.cancel();
+    _media3PlaybackStartWatchdog?.cancel();
+    _torrentStatusTimer?.cancel();
     _media3?.dispose(forceDispose: true);
 
     final vlc = _vlc;
     if (vlc != null) {
-      vlc.removeListener(_onVlcChanged);
-      unawaited(vlc.stop());
-      unawaited(vlc.dispose());
+      unawaited(_releaseVlcSafely(vlc));
     }
 
     _focusNode.dispose();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
-    unawaited(SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-      DeviceOrientation.portraitUp,
-      DeviceOrientation.portraitDown,
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]));
+    unawaited(
+      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]),
+    );
     super.dispose();
   }
 
@@ -835,13 +1390,77 @@ class _PlayerScreenState extends State<PlayerScreen> {
                   child: CircularProgressIndicator(color: _movieBoxCyan),
                 ),
               if (_usingVlc && _vlc != null) _vlcControls(),
-              if (_loading)
+              if (_loading) ...[
                 const Align(
                   alignment: Alignment.center,
                   child: CircularProgressIndicator(color: _movieBoxCyan),
                 ),
+                if (_isEmbeddedTorrent)
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    bottom: 72,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.72),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.white12),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _torrentStatusMessage.isEmpty
+                                  ? 'Connecting to the real BitTorrent swarm…'
+                                  : _torrentStatusMessage,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                                height: 1.35,
+                              ),
+                            ),
+                            if (_torrentTechnicalLine.isNotEmpty) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                _torrentTechnicalLine,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 10,
+                                  height: 1.3,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
               if (_error != null)
                 _errorPanel(_error!, onRetry: _retryCurrentEngine),
+              if (!_usingVlc && _media3 != null)
+                Positioned(
+                  top: MediaQuery.of(context).padding.top + 4,
+                  right: 10,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: IconButton(
+                      tooltip: 'Audio language',
+                      onPressed: _showMedia3AudioTracks,
+                      icon: const Icon(Icons.audiotrack, color: _movieBoxCyan),
+                    ),
+                  ),
+                ),
               if (!_usingVlc && _media3 != null)
                 Positioned(
                   top: MediaQuery.of(context).padding.top + 4,
