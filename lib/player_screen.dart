@@ -109,20 +109,34 @@ class _PlayerScreenState extends State<PlayerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pendingPositionMs = widget.initialMs;
-    unawaited(
-      SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]),
-    );
-    unawaited(
-      SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky),
-    );
-    _startMedia3();
+    unawaited(_preparePlayerSurface());
     _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_savePosition());
     });
+  }
+
+
+  /// Apply the player orientation before creating Media3's Android surface.
+  /// Starting ExoPlayer while Android is still rotating can invalidate the
+  /// just-created SurfaceTexture on some devices and freeze playback at 0:00.
+  Future<void> _preparePlayerSurface() async {
+    try {
+      await SystemChrome.setPreferredOrientations(
+        const <DeviceOrientation>[
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ],
+      ).timeout(const Duration(seconds: 5));
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.immersiveSticky,
+      ).timeout(const Duration(seconds: 5));
+      await WidgetsBinding.instance.endOfFrame;
+    } catch (error) {
+      debugPrint('MovieBox player surface preparation warning: $error');
+    }
+    if (!mounted || _disposed) return;
+    _startMedia3();
   }
 
   /// Own Media3 lifecycle handling instead of BetterPlayer's internal gate.
@@ -1650,6 +1664,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentPlaybackStallTimer?.cancel();
     _torrentRecoveryResetTimer?.cancel();
     _media3?.dispose(forceDispose: true);
+    if (_isEmbeddedTorrent) {
+      // The native side owns temporary downloaded pieces; stopping on route
+      // disposal prevents abandoned movies from occupying app storage.
+      unawaited(
+        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError(
+          (Object error) {
+            debugPrint('MovieBox torrent cleanup on player exit failed: $error');
+          },
+        ),
+      );
+    }
 
     final vlc = _vlc;
     if (vlc != null) {
