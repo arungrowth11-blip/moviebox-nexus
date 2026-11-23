@@ -110,6 +110,46 @@ void main() {
       );
     });
 
+    test('does not accept a frozen VOD clock just because isPlaying is true', () {
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: true,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 3),
+          isEmbeddedTorrent: false,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.wait,
+      );
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: true,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 21),
+          isEmbeddedTorrent: false,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.useCompatibilityPlayer,
+      );
+    });
+
+    test('allows an active live controller without a finite media clock', () {
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: true,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 5),
+          isEmbeddedTorrent: false,
+          isLive: true,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.started,
+      );
+    });
+
     test(
       'reports no torrent first byte rather than switching player blindly',
       () {

@@ -109,20 +109,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pendingPositionMs = widget.initialMs;
-    unawaited(_preparePlayerSurface());
+    _startMedia3();
     _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       unawaited(_savePosition());
     });
-  }
-
-  /// Wait for the first mounted frame before attaching the native player.
-  /// Display orientation and system bars are prepared by the route owner before
-  /// this screen is pushed, so Media3 never races an Activity rotation.
-  Future<void> _preparePlayerSurface() async {
-    await WidgetsBinding.instance.endOfFrame;
-    if (!mounted || _disposed) return;
-    _startMedia3();
   }
 
   /// Own Media3 lifecycle handling instead of BetterPlayer's internal gate.
@@ -752,6 +743,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         currentPosition: value.position,
         elapsed: elapsed,
         isEmbeddedTorrent: _isEmbeddedTorrent,
+        isLive: _isLive,
         httpBytesSent: 0,
       );
       if (decision == Media3StartupDecision.started) {
@@ -830,6 +822,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       currentPosition: value.position,
       elapsed: DateTime.now().difference(startedAt),
       isEmbeddedTorrent: _isEmbeddedTorrent,
+      isLive: _isLive,
       httpBytesSent: httpBytesSent,
     );
     if (decision == Media3StartupDecision.started) {

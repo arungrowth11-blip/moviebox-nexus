@@ -35,9 +35,15 @@ class Media3StartupPolicy {
     required Duration currentPosition,
     required Duration elapsed,
     required bool isEmbeddedTorrent,
+    bool isLive = false,
     required int httpBytesSent,
   }) {
-    if (isPlaying || currentPosition > initialPosition + progressThreshold) {
+    // A VOD/torrent controller can report isPlaying=true while its native
+    // decoder clock is stuck at 0:00. Only actual position movement proves
+    // progress for finite media. Live feeds may not expose a stable timeline,
+    // so their active playing state remains the startup signal.
+    if (currentPosition > initialPosition + progressThreshold ||
+        (isLive && isPlaying)) {
       return Media3StartupDecision.started;
     }
     if (elapsed < timeoutFor(isEmbeddedTorrent: isEmbeddedTorrent)) {
