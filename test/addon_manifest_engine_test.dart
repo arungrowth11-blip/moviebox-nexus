@@ -248,11 +248,9 @@ void main() {
             ],
           });
         } else {
-          await sendJson(
-            request.response,
-            {'error': 'unexpected'},
-            status: HttpStatus.notFound,
-          );
+          await sendJson(request.response, {
+            'error': 'unexpected',
+          }, status: HttpStatus.notFound);
         }
       });
       final engine = app.CatalogEngine();

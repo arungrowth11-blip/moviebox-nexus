@@ -1006,8 +1006,8 @@ class CatalogEngine {
               // Stremio's standard shape is proxyHeaders.request. Accept the
               // direct-map form as a compatibility fallback for addons that
               // expose request headers without the wrapper object.
-              final directProxyHeaders = proxyHeaders is Map &&
-                      !proxyHeaders.containsKey('request')
+              final directProxyHeaders =
+                  proxyHeaders is Map && !proxyHeaders.containsKey('request')
                   ? proxyHeaders
                   : null;
               final rawHeaders = requestHeaders is Map
