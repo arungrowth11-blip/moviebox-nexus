@@ -587,22 +587,32 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             line.substring(separator + 1).trim()
                     }
                 }
-                // Watch the request side independently while a piece is pending.
-                // HTTP clients close the range socket when seeking/releasing a load;
-                // a short read timeout lets us detect that FIN without blocking the
-                // stream worker for the full piece deadline.
+                // HTTP is full-duplex. EOF on the request-input direction is a
+                // valid half-close: the player may have finished sending its GET
+                // request while it is still waiting to receive the response body.
+                // Only an actual socket read error cancels a pending piece wait.
                 client.soTimeout = 250
                 Thread({
                     while (!requestCancelled.get() && !client.isClosed) {
                         try {
                             if (reader.readLine() == null) {
-                                requestCancelled.set(true)
+                                if (HttpRequestReadPolicy.shouldCancel(
+                                        HttpRequestReadOutcome.END_OF_STREAM
+                                    )
+                                ) {
+                                    requestCancelled.set(true)
+                                }
                                 break
                             }
                         } catch (_: java.net.SocketTimeoutException) {
-                            // No pipelined request data; continue watching for FIN.
+                            // No pipelined request data; continue watching.
                         } catch (_: Exception) {
-                            requestCancelled.set(true)
+                            if (HttpRequestReadPolicy.shouldCancel(
+                                    HttpRequestReadOutcome.IO_ERROR
+                                )
+                            ) {
+                                requestCancelled.set(true)
+                            }
                             break
                         }
                     }
