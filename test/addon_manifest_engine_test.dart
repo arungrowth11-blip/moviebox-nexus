@@ -214,6 +214,70 @@ void main() {
   );
 
   test(
+    'stream proxy headers support nested and direct Stremio proxyHeaders maps',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        if (request.uri.path == '/manifest.json') {
+          await sendJson(request.response, qaManifest());
+        } else if (request.uri.path == '/stream/movie/$id.json') {
+          await sendJson(request.response, {
+            'streams': [
+              {
+                'title': 'Nested headers',
+                'url': 'https://media.example/nested.mp4',
+                'behaviorHints': {
+                  'proxyHeaders': {
+                    'request': {
+                      'Referer': 'https://nested.example/',
+                      'User-Agent': 'Nested-UA',
+                    },
+                  },
+                },
+              },
+              {
+                'title': 'Direct headers',
+                'url': 'https://media.example/direct.mp4',
+                'behaviorHints': {
+                  'proxyHeaders': {
+                    'Referer': 'https://direct.example/',
+                    'User-Agent': 'Direct-UA',
+                  },
+                },
+              },
+            ],
+          });
+        } else {
+          await sendJson(
+            request.response,
+            {'error': 'unexpected'},
+            status: HttpStatus.notFound,
+          );
+        }
+      });
+      final engine = app.CatalogEngine();
+      final addon = app.ManagedAddon(
+        name: 'Header compatibility addon',
+        manifestUrl: 'http://127.0.0.1:${server.port}/manifest.json',
+        baseUrl: 'http://127.0.0.1:${server.port}',
+      );
+      try {
+        final streams = await engine.resolveStreams('movie', id, [addon]);
+        expect(streams, hasLength(2));
+        final nested = streams.singleWhere((s) => s.title == 'Nested headers');
+        final direct = streams.singleWhere((s) => s.title == 'Direct headers');
+        expect(nested.headers['Referer'], 'https://nested.example/');
+        expect(nested.headers['User-Agent'], 'Nested-UA');
+        expect(direct.headers['Referer'], 'https://direct.example/');
+        expect(direct.headers['User-Agent'], 'Direct-UA');
+      } finally {
+        engine.close();
+        await server.close(force: true);
+      }
+    },
+  );
+
+  test(
     'configured manifest path and query token reach the catalog HTTP endpoint',
     () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
