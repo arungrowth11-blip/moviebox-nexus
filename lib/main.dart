@@ -1003,18 +1003,30 @@ class CatalogEngine {
               final requestHeaders = proxyHeaders is Map
                   ? proxyHeaders['request']
                   : null;
+              // Stremio's standard shape is proxyHeaders.request. Accept the
+              // direct-map form as a compatibility fallback for addons that
+              // expose request headers without the wrapper object.
+              final directProxyHeaders = proxyHeaders is Map &&
+                      !proxyHeaders.containsKey('request')
+                  ? proxyHeaders
+                  : null;
               final rawHeaders = requestHeaders is Map
                   ? requestHeaders
-                  : (item['headers'] is Map
-                        ? item['headers']
-                        : const <String, dynamic>{});
+                  : (directProxyHeaders ??
+                        (item['headers'] is Map
+                            ? item['headers']
+                            : const <String, dynamic>{}));
               final streamHeaders = <String, String>{};
               if (rawHeaders is Map) {
                 for (final entry in rawHeaders.entries) {
-                  final key = entry.key.toString().trim();
-                  final value = entry.value.toString().trim();
-                  if (key.isNotEmpty && value.isNotEmpty)
+                  if (entry.key is! String || entry.value is! String) {
+                    continue;
+                  }
+                  final key = (entry.key as String).trim();
+                  final value = (entry.value as String).trim();
+                  if (key.isNotEmpty && value.isNotEmpty) {
                     streamHeaders[key] = value;
+                  }
                 }
               }
               final probe = '$title ${directUrl ?? ''}'.toLowerCase();
