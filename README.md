@@ -1,29 +1,48 @@
-# MovieBox Nexus OS
+# MovieBox Nexus
 
-Flutter Android TV + mobile starter assembled from the submitted DeepSeek source, with selected reliability fixes and a reproducible GitHub Actions workflow.
+Flutter application for Android phones and Android TV.
 
-## Build
-1. Install Flutter stable and Android SDK.
-2. Run `flutter pub get`.
-3. Run `dart format lib test`.
-4. Run `flutter analyze`.
-5. Run `flutter test`.
-6. Run `flutter build apk --release`.
+## Current main-branch scope
 
-GitHub Actions runs formatting, analysis, tests, and release APK packaging. A successful workflow is the acceptance gate; source inspection alone is not a build guarantee.
+- Seven retained app sections: Home, Theaters, Anime, Mood, Live TV, OTT Hubs and Addons.
+- Stremio-compatible addon manifest and stream discovery.
+- Direct HTTP(S) playback in the in-app player.
+- Media3/ExoPlayer primary playback with embedded LibVLC compatibility fallback.
+- Resume-position persistence, playback controls, and Live TV playlist parsing/search/refresh.
+- Torrent-only addon results are identified as requiring a compatible HTTP resolver on `main`; the newer embedded FrostWire engine is still under review in the active pull-request stack.
 
-## Important runtime notes
-- The seven tabs are retained: Home, Theaters, Anime, Mood, Live TV, OTT Hubs, Addons.
-- Addons are Stremio-compatible manifest/stream endpoints. Temporarily offline addons are retained instead of silently deleted.
-- Torrent hashes are handed to an installed external torrent-capable app. This project does not bundle TorrServer; do not assume a local TorrServer exists.
-- IPTV sources may be HTTP; Android cleartext traffic is enabled for compatibility. Prefer trusted HTTPS playlists and addon URLs.
-- Stream availability and codec support depend on third-party providers and the Android device.
+## Development checks
 
+Run from the repository root with the Flutter SDK version required by `pubspec.yaml`:
 
-## Functional revision (November 2026)
+```sh
+flutter pub get
+dart format --set-exit-if-changed lib test
+flutter analyze
+flutter test
+flutter build apk --release
+```
 
-- Live TV uses multiple public India/Hindi M3U playlist mirrors, a tolerant parser, search, retry and refresh.
-- OTT Hubs now opens provider-specific movie and series catalogs for the five IDs actually declared by the connected Streaming Catalogs manifest (Netflix, Prime Video, Disney+, HBO Max, Apple TV+). SonyLIV, ZEE5 and JioCinema remain visible but are clearly marked as requiring their own catalog addon; generic fallback titles are not mislabeled as provider originals.
-- Popular Movies and Popular Series are labeled honestly rather than presenting a global fallback as an India-specific Top 10.
-- Direct HTTP(S) streams can play in the built-in player or be sent explicitly to VLC. Raw torrent/magnet results are not sent to Stremio/VLC because they require a debrid/TorrServer resolver to produce a playable HTTP stream.
-- Addon stream requests are parallelized with per-addon timeouts and deduplication. Comet is offered as an optional configure-first source; its generated manifest can be added by the user.
+GitHub Actions also builds and verifies release APK artifacts. A successful build proves packaging and the checks actually run by that workflow; it does not prove playback reliability across every provider, codec, device or network.
+
+## Playback and content limitations
+
+- Stream availability, HTTP headers, codecs, bandwidth and device decoders affect playback.
+- Commercial DRM content requires the provider's authorized license/session and device certification.
+- Torrent playback requires reachable peers and lawful access to the content. A torrent hash is not itself a playable HTTP media URL.
+- Public IPTV playlists can become unavailable, geo-blocked or change without notice. Prefer trusted HTTPS sources.
+
+## Pull-request policy
+
+The active implementation work is tracked in the pull requests, not assumed to be part of `main`. Review and validate the complete dependency stack before merging:
+
+1. PR #8 — FrostWire embedded torrent engine and retained tabs.
+2. PR #9 — manifest-aware hybrid addon resolver, based on PR #8.
+3. PR #10 — HTTP half-close and torrent piece-wait correction, based on PR #9.
+4. PR #11 — player lifecycle, torrent streaming and cache reliability, based on PR #9; PR #12's cache-lifecycle change is already included in this branch.
+
+Do not treat a generated APK as release-ready until the exact candidate commit passes formatting, analysis, tests, APK signature verification, emulator integration, and physical-device playback/seek/exit checks.
+
+## Repository
+
+https://github.com/arungrowth11-blip/moviebox-nexus
