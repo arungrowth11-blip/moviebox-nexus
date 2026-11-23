@@ -85,17 +85,28 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var cancelled = false
     }
 
+    fun cleanupCache() {
+        synchronized(lock) {
+            // Never remove the currently active stream while an Activity/Flutter
+            // engine is being recreated. An abandoned previous-process stream has
+            // no in-memory PendingStream and is safe to sweep here.
+            val currentClean = if (activePending == null) {
+                TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
+            } else {
+                true
+            }
+            val legacyRoot = File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME)
+            val legacyClean = TorrentCachePolicy.clearRoot(legacyRoot, context.filesDir)
+            if (!currentClean || !legacyClean) {
+                Log.w(TAG, "One or more stale torrent cache directories could not be fully removed.")
+            }
+        }
+    }
+
     fun initialize() {
         synchronized(lock) {
             if (session != null) return
-            // A previous process may have been force-stopped while streaming.
-            // Sweep only our dedicated app-private temporary cache locations.
-            val cacheClean = TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
-            val legacyRoot = File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME)
-            val legacyClean = TorrentCachePolicy.clearRoot(legacyRoot, context.filesDir)
-            if (!cacheClean || !legacyClean) {
-                Log.w(TAG, "One or more stale torrent cache directories could not be fully removed.")
-            }
+            cleanupCache()
             val manager = SessionManager()
             manager.start()
             session = manager

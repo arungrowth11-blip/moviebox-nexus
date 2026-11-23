@@ -1814,6 +1814,12 @@ class EmbeddedTorrentService {
     return snapshot ?? <String, dynamic>{};
   }
 
+  Future<void> cleanupCache() async {
+    await _channel
+        .invokeMethod<void>('cleanupCache')
+        .timeout(const Duration(seconds: 8));
+  }
+
   void dispose() {
     _initialized = false;
     unawaited(
@@ -1826,6 +1832,13 @@ class EmbeddedTorrentService {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Remove torrent payloads left behind if Android killed the previous process.
+  // This lightweight call does not start libtorrent or delay the first frame.
+  unawaited(
+    EmbeddedTorrentService.instance.cleanupCache().catchError((Object error) {
+      debugPrint('MovieBox startup torrent cache cleanup skipped: $error');
+    }),
+  );
   // Native torrent startup is lazy; catalog navigation must not wait for it.
   PaintingBinding.instance.imageCache
     ..maximumSize = 250

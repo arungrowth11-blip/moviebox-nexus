@@ -105,6 +105,16 @@ class MainActivity : FlutterActivity() {
             "moviebox_nexus/torrent"
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+                "cleanupCache" -> torrentExecutor.execute {
+                    try {
+                        engine().cleanupCache()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error("TORRENT_CACHE_CLEANUP_FAILED", error.message, null)
+                        }
+                    }
+                }
                 "initialize" -> torrentExecutor.execute {
                     try {
                         engine().initialize()
