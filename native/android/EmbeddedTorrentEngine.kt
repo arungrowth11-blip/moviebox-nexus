@@ -290,9 +290,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 ?: throw IllegalStateException("This torrent contains no supported video file.")
         }
 
-        val priorities = Array(storage.numFiles()) { Priority.IGNORE }
-        priorities[selected.first] = Priority.NORMAL
-        torrentHandle.prioritizeFiles(priorities)
+        // Start with every file ignored. The player activates only the current
+        // byte-range piece and a small look-ahead window as it reads.
+        torrentHandle.prioritizeFiles(
+            TorrentDownloadPriorityPolicy.filePriorities(storage.numFiles())
+        )
 
         val selectedFileOffset = storage.fileOffset(selected.first)
         val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
@@ -801,14 +803,24 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
             pending.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
                 runCatching { target.handle.resetPieceDeadline(stalePiece) }
-                runCatching { target.handle.piecePriority(stalePiece, Priority.NORMAL) }
+                runCatching {
+                    target.handle.piecePriority(
+                        stalePiece,
+                        TorrentDownloadPriorityPolicy.inactivePiece
+                    )
+                }
             }
             pending.prioritizedPieces.clear()
             window.forEachIndexed { offset, piece ->
                 if (runCatching { target.handle.havePiece(piece) }.getOrDefault(false)) {
                     runCatching { target.handle.resetPieceDeadline(piece) }
                 } else {
-                    runCatching { target.handle.piecePriority(piece, Priority.SEVEN) }
+                    runCatching {
+                        target.handle.piecePriority(
+                            piece,
+                            TorrentDownloadPriorityPolicy.activePiece
+                        )
+                    }
                     runCatching {
                         target.handle.setPieceDeadline(
                             piece,

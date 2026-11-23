@@ -1,5 +1,6 @@
 package com.moviebox.nexus
 
+import com.frostwire.jlibtorrent.Priority
 import java.io.File
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -8,6 +9,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpPieceWaiterTest {
+
+
+    @Test
+    fun torrentDownloadPolicyKeepsUnrequestedFilesAndPiecesIgnored() {
+        val filePriorities = TorrentDownloadPriorityPolicy.filePriorities(4)
+        assertEquals(4, filePriorities.size)
+        assertTrue(filePriorities.all { it == Priority.IGNORE })
+        assertEquals(Priority.SEVEN, TorrentDownloadPriorityPolicy.activePiece)
+        assertEquals(Priority.IGNORE, TorrentDownloadPriorityPolicy.inactivePiece)
+    }
 
     @Test
     fun torrentCacheCleanupRemovesOrphanedMovieFilesAtStartup() {

@@ -1,5 +1,6 @@
 package com.moviebox.nexus
 
+import com.frostwire.jlibtorrent.Priority
 import java.io.File
 import kotlin.math.min
 
@@ -205,5 +206,21 @@ internal object TorrentCachePolicy {
             return false
         }
         return !streamDir.exists() || streamDir.deleteRecursively()
+    }
+}
+
+
+/**
+ * Torrent media is streamed from explicitly requested pieces only. Leaving the
+ * full selected file at NORMAL would let libtorrent download the rest of a
+ * movie in the background while the viewer is still watching.
+ */
+internal object TorrentDownloadPriorityPolicy {
+    val activePiece: Priority = Priority.SEVEN
+    val inactivePiece: Priority = Priority.IGNORE
+
+    fun filePriorities(fileCount: Int): Array<Priority> {
+        require(fileCount > 0) { "fileCount must be positive" }
+        return Array(fileCount) { Priority.IGNORE }
     }
 }
