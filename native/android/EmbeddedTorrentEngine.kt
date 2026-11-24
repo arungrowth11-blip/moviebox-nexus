@@ -461,6 +461,228 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         return "http://127.0.0.1:$port/stream/${pending.token}"
     }
 
+
+    private fun buildIdentityProof(
+        torrentInfo: com.frostwire.jlibtorrent.TorrentInfo,
+        target: StreamTarget
+    ): TorrentFileIdentityProof {
+        val hasV1 = runCatching { torrentInfo.infoHashV1() != null }.getOrDefault(false)
+        val v2Root = if (runCatching { torrentInfo.infoHashV2() != null }.getOrDefault(false)) {
+            runCatching {
+                torrentInfo.files().swig().root(target.fileIndex).to_hex()
+                    ?.takeUnless { root -> root.isBlank() || root.all { it == '0' } }
+            }.getOrNull()
+        } else {
+            null
+        }
+        val pieceBytes = target.pieceLength.toLong()
+        val phase = Math.floorMod(target.fileOffset, pieceBytes)
+        val firstFullOffset = (pieceBytes - phase) % pieceBytes
+        val fullPieceCount = if (target.fileSize <= firstFullOffset) {
+            0L
+        } else {
+            (target.fileSize - firstFullOffset) / pieceBytes
+        }
+        val hashes = if (hasV1 && fullPieceCount in 1L..65_536L) {
+            runCatching {
+                (0 until fullPieceCount.toInt()).map { relativeIndex ->
+                    val relativeStart = firstFullOffset + relativeIndex.toLong() * pieceBytes
+                    val torrentPiece = ((target.fileOffset + relativeStart) / pieceBytes).toInt()
+                    torrentInfo.hashForPiece(torrentPiece).toHex()
+                }
+            }.getOrElse { emptyList() }
+        } else {
+            emptyList()
+        }
+        return TorrentFileIdentityProof(
+            infoHash = target.handle.infoHash().toHex(),
+            fileSize = target.fileSize,
+            pieceLength = target.pieceLength,
+            fileOffset = target.fileOffset,
+            hasV1 = hasV1,
+            v2PiecesRootHex = v2Root,
+            firstInteriorOffset = firstFullOffset,
+            interiorPieceHashes = hashes
+        )
+    }
+
+    private fun startAdditionalSourceDiscovery(
+        pending: PendingStream,
+        manager: SessionManager
+    ) {
+        if (pending.additionalSources.isEmpty()) return
+        pending.aggregationTask = try {
+            aggregationExecutor.submit {
+                if (!pending.aggregationStarted.compareAndSet(false, true)) return@submit
+                try {
+                    for (source in pending.additionalSources) {
+                        if (Thread.currentThread().isInterrupted ||
+                            pending.cancelled ||
+                            activePending !== pending
+                        ) {
+                            break
+                        }
+                        runCatching {
+                            addAdditionalSource(pending, manager, source)
+                        }.onFailure { error ->
+                            Log.w(
+                                TAG,
+                                "Secondary torrent source ${source.infoHash.take(12)} was not admitted: ${error.message}"
+                            )
+                        }
+                    }
+                } finally {
+                    pending.aggregationFinished.countDown()
+                }
+            }
+        } catch (error: Exception) {
+            pending.aggregationFinished.countDown()
+            Log.w(TAG, "Could not start cross-swarm source discovery", error)
+            null
+        }
+    }
+
+    private fun addAdditionalSource(
+        pending: PendingStream,
+        manager: SessionManager,
+        source: TorrentSourceCandidate
+    ) {
+        val hash = normalizeInfoHash(source.infoHash)
+        if (hash == pending.infoHash || pending.secondarySources.any { it.id == hash }) return
+        val primaryProof = pending.primaryProof ?: return
+        if (!pending.sourceInfoHashes.add(hash)) return
+
+        val saveDir = File(torrentCacheRoot, hash)
+        pending.sourceStorageDirs.add(saveDir)
+        if (saveDir.exists() &&
+            !TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)
+        ) {
+            throw IllegalStateException("Cannot clear the candidate's isolated cache directory.")
+        }
+        if (!saveDir.exists() && !saveDir.mkdirs()) {
+            throw IllegalStateException("Cannot create the candidate's isolated cache directory.")
+        }
+
+        val defaultTrackers = listOf(
+            "udp://tracker.opentrackr.org:1337/announce",
+            "udp://open.stealth.si:80/announce",
+            "udp://open.demonii.com:1337/announce",
+            "udp://exodus.desync.com:6969/announce"
+        )
+        val trackers = (source.trackers + defaultTrackers)
+            .map { it.trim() }
+            .filter { isSafeTracker(it) }
+            .distinct()
+            .take(32)
+        val magnet = buildString {
+            append("magnet:?xt=urn:btih:")
+            append(hash)
+            append("&dn=")
+            append(URLEncoder.encode(source.title.ifBlank { "MovieBox compatible source" }, "UTF-8"))
+            trackers.forEach { tracker ->
+                append("&tr=")
+                append(URLEncoder.encode(tracker, "UTF-8"))
+            }
+        }
+
+        manager.download(magnet, saveDir, TorrentFlags.AUTO_MANAGED)
+        val deadline = System.currentTimeMillis() + ADDITIONAL_METADATA_TIMEOUT_MS
+        var candidateHandle: TorrentHandle? = null
+        var candidateInfo: com.frostwire.jlibtorrent.TorrentInfo? = null
+        var announced = false
+        while (System.currentTimeMillis() < deadline) {
+            if (Thread.currentThread().isInterrupted ||
+                pending.cancelled ||
+                activePending !== pending
+            ) {
+                throw InterruptedException("Secondary torrent discovery was cancelled.")
+            }
+            val handle = manager.getTorrentHandles().firstOrNull {
+                runCatching { it.infoHash().toHex().equals(hash, ignoreCase = true) }
+                    .getOrDefault(false)
+            }
+            if (handle != null) {
+                candidateHandle = handle
+                if (!announced) {
+                    runCatching { handle.forceDHTAnnounce() }
+                    announced = true
+                }
+                val info = runCatching { handle.torrentFile() }.getOrNull()
+                if (info != null && info.isValid()) {
+                    candidateInfo = info
+                    break
+                }
+            }
+            Thread.sleep(250L)
+        }
+        val handle = candidateHandle
+            ?: throw IllegalStateException("Candidate swarm did not register a torrent handle.")
+        val info = candidateInfo
+            ?: throw IllegalStateException("Candidate swarm did not provide valid metadata.")
+        val target = prepareStreamTarget(handle, info, saveDir, source.fileIdx, pending.token)
+        val identity = ContentIdentityVerifier.verify(primaryProof, buildIdentityProof(info, target))
+        if (!identity.accepted) {
+            val removed = removeCandidateHandleAndCache(manager, pending, hash, saveDir)
+            if (!removed) {
+                Log.w(TAG, "Rejected source retained for safe deferred cleanup: $hash")
+            }
+            Log.i(TAG, "Cross-swarm source rejected: $hash (${identity.reason})")
+            return
+        }
+        if (pending.cancelled || activePending !== pending) {
+            removeCandidateHandleAndCache(manager, pending, hash, saveDir)
+            return
+        }
+        val slot = VerifiedSwarmSlot(
+            id = hash,
+            target = target,
+            identity = identity,
+            storageDir = saveDir,
+            isPrimary = false
+        )
+        pending.secondarySources.add(slot)
+        if (playbackPaused) {
+            runCatching {
+                handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                handle.pause()
+            }
+        }
+        Log.i(
+            TAG,
+            "Cross-swarm source admitted: $hash kind=${identity.kind} " +
+                "verified=${identity.verifiedStart}-${identity.verifiedEndExclusive} " +
+                "chunk=${identity.canonicalChunkBytes}"
+        )
+    }
+
+    private fun removeCandidateHandleAndCache(
+        manager: SessionManager,
+        pending: PendingStream,
+        hash: String,
+        saveDir: File
+    ): Boolean {
+        val matching = runCatching {
+            manager.getTorrentHandles().filter { handle ->
+                runCatching { handle.infoHash().toHex().equals(hash, ignoreCase = true) }
+                    .getOrDefault(false)
+            }
+        }.getOrElse { return false }
+        matching.forEach { handle ->
+            if (runCatching { manager.remove(handle) }.isFailure) return false
+        }
+        val remains = runCatching {
+            manager.getTorrentHandles().any { handle ->
+                runCatching { handle.infoHash().toHex().equals(hash, ignoreCase = true) }
+                    .getOrDefault(false)
+            }
+        }.getOrElse { true }
+        if (remains) return false
+        if (!TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)) return false
+        pending.sourceInfoHashes.remove(hash)
+        pending.sourceStorageDirs.remove(saveDir)
+        return true
+    }
+
     private fun prepareStreamTarget(
         torrentHandle: TorrentHandle,
         torrentInfo: com.frostwire.jlibtorrent.TorrentInfo,
@@ -1297,6 +1519,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     }
 
     companion object {
+        private const val MAX_ADDITIONAL_SOURCES = 3
+        private const val ADDITIONAL_METADATA_TIMEOUT_MS = 20_000L
         private const val TAG = "MovieBoxTorrent"
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
