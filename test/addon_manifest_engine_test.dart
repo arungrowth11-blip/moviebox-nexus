@@ -42,7 +42,7 @@ void main() {
               'vnd.apple.mpegurl',
             );
             request.response.write(
-              '#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=800000\\nmedia.m3u8\\n',
+              '#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nmedia.m3u8\n',
             );
             break;
           case '/media.m3u8':
@@ -50,7 +50,7 @@ void main() {
               'application',
               'vnd.apple.mpegurl',
             );
-            request.response.write('#EXTM3U\\n#EXTINF:6,\\nsegment.ts\\n');
+            request.response.write('#EXTM3U\n#EXTINF:6,\nsegment.ts\n');
             break;
           case '/segment.ts':
             request.response.headers.contentType = ContentType('video', 'mp2t');
@@ -61,7 +61,7 @@ void main() {
               'application',
               'vnd.apple.mpegurl',
             );
-            request.response.write('#EXTM3U\\n#EXTINF:6,\\nmissing.ts\\n');
+            request.response.write('#EXTM3U\n#EXTINF:6,\nmissing.ts\n');
             break;
           case '/missing.ts':
             request.response.statusCode = HttpStatus.notFound;
