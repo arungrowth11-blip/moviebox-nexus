@@ -513,13 +513,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         runCatching { socket.close() }
                         continue
                     }
+                    // Count the accepted socket before publishing it so stopPlayback
+                    // cannot observe zero readers in the gap before task submission.
+                    pending.activeReaders.incrementAndGet()
                     activeHttpSockets.add(socket)
                     if (pending.cancelled || activePending !== pending) {
+                        pending.activeReaders.decrementAndGet()
                         activeHttpSockets.remove(socket)
                         runCatching { socket.close() }
                         continue
                     }
-                    pending.activeReaders.incrementAndGet()
                     try {
                         requestPool.execute {
                             try {
