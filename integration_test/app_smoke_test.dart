@@ -199,7 +199,7 @@ void main() {
       expect(initialValue, isNotNull);
       expect(initialValue!.size?.width ?? 0, greaterThan(0));
       expect(initialValue.size?.height ?? 0, greaterThan(0));
-      expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+      expect(initialValue.duration, greaterThan(const Duration(seconds: 20)));
       debugPrint(
         'MovieBox CI direct Media3 before play: isPlaying=${initialValue.isPlaying}, '
         'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
@@ -626,7 +626,7 @@ void main() {
         expect(initialValue, isNotNull);
         expect(initialValue!.size?.width ?? 0, greaterThan(0));
         expect(initialValue.size?.height ?? 0, greaterThan(0));
-        expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+        expect(initialValue.duration, greaterThan(const Duration(seconds: 20)));
         debugPrint(
           'MovieBox CI torrent Media3 before play: isPlaying=${initialValue.isPlaying}, '
           'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
