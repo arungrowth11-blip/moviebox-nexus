@@ -915,7 +915,7 @@ jobs:
             focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
             main_window_block="$(printf '%s\n' "$window_dump" | awk '
               /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
-              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {capture=0}
               capture {print}
             ')"
             main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
@@ -950,7 +950,7 @@ jobs:
           focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
           main_window_block="$(printf '%s\n' "$window_dump" | awk '
             /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
-            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {capture=0}
             capture {print}
           ')"
           main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
