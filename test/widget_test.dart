@@ -70,12 +70,12 @@ void main() {
     final engine = CatalogEngine();
     try {
       final channels = await engine.fetchUserLiveTvChannels([
+        UserPlaylistSource(id: 'local', name: 'Imported local', localPath: file.path),
         UserPlaylistSource(
           id: 'remote',
           name: 'Remote provider',
           url: 'http://127.0.0.1:${server.port}/playlist.m3u',
         ),
-        UserPlaylistSource(id: 'local', name: 'Imported local', localPath: file.path),
         const UserPlaylistSource(
           id: 'disabled',
           name: 'Disabled source',
