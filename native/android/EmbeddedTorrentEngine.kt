@@ -983,13 +983,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                 },
                 deleteCache = {
-                    pending.sourceStorageDirs.all { directory ->
-                        runCatching {
+                    var allCachesRemoved = true
+                    pending.sourceStorageDirs.forEach { directory ->
+                        val removed = runCatching {
                             TorrentCachePolicy.deleteStreamDirectory(directory, torrentCacheRoot)
                         }.onFailure { error ->
                             Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
                         }.getOrDefault(false)
+                        allCachesRemoved = removed && allCachesRemoved
                     }
+                    allCachesRemoved
                 }
             )
             val cleaned = cleanup.run()
@@ -1406,7 +1409,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             val peerEstimate = slot.connectedPeers.toLong() * 512L * 1024L
             CrossSwarmCandidateMetrics(
                 sourceId = slot.id,
-                healthy = !pending.cancelled,
+                healthy = !pending.cancelled &&
+                    (measured > 0L || slot.connectedPeers > 0),
                 goodputBytesPerSecond = maxOf(measured, peerEstimate),
                 queuedBytes = 0L,
                 failurePenalty = 1.0
