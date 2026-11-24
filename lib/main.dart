@@ -1155,52 +1155,13 @@ class CatalogEngine {
   Future<bool> probeDirectStream(StreamLink stream) async {
     final rawUrl = stream.url;
     if (!stream.isDirect || rawUrl == null) return false;
-    try {
-      final request = http.Request('GET', Uri.parse(rawUrl))
-        ..headers.addAll(stream.headers)
-        ..headers['Range'] = 'bytes=0-1023'
-        ..headers.putIfAbsent('Accept', () => '*/*');
-      final response = await _client
-          .send(request)
-          .timeout(const Duration(seconds: 3));
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        await response.stream.listen((_) {}).cancel();
-        return false;
-      }
-      final contentType = (response.headers['content-type'] ?? '')
-          .toLowerCase();
-      if (contentType.contains('text/html')) {
-        await response.stream.listen((_) {}).cancel();
-        return false;
-      }
-      final firstChunk = await response.stream.first.timeout(
-        const Duration(seconds: 2),
-        onTimeout: () => <int>[],
-      );
-      if (firstChunk.isEmpty) return false;
-      final prefix = utf8
-          .decode(firstChunk.take(512).toList(), allowMalformed: true)
-          .trimLeft()
-          .toLowerCase();
-      if (prefix.startsWith('<!doctype html') ||
-          prefix.startsWith('<html') ||
-          prefix.startsWith('{"error')) {
-        return false;
-      }
-      if (contentType.contains('mpegurl') ||
-          contentType.contains('dash+xml') ||
-          contentType.contains('mp2t') ||
-          contentType.contains('octet-stream') ||
-          contentType.startsWith('video/') ||
-          prefix.startsWith('#extm3u') ||
-          prefix.contains('<mpd')) {
-        return true;
-      }
-      // Some providers use generic content types but still honor byte ranges.
-      return response.statusCode == 206 || response.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null || !uri.hasAuthority) return false;
+
+    // Use the same media-level probe as Live TV. A reachable HLS manifest is
+    // not enough: follow its selected variant and confirm the first media
+    // segment responds before Smart Play accepts the source.
+    return _probeLiveTvUrl(uri, headers: stream.headers);
   }
 
   /// Match alternate public feeds by official channel ID first, then exact normalized name.
