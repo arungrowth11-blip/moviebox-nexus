@@ -551,7 +551,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // cleanup has removed handles and cache data from the still-live session.
                 cleanupExecutor.execute { stopSession() }
             } else {
-                Thread(stopSession, "moviebox-torrent-shutdown").apply {
+                Thread({ stopSession() }, "moviebox-torrent-shutdown").apply {
                     isDaemon = true
                     start()
                 }
@@ -658,14 +658,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
             }.getOrDefault(false)
             if (!handlesRemoved) {
+                // Never delete files while libtorrent may still own/open the torrent.
                 Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
+                return false
             }
             if (!cacheRemoved) {
                 Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
             } else {
                 Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
             }
-            return handlesRemoved && cacheRemoved
+            return cacheRemoved
         }
 
         if (oldHandle != null && manager != null) {
