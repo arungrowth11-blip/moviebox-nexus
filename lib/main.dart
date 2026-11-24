@@ -1279,7 +1279,10 @@ class CatalogEngine {
               : hash != null
               ? 'torrent:$hash:file:${stream.fileIdx ?? 'auto'}'
               : '${stream.addonName}:${stream.title}';
-          accumulated.putIfAbsent(key, () => stream);
+          final existing = accumulated[key];
+          accumulated[key] = existing == null
+              ? stream
+              : mergeStreamCandidates(<StreamLink>[existing, stream]).first;
         }
         if (streams.isNotEmpty) onUpdate?.call(ranked());
       }),
