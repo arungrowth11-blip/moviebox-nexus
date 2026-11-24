@@ -3,6 +3,9 @@ package com.moviebox.nexus
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
+import android.view.WindowManager
+import java.io.ByteArrayOutputStream
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
@@ -10,6 +13,8 @@ import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private val playlistFileRequestCode = 7314
+    private var pendingPlaylistFileResult: MethodChannel.Result? = null
     private val torrentExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var torrentEngine: EmbeddedTorrentEngine? = null
 
@@ -68,6 +73,64 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
+            "moviebox_nexus/playlist"
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "pickPlaylistFile" -> {
+                    if (pendingPlaylistFileResult != null) {
+                        result.error("PICKER_BUSY", "A playlist file picker is already open.", null)
+                        return@setMethodCallHandler
+                    }
+                    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                        putExtra(
+                            Intent.EXTRA_MIME_TYPES,
+                            arrayOf(
+                                "audio/x-mpegurl",
+                                "application/vnd.apple.mpegurl",
+                                "application/x-mpegURL",
+                                "text/plain",
+                                "application/octet-stream"
+                            )
+                        )
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+                    }
+                    try {
+                        pendingPlaylistFileResult = result
+                        startActivityForResult(intent, playlistFileRequestCode)
+                    } catch (error: Exception) {
+                        pendingPlaylistFileResult = null
+                        result.error("PLAYLIST_PICKER_FAILED", error.message ?: "Could not open the document picker.", null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "moviebox_nexus/display"
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setKeepScreenOn" -> {
+                    val enabled = call.argument<Boolean>("enabled") ?: false
+                    if (enabled) {
+                        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    } else {
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    }
+                    result.success(true)
+                }
+                "isKeepScreenOn" -> {
+                    val enabled = (window.attributes.flags and
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+                    result.success(enabled)
+                }
+                else -> result.notImplemented()
+            }
+        }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
             "moviebox_nexus/external_player"
         ).setMethodCallHandler { call, result ->
             if (call.method != "openVlc") {
@@ -105,6 +168,16 @@ class MainActivity : FlutterActivity() {
             "moviebox_nexus/torrent"
         ).setMethodCallHandler { call, result ->
             when (call.method) {
+                "cleanupCache" -> torrentExecutor.execute {
+                    try {
+                        engine().cleanupCache()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error("TORRENT_CACHE_CLEANUP_FAILED", error.message, null)
+                        }
+                    }
+                }
                 "initialize" -> torrentExecutor.execute {
                     try {
                         engine().initialize()
@@ -139,6 +212,22 @@ class MainActivity : FlutterActivity() {
                     }
                     runOnUiThread { result.success(snapshot) }
                 }
+                "pausePlayback" -> torrentExecutor.execute {
+                    try {
+                        torrentEngine?.pausePlayback()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread { result.error("TORRENT_PAUSE_FAILED", error.message, null) }
+                    }
+                }
+                "resumePlayback" -> torrentExecutor.execute {
+                    try {
+                        torrentEngine?.resumePlayback()
+                        runOnUiThread { result.success(true) }
+                    } catch (error: Throwable) {
+                        runOnUiThread { result.error("TORRENT_RESUME_FAILED", error.message, null) }
+                    }
+                }
                 "stopPlayback" -> torrentExecutor.execute {
                     try {
                         torrentEngine?.stopPlayback()
@@ -149,6 +238,60 @@ class MainActivity : FlutterActivity() {
                 }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != playlistFileRequestCode) return
+        val pending = pendingPlaylistFileResult
+        pendingPlaylistFileResult = null
+        if (pending == null) return
+        if (resultCode != RESULT_OK || data?.data == null) {
+            pending.success(null)
+            return
+        }
+        try {
+            val uri = data.data!!
+            val displayName = contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (column >= 0) cursor.getString(column) else null
+                } else null
+            } ?: uri.lastPathSegment ?: "playlist.m3u"
+            if (!Regex("(?i).+\\.(m3u|m3u8|txt)$").matches(displayName)) {
+                pending.error("UNSUPPORTED_PLAYLIST_FILE", "Choose an .m3u, .m3u8 or .txt playlist file.", null)
+                return
+            }
+            val input = contentResolver.openInputStream(uri)
+                ?: throw IllegalStateException("Selected file cannot be opened.")
+            val output = ByteArrayOutputStream()
+            input.use { stream ->
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > 15 * 1024 * 1024) {
+                        throw IllegalArgumentException("Playlist files are limited to 15 MB.")
+                    }
+                    output.write(buffer, 0, count)
+                }
+            }
+            val contents = String(output.toByteArray(), Charsets.UTF_8)
+            if (contents.isBlank() || contents.contains('\u0000')) {
+                throw IllegalArgumentException("Selected file is empty or is not a UTF-8 text playlist.")
+            }
+            pending.success(mapOf("name" to displayName, "content" to contents))
+        } catch (error: Exception) {
+            pending.error("PLAYLIST_FILE_READ_FAILED", error.message ?: "Could not read the selected playlist file.", null)
         }
     }
 

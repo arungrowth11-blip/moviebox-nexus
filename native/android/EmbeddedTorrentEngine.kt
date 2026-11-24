@@ -22,6 +22,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -32,17 +34,77 @@ import java.util.concurrent.atomic.AtomicLong
  * libtorrent reports each backing piece as complete, so the player never reads
  * the sparse/preallocated zero-filled areas of an incomplete file.
  */
+internal class DeferredTorrentCleanupTask(
+    private val awaitStartup: () -> Unit,
+    private val awaitReaders: () -> Unit,
+    private val cleanup: () -> Boolean,
+    private val retryDelayMs: Long = 250L
+) {
+    fun run() {
+        var interrupted = false
+        fun awaitUninterruptibly(action: () -> Unit) {
+            while (true) {
+                try {
+                    action()
+                    return
+                } catch (_: InterruptedException) {
+                    // Keep the cleanup obligation alive even if shutdown interrupts this worker.
+                    interrupted = true
+                }
+            }
+        }
+
+        try {
+            awaitUninterruptibly(awaitStartup)
+            awaitUninterruptibly(awaitReaders)
+            while (true) {
+                var cleaned = false
+                try {
+                    cleaned = cleanup()
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                } catch (_: Exception) {
+                    // A transient native/filesystem exception must not discard
+                    // the deferred cleanup obligation.
+                    cleaned = false
+                }
+                if (cleaned) return
+                awaitUninterruptibly { Thread.sleep(retryDelayMs) }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
+        }
+    }
+}
+
+internal class TorrentCleanupOrder(
+    private val removeNativeHandles: () -> Boolean,
+    private val deleteCache: () -> Boolean
+) {
+    fun run(): Boolean {
+        if (!removeNativeHandles()) return false
+        return deleteCache()
+    }
+}
+
 internal class EmbeddedTorrentEngine(private val context: Context) {
     private val lock = Any()
     private val requestPool = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "moviebox-torrent-http").apply { isDaemon = true }
     }
+    private val activeHttpSockets = CopyOnWriteArraySet<Socket>()
+    private val deferredCleanupHashes = ConcurrentHashMap.newKeySet<String>()
+    private val cleanupExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "moviebox-torrent-cleanup").apply { isDaemon = true }
+    }
+    private val torrentCacheRoot = File(context.cacheDir, TorrentCachePolicy.DIRECTORY_NAME)
 
     @Volatile private var session: SessionManager? = null
     @Volatile private var activeHandle: TorrentHandle? = null
     @Volatile private var activePending: PendingStream? = null
     @Volatile private var startupTask: Future<*>? = null
     @Volatile private var serverSocket: ServerSocket? = null
+    @Volatile private var playbackPaused = false
     private val startupExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "moviebox-torrent-startup").apply { isDaemon = true }
     }
@@ -60,9 +122,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private class PendingStream(
         val token: String,
-        val infoHash: String
+        val infoHash: String,
+        val storageDir: File
     ) {
         val ready = CountDownLatch(1)
+        val startupStarted = AtomicBoolean(false)
+        val startupFinished = CountDownLatch(1)
+        val activeReaders = AtomicLong(0L)
         val httpRequestCount = AtomicLong(0L)
         val httpBytesSent = AtomicLong(0L)
         val requestGeneration = AtomicLong(0L)
@@ -78,12 +144,38 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var lastPieceIndex = -1
         @Volatile var lastPieceWaitMs = 0L
         @Volatile var lastHttpError = ""
+        @Volatile var prefetchLookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+        @Volatile var prefetchWindowBytes = 0L
+        @Volatile var prefetchConnectedSources = 0
+        @Volatile var prefetchDownloadRateBytesPerSecond = 0L
+        @Volatile var prefetchLastSampleAtMs = 0L
         @Volatile var cancelled = false
+    }
+
+    fun cleanupCache() {
+        synchronized(lock) {
+            // Never remove the currently active stream while an Activity/Flutter
+            // engine is being recreated. An abandoned previous-process stream has
+            // no in-memory PendingStream and is safe to sweep here.
+            // A stopped stream may still have readers closing on the deferred
+            // cleanup worker. Never sweep its directory during Activity/engine recreation.
+            val currentClean = if (activePending == null && deferredCleanupHashes.isEmpty()) {
+                TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
+            } else {
+                true
+            }
+            val legacyRoot = File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME)
+            val legacyClean = TorrentCachePolicy.clearRoot(legacyRoot, context.filesDir)
+            if (!currentClean || !legacyClean) {
+                Log.w(TAG, "One or more stale torrent cache directories could not be fully removed.")
+            }
+        }
     }
 
     fun initialize() {
         synchronized(lock) {
             if (session != null) return
+            cleanupCache()
             val manager = SessionManager()
             manager.start()
             session = manager
@@ -96,6 +188,45 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
      * ready. This keeps Flutter responsive and lets the player show buffering
      * while peers and metadata are being discovered.
      */
+    fun pausePlayback() {
+        synchronized(lock) {
+            playbackPaused = true
+            val pending = activePending ?: return
+            val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
+                runCatching { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
+                    .getOrDefault(false)
+            }
+            if (handle != null) {
+                runCatching {
+                    // Auto-managed torrents may be resumed automatically by libtorrent.
+                    handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                    handle.pause()
+                }.onFailure { error ->
+                    Log.w(TAG, "Could not pause torrent while app is backgrounded", error)
+                }
+            }
+        }
+    }
+
+    fun resumePlayback() {
+        synchronized(lock) {
+            playbackPaused = false
+            val pending = activePending ?: return
+            val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
+                runCatching { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
+                    .getOrDefault(false)
+            }
+            if (handle != null) {
+                runCatching {
+                    handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                    handle.resume()
+                }.onFailure { error ->
+                    Log.w(TAG, "Could not resume torrent after app foregrounded", error)
+                }
+            }
+        }
+    }
+
     fun startPlayback(
         infoHash: String,
         title: String,
@@ -106,16 +237,24 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
         stopPlayback()
+        check(hashHex !in deferredCleanupHashes) {
+            "Previous playback for this torrent is still closing its readers; retry playback shortly."
+        }
+        playbackPaused = false
 
         val manager = session ?: throw IllegalStateException("Torrent session did not initialize.")
-        val saveDir = File(context.filesDir, "moviebox-torrents/$hashHex")
+        val saveDir = File(torrentCacheRoot, hashHex)
+        if (saveDir.exists() && !TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)) {
+            throw IllegalStateException("Unable to clear stale temporary torrent data.")
+        }
         if (!saveDir.exists() && !saveDir.mkdirs()) {
             throw IllegalStateException("Unable to create the app's torrent cache directory.")
         }
 
         val pending = PendingStream(
             token = UUID.randomUUID().toString().replace("-", ""),
-            infoHash = hashHex
+            infoHash = hashHex,
+            storageDir = saveDir
         )
         startHttpServer(pending)
         activePending = pending
@@ -123,6 +262,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             ?: throw IllegalStateException("Unable to start the local torrent stream server.")
 
         startupTask = startupExecutor.submit {
+            if (!pending.startupStarted.compareAndSet(false, true) ||
+                Thread.currentThread().isInterrupted || activePending !== pending
+            ) {
+                pending.ready.countDown()
+                pending.startupFinished.countDown()
+                return@submit
+            }
             var discoveredHandle: TorrentHandle? = null
             try {
                 val encodedTitle = URLEncoder.encode(title.take(160), "UTF-8")
@@ -206,6 +352,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         runCatching { manager.remove(handle) }
                         return@submit
                     }
+                    if (playbackPaused) {
+                        runCatching {
+                            handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
+                            handle.pause()
+                        }.onFailure { error ->
+                            Log.w(TAG, "Could not keep torrent paused during startup", error)
+                        }
+                    }
                     activeHandle = handle
                     pending.target = target
                 }
@@ -217,7 +371,23 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     Log.e(TAG, "Torrent startup failed for $hashHex: $failure", error)
                 }
             } finally {
-                pending.ready.countDown()
+                try {
+                    pending.ready.countDown()
+                    // Failed or cancelled startups never become playable. Do not
+                    // retain partial pieces or a preallocated media file.
+                    if (TorrentStartupCleanupPolicy.shouldDeleteCacheBeforeReaders(pending.target != null)) {
+                        // A stream with a ready target may already have HTTP readers.
+                        // stopPlayback owns its cache deletion after those readers settle.
+                        val removed = runCatching {
+                            TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)
+                        }.getOrDefault(false)
+                        if (!removed) {
+                            Log.w(TAG, "Could not remove failed torrent startup cache: " + saveDir.name)
+                        }
+                    }
+                } finally {
+                    pending.startupFinished.countDown()
+                }
             }
         }
 
@@ -256,9 +426,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 ?: throw IllegalStateException("This torrent contains no supported video file.")
         }
 
-        val priorities = Array(storage.numFiles()) { Priority.IGNORE }
-        priorities[selected.first] = Priority.NORMAL
-        torrentHandle.prioritizeFiles(priorities)
+        // Start with every file ignored. The player activates only the current
+        // byte-range piece and a small look-ahead window as it reads.
+        torrentHandle.prioritizeFiles(
+            TorrentDownloadPriorityPolicy.filePriorities(storage.numFiles())
+        )
 
         val selectedFileOffset = storage.fileOffset(selected.first)
         val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
@@ -338,46 +510,78 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "lastPieceIndex" to pending.lastPieceIndex,
         "lastPieceWaitMs" to pending.lastPieceWaitMs,
         "lastHttpError" to pending.lastHttpError,
-        "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0)
+        "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0),
+        "prefetchLookAheadPieces" to pending.prefetchLookAheadPieces,
+        "prefetchWindowBytes" to pending.prefetchWindowBytes,
+        "prefetchConnectedSources" to pending.prefetchConnectedSources,
+        "prefetchDownloadRateBytesPerSecond" to pending.prefetchDownloadRateBytesPerSecond
     )
 
     fun stopPlayback() {
-        synchronized(lock) {
-            val pending = activePending
+        val (pending, oldHandle) = synchronized(lock) {
+            val stopped = activePending
+            val previousHandle = activeHandle
+            // Publish the pending cleanup before clearing activePending so initialize()
+            // cannot race in and delete this stream's cache while readers are closing.
+            stopped?.let { deferredCleanupHashes.add(it.infoHash) }
+            activeHandle = null
             activePending = null
             startupTask?.cancel(true)
             startupTask = null
-            pending?.error = "Playback was stopped."
-            pending?.cancelled = true
-            pending?.ready?.countDown()
-            stopHttpServer()
-
-            val oldHandle = activeHandle
-            activeHandle = null
-            if (oldHandle != null) {
-                runCatching { session?.remove(oldHandle) }
-            } else if (pending != null) {
-                session?.getTorrentHandles()?.filter {
-                    runCatching {
-                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
-                    }.getOrDefault(false)
-                }?.forEach { handle -> runCatching { session?.remove(handle) } }
+            stopped?.error = "Playback was stopped."
+            stopped?.cancelled = true
+            stopped?.ready?.countDown()
+            if (stopped != null && !stopped.startupStarted.get()) {
+                // A queued Future cancelled before execution never reaches its finally block.
+                stopped.startupFinished.countDown()
             }
+            stopHttpServer()
+            activeHttpSockets.toList().forEach { socket -> runCatching { socket.close() } }
+            stopped to previousHandle
         }
+
+        // Wait outside the engine lock so startup and HTTP workers can finish their cleanup.
+        val startupSettled = pending == null || runCatching {
+            pending.startupFinished.await(5, TimeUnit.SECONDS)
+        }.getOrDefault(false)
+        val readersSettled = waitForHttpReadersToClose(pending)
+        val managerForCleanup = session
+        if (!startupSettled || !readersSettled) {
+            Log.w(TAG, "Deferring torrent cleanup until workers settle: startupSettled=$startupSettled readersSettled=$readersSettled")
+            deferTorrentCleanup(managerForCleanup, pending, oldHandle)
+            return
+        }
+
+        if (!removeTorrentAndCache(managerForCleanup, pending, oldHandle)) {
+            Log.w(TAG, "Torrent cleanup did not complete; retrying asynchronously.")
+            deferTorrentCleanup(managerForCleanup, pending, oldHandle)
+            return
+        }
+        pending?.let { deferredCleanupHashes.remove(it.infoHash) }
     }
 
     fun close() {
         stopPlayback()
         val old = session
         session = null
-        if (old != null) {
-            Thread({ runCatching { old.stop() } }, "moviebox-torrent-shutdown").apply {
-                isDaemon = true
-                start()
-            }
-        }
         requestPool.shutdownNow()
         startupExecutor.shutdownNow()
+        if (old != null) {
+            val stopSession = {
+                runCatching { old.stop() }
+                    .onFailure { error -> Log.w(TAG, "Torrent session shutdown failed: ${error.message}") }
+            }
+            if (deferredCleanupHashes.isNotEmpty()) {
+                // The single-thread cleanup executor runs this only after queued stream
+                // cleanup has removed handles and cache data from the still-live session.
+                cleanupExecutor.execute { stopSession() }
+            } else {
+                Thread({ stopSession() }, "moviebox-torrent-shutdown").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+        }
     }
 
     private fun startHttpServer(pending: PendingStream) {
@@ -389,7 +593,37 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             while (!server.isClosed) {
                 try {
                     val socket = server.accept()
-                    requestPool.execute { serveRequest(socket, pending) }
+                    // Serialize reader registration with stopPlayback's cancellation
+                    // and socket-close section. This prevents cleanup from seeing zero
+                    // readers while an accepted socket is not yet registered.
+                    val registered = synchronized(lock) {
+                        if (pending.cancelled || activePending !== pending) {
+                            false
+                        } else {
+                            pending.activeReaders.incrementAndGet()
+                            activeHttpSockets.add(socket)
+                            true
+                        }
+                    }
+                    if (!registered) {
+                        runCatching { socket.close() }
+                        continue
+                    }
+                    try {
+                        requestPool.execute {
+                            try {
+                                serveRequest(socket, pending)
+                            } finally {
+                                pending.activeReaders.decrementAndGet()
+                                activeHttpSockets.remove(socket)
+                            }
+                        }
+                    } catch (error: Exception) {
+                        pending.activeReaders.decrementAndGet()
+                        activeHttpSockets.remove(socket)
+                        runCatching { socket.close() }
+                        Log.w(TAG, "Could not schedule torrent HTTP reader", error)
+                    }
                 } catch (_: Exception) {
                     // Closing the server socket is the normal way to leave this loop.
                 }
@@ -405,8 +639,128 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         serverSocket = null
     }
 
+    private fun waitForHttpReadersToClose(pending: PendingStream?, timeoutMs: Long = 2_000L): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while ((pending?.activeReaders?.get() ?: 0L) > 0L && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(20L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return false
+            }
+        }
+        return (pending?.activeReaders?.get() ?: 0L) == 0L
+    }
+
+    private fun removeTorrentAndCache(
+        manager: SessionManager?,
+        pending: PendingStream?,
+        oldHandle: TorrentHandle?
+    ): Boolean {
+        if (pending != null) {
+            val cleanup = TorrentCleanupOrder(
+                removeNativeHandles = removeHandles@ {
+                    if (manager == null) {
+                        Log.w(TAG, "Cannot confirm torrent handle removal without a live session.")
+                        false
+                    } else {
+                        val matchingHandles = runCatching {
+                            manager.getTorrentHandles().filter { handle ->
+                                runCatching {
+                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                                }.getOrDefault(false)
+                            }
+                        }.getOrElse { error ->
+                            Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
+                            return@removeHandles false
+                        }
+                        matchingHandles.forEach { handle ->
+                            if (runCatching { manager.remove(handle) }.isFailure) {
+                                Log.w(TAG, "Native torrent handle removal failed: " + pending.infoHash)
+                                return@removeHandles false
+                            }
+                        }
+                        val handleRemains = runCatching {
+                            manager.getTorrentHandles().any { handle ->
+                                runCatching {
+                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                                }.getOrDefault(false)
+                            }
+                        }.getOrElse { true }
+                        if (handleRemains) {
+                            Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
+                            false
+                        } else {
+                            true
+                        }
+                    }
+                },
+                deleteCache = {
+                    runCatching {
+                        TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
+                    }.onFailure { error ->
+                        Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
+                    }.getOrDefault(false)
+                }
+            )
+            val cleaned = cleanup.run()
+            if (!cleaned) {
+                Log.w(TAG, "Torrent cleanup did not complete; cache is retained for retry.")
+            } else {
+                Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
+            }
+            return cleaned
+        }
+
+        if (oldHandle != null) {
+            val managerAvailable = manager ?: return false
+            val removed = runCatching {
+                managerAvailable.remove(oldHandle)
+                managerAvailable.getTorrentHandles().none { handle ->
+                    runCatching { handle.infoHash() == oldHandle.infoHash() }.getOrDefault(false)
+                }
+            }.getOrDefault(false)
+            if (!removed) Log.w(TAG, "Legacy torrent handle removal is not yet confirmed.")
+            return removed
+        }
+        return true
+    }
+
+    private fun deferTorrentCleanup(
+        manager: SessionManager?,
+        pending: PendingStream?,
+        oldHandle: TorrentHandle?
+    ) {
+        pending?.let { deferredCleanupHashes.add(it.infoHash) }
+        cleanupExecutor.execute {
+            var cleaned = false
+            try {
+                // Retain the PendingStream/handle until startup and every reader
+                // belonging to this stream have actually exited. Retry failed native
+                // handle/cache removal instead of silently dropping the cleanup obligation.
+                DeferredTorrentCleanupTask(
+                    awaitStartup = { pending?.startupFinished?.await() },
+                    awaitReaders = {
+                        if (pending != null) {
+                            while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
+                        } else {
+                            while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
+                        }
+                    },
+                    cleanup = { removeTorrentAndCache(manager, pending, oldHandle) }
+                ).run()
+                cleaned = true
+            } catch (error: Exception) {
+                Log.e(TAG, "Deferred torrent cleanup worker failed; cleanup remains blocked.", error)
+            } finally {
+                if (cleaned) pending?.let { deferredCleanupHashes.remove(it.infoHash) }
+            }
+        }
+    }
+
     private fun serveRequest(socket: Socket, pending: PendingStream) {
         socket.use { client ->
+            if (pending.cancelled || activePending !== pending) return@use
             val requestCancelled = AtomicBoolean(false)
             var requestedRange = "none"
             try {
@@ -430,22 +784,32 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             line.substring(separator + 1).trim()
                     }
                 }
-                // Watch the request side independently while a piece is pending.
-                // HTTP clients close the range socket when seeking/releasing a load;
-                // a short read timeout lets us detect that FIN without blocking the
-                // stream worker for the full piece deadline.
+                // HTTP is full-duplex. EOF on the request-input direction is a
+                // valid half-close: the player may have finished sending its GET
+                // request while it is still waiting to receive the response body.
+                // Only an actual socket read error cancels a pending piece wait.
                 client.soTimeout = 250
                 Thread({
                     while (!requestCancelled.get() && !client.isClosed) {
                         try {
                             if (reader.readLine() == null) {
-                                requestCancelled.set(true)
+                                if (HttpRequestReadPolicy.shouldCancel(
+                                        HttpRequestReadOutcome.END_OF_STREAM
+                                    )
+                                ) {
+                                    requestCancelled.set(true)
+                                }
                                 break
                             }
                         } catch (_: java.net.SocketTimeoutException) {
-                            // No pipelined request data; continue watching for FIN.
+                            // No pipelined request data; continue watching.
                         } catch (_: Exception) {
-                            requestCancelled.set(true)
+                            if (HttpRequestReadPolicy.shouldCancel(
+                                    HttpRequestReadOutcome.IO_ERROR
+                                )
+                            ) {
+                                requestCancelled.set(true)
+                            }
                             break
                         }
                     }
@@ -522,6 +886,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 val (start, end, partial) = range
                 pending.lastHttpRangeStart = start
                 pending.lastHttpRangeEnd = end
+                val pieceReadGate = HttpPieceReadGate()
+                val firstPieceIndex =
+                    ((target.fileOffset + start) / target.pieceLength).toInt()
 
                 // HEAD is metadata-only and must never wait for a torrent piece.
                 // For GET, keep the HTTP status uncommitted until the first requested
@@ -563,6 +930,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     return
                 }
 
+                if (HttpRangePolicy.shouldWaitForFirstPiece(method)) {
+                    pieceReadGate.markVerified(firstPieceIndex)
+                }
+
                 val extension = target.file.extension.lowercase(Locale.US)
                 val contentType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
                     ?: "application/octet-stream"
@@ -595,28 +966,35 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     var position = start
                     var bytesSent = 0L
                     // GET already passed the pre-header piece gate above.
+                    // Wait only when entering a new torrent piece. Multiple 128 KiB
+                    // reads inside a verified piece must not repeat an 80 ms delay
+                    // or reset the libtorrent playback-priority window.
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
-                        if (!waitForPiece(
-                                pending,
-                                target,
-                                position,
-                                STREAM_PIECE_TIMEOUT_MS,
-                                requestGeneration,
-                                isRequestCancelled
-                            )
-                        ) {
-                            when (HttpRangePolicy.afterHeaders(
-                                pieceReady = false,
-                                cancelled = isRequestCancelled()
-                            )) {
-                                HttpPieceDecision.CANCELLED -> return
-                                HttpPieceDecision.ABORT ->
-                                    throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
-                                else -> return
-                            }
-                        }
                         val globalOffset = target.fileOffset + position
+                        val pieceIndex = (globalOffset / target.pieceLength).toInt()
+                        if (pieceReadGate.needsWait(pieceIndex)) {
+                            if (!waitForPiece(
+                                    pending,
+                                    target,
+                                    position,
+                                    STREAM_PIECE_TIMEOUT_MS,
+                                    requestGeneration,
+                                    isRequestCancelled
+                                )
+                            ) {
+                                when (HttpRangePolicy.afterHeaders(
+                                    pieceReady = false,
+                                    cancelled = isRequestCancelled()
+                                )) {
+                                    HttpPieceDecision.CANCELLED -> return
+                                    HttpPieceDecision.ABORT ->
+                                        throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
+                                    else -> return
+                                }
+                            }
+                            pieceReadGate.markVerified(pieceIndex)
+                        }
                         val amount = HttpRangePolicy.bytesToPieceEnd(
                             globalOffset = globalOffset,
                             pieceLength = target.pieceLength,
@@ -722,25 +1100,67 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             if (isRequestCancelled() || pending.requestGeneration.get() != requestGeneration) {
                 return false
             }
+            // Read this torrent's real counters (not add-on seeder claims).
+            // The adaptive window grows only when there are connected sources
+            // and/or measured download throughput to make parallel prefetch useful.
+            // status() is synchronous with libtorrent's session thread. Sample
+            // at most once per second, not once per downloaded piece, and reuse
+            // the last accurate aggregate counters between samples.
+            val sampleNowMs = System.nanoTime() / 1_000_000L
+            if (sampleNowMs - pending.prefetchLastSampleAtMs >= 1_000L) {
+                val swarmStatus = runCatching {
+                    target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+                }.getOrNull()
+                if (swarmStatus != null) {
+                    // numSeeds is a subset of the connected peers, not an
+                    // additional population; never double-count seed peers.
+                    pending.prefetchConnectedSources = swarmStatus.numPeers().coerceAtLeast(0)
+                    pending.prefetchDownloadRateBytesPerSecond =
+                        swarmStatus.downloadRate().toLong().coerceAtLeast(0L)
+                    pending.prefetchLastSampleAtMs = sampleNowMs
+                }
+            }
+            val connectedSources = pending.prefetchConnectedSources
+            val downloadRate = pending.prefetchDownloadRateBytesPerSecond
+            val lookAheadPieces = HttpRangePolicy.adaptiveLookAheadPieces(
+                pieceLengthBytes = target.pieceLength,
+                connectedSources = connectedSources,
+                downloadRateBytesPerSecond = downloadRate
+            )
+            pending.prefetchLookAheadPieces = lookAheadPieces
+            pending.prefetchConnectedSources = connectedSources
+            pending.prefetchDownloadRateBytesPerSecond = downloadRate
+
             val window = HttpRangePolicy.playbackWindow(
                 currentPiece = currentPiece,
                 firstPiece = target.firstPiece,
                 lastPiece = target.lastPiece,
-                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+                lookAheadPieces = lookAheadPieces
             )
+            pending.prefetchWindowBytes = window.size.toLong() * target.pieceLength
             if (window.isEmpty()) return false
             val wanted = window.toSet()
 
             pending.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
                 runCatching { target.handle.resetPieceDeadline(stalePiece) }
-                runCatching { target.handle.piecePriority(stalePiece, Priority.NORMAL) }
+                runCatching {
+                    target.handle.piecePriority(
+                        stalePiece,
+                        TorrentDownloadPriorityPolicy.inactivePiece
+                    )
+                }
             }
             pending.prioritizedPieces.clear()
             window.forEachIndexed { offset, piece ->
                 if (runCatching { target.handle.havePiece(piece) }.getOrDefault(false)) {
                     runCatching { target.handle.resetPieceDeadline(piece) }
                 } else {
-                    runCatching { target.handle.piecePriority(piece, Priority.SEVEN) }
+                    runCatching {
+                        target.handle.piecePriority(
+                            piece,
+                            TorrentDownloadPriorityPolicy.activePiece
+                        )
+                    }
                     runCatching {
                         target.handle.setPieceDeadline(
                             piece,

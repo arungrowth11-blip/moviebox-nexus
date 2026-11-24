@@ -14,10 +14,20 @@ class Media3StartupPolicy {
   static const Duration startupTimeout = Duration(seconds: 20);
   // Three 45-second first-piece attempts plus bounded retry gaps and cleanup margin.
   static const Duration torrentStartupTimeout = Duration(seconds: 140);
-  static const Duration torrentPlaybackStallTimeout = Duration(seconds: 35);
+  // Must outlive the plugin's 240s extended HTTP read timeout plus cleanup.
+  static const Duration extendedReadStartupTimeout = Duration(seconds: 260);
+  // The native HTTP bridge waits up to 180s for a verified mid-stream piece.
+  // Do not tear down and restart that same torrent request at 35s.
+  static const Duration torrentPlaybackStallTimeout = Duration(seconds: 195);
 
-  static Duration timeoutFor({required bool isEmbeddedTorrent}) =>
-      isEmbeddedTorrent ? torrentStartupTimeout : startupTimeout;
+  static Duration timeoutFor({
+    required bool isEmbeddedTorrent,
+    bool isExtendedReadTimeout = false,
+  }) {
+    if (isExtendedReadTimeout) return extendedReadStartupTimeout;
+    return isEmbeddedTorrent ? torrentStartupTimeout : startupTimeout;
+  }
+
   static const Duration progressThreshold = Duration(milliseconds: 700);
 
   /// A different decoder cannot repair a torrent transport that has emitted no
@@ -35,12 +45,23 @@ class Media3StartupPolicy {
     required Duration currentPosition,
     required Duration elapsed,
     required bool isEmbeddedTorrent,
+    bool isLive = false,
+    bool isExtendedReadTimeout = false,
     required int httpBytesSent,
   }) {
-    if (isPlaying || currentPosition > initialPosition + progressThreshold) {
+    // A VOD/torrent controller can report isPlaying=true while its native
+    // decoder clock is stuck at 0:00. Only actual position movement proves
+    // progress for finite media. Live feeds may not expose a stable timeline,
+    // so their active playing state remains the startup signal.
+    if (currentPosition > initialPosition + progressThreshold ||
+        (isLive && isPlaying)) {
       return Media3StartupDecision.started;
     }
-    if (elapsed < timeoutFor(isEmbeddedTorrent: isEmbeddedTorrent)) {
+    if (elapsed <
+        timeoutFor(
+          isEmbeddedTorrent: isEmbeddedTorrent,
+          isExtendedReadTimeout: isExtendedReadTimeout,
+        )) {
       return Media3StartupDecision.wait;
     }
     if (isEmbeddedTorrent && httpBytesSent <= 0) {

@@ -65,6 +65,44 @@ const List<MapEntry<String, String>> liveTvPlaylistSources = [
   MapEntry('Kids', 'https://iptv-org.github.io/iptv/categories/kids.m3u'),
 ];
 
+class UserPlaylistSource {
+  const UserPlaylistSource({
+    required this.id,
+    required this.name,
+    this.url = '',
+    this.localPath = '',
+    this.enabled = true,
+  });
+  final String id;
+  final String name;
+  final String url;
+  final String localPath;
+  final bool enabled;
+  bool get isImportedFile => localPath.isNotEmpty;
+  UserPlaylistSource copyWith({bool? enabled}) => UserPlaylistSource(
+    id: id,
+    name: name,
+    url: url,
+    localPath: localPath,
+    enabled: enabled ?? this.enabled,
+  );
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': id,
+    'name': name,
+    'url': url,
+    'localPath': localPath,
+    'enabled': enabled,
+  };
+  factory UserPlaylistSource.fromJson(Map<String, dynamic> json) =>
+      UserPlaylistSource(
+        id: (json['id'] ?? '').toString(),
+        name: (json['name'] ?? 'My playlist').toString(),
+        url: (json['url'] ?? '').toString(),
+        localPath: (json['localPath'] ?? '').toString(),
+        enabled: json['enabled'] != false,
+      );
+}
+
 class LiveTvSourceProbeResult {
   final Map<String, String>? working;
   final List<Map<String, String>> failed;
@@ -296,6 +334,52 @@ List<Map<String, String>> parseM3uPlaylist(String body) {
   return channels;
 }
 
+/// Parses M3U/M3U8 playlists and simple text files containing one HTTP(S)
+/// stream URL per line. M3U directives are preserved by parseM3uPlaylist.
+List<Map<String, String>> parsePlaylistDocument(
+  String body, {
+  String source = 'Custom playlist',
+}) {
+  final parsed = parseM3uPlaylist(body);
+  if (parsed.isNotEmpty) return parsed;
+  final channels = <Map<String, String>>[];
+  final seen = <String>{};
+  for (final raw in body.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'))) {
+    final line = raw.trim();
+    if (line.isEmpty || line.startsWith('#')) continue;
+    final uri = Uri.tryParse(line);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        !seen.add(uri.toString())) {
+      continue;
+    }
+    final lastSegment = uri.pathSegments.isEmpty
+        ? uri.host
+        : uri.pathSegments.last;
+    final name = lastSegment
+        .replaceAll(RegExp(r'\.(m3u8?|mp4|ts)$', caseSensitive: false), '')
+        .replaceAll(RegExp(r'[_-]+'), ' ')
+        .trim();
+    channels.add(<String, String>{
+      'id': 'user:${uri.host}:${channels.length}',
+      'sourceId': 'user:${uri.host}:${channels.length}',
+      'name': name.isEmpty ? uri.host : name,
+      'url': uri.toString(),
+      'logo': '',
+      'group': 'User Playlist',
+      'country': '',
+      'countryRaw': '',
+      'language': '',
+      'userAgent': '',
+      'referrer': '',
+      'source': source,
+    });
+  }
+  return channels;
+}
+
 /// Combines independently maintained public M3U feeds without discarding
 /// alternate URLs for the same channel. Exact duplicate stream URLs are removed.
 List<Map<String, String>> mergeLiveTvPlaylists(
@@ -511,6 +595,22 @@ class StreamLink {
   bool get isDirect => url != null && url!.startsWith('http');
   bool get isTorrent => infoHash != null;
 
+  StreamLink copyWith({
+    String? addonName,
+    int? seeders,
+    List<String>? trackers,
+  }) => StreamLink(
+    url: url,
+    infoHash: infoHash,
+    title: title,
+    addonName: addonName ?? this.addonName,
+    badge: badge,
+    headers: headers,
+    seeders: seeders ?? this.seeders,
+    fileIdx: fileIdx,
+    trackers: trackers ?? this.trackers,
+  );
+
   int get score {
     final s = '$title ${url ?? ''}'.toLowerCase();
     var quality = 0;
@@ -539,6 +639,109 @@ class StreamLink {
     // from overwhelming the ranking.
     return (seeders ?? 0).clamp(0, 500).toInt() * 100 + quality;
   }
+}
+
+/// Convert v1 BTIH hex/base32 representations to one stable key.
+/// Invalid values are retained in lowercase so they never alias a valid hash.
+String canonicalTorrentInfoHash(String raw) {
+  final value = raw.trim().replaceFirst(
+    RegExp(r'^urn:btih:', caseSensitive: false),
+    '',
+  );
+  if (RegExp(r'^[a-fA-F0-9]{40}$').hasMatch(value)) {
+    return value.toLowerCase();
+  }
+  if (!RegExp(r'^[A-Za-z2-7]{32}$').hasMatch(value)) {
+    return value.toLowerCase();
+  }
+
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  final bytes = <int>[];
+  var buffer = 0;
+  var bits = 0;
+  for (final codeUnit in value.toUpperCase().codeUnits) {
+    final digit = alphabet.indexOf(String.fromCharCode(codeUnit));
+    if (digit < 0) return value.toLowerCase();
+    buffer = ((buffer << 5) | digit) & 0x7fffffff;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.add((buffer >> bits) & 0xff);
+      buffer &= (1 << bits) - 1;
+    }
+  }
+  if (bytes.length != 20) return value.toLowerCase();
+  return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+}
+
+/// Merge addon metadata for duplicate swarms without discarding source hints.
+/// Same-infohash results share tracker discovery, while different fileIdx values
+/// remain separate because they can select different files inside one torrent.
+List<StreamLink> mergeStreamCandidates(Iterable<StreamLink> input) {
+  final candidates = <String, StreamLink>{};
+  final trackersByHash = <String, Set<String>>{};
+  final addonsByHash = <String, Set<String>>{};
+  final reportedSeedersByHash = <String, int>{};
+
+  for (final stream in input) {
+    final hash = stream.isTorrent
+        ? canonicalTorrentInfoHash(stream.infoHash!)
+        : null;
+    if (hash != null && hash.isNotEmpty) {
+      trackersByHash
+          .putIfAbsent(hash, () => <String>{})
+          .addAll(
+            stream.trackers.where((tracker) => tracker.trim().isNotEmpty),
+          );
+      final addonNames = addonsByHash.putIfAbsent(hash, () => <String>{});
+      for (final addon in stream.addonName.split(' + ')) {
+        final name = addon.trim();
+        if (name.isNotEmpty) addonNames.add(name);
+      }
+      final count = stream.seeders;
+      if (count != null) {
+        final previous = reportedSeedersByHash[hash];
+        if (previous == null || count > previous) {
+          reportedSeedersByHash[hash] = count;
+        }
+      }
+    }
+
+    final key = stream.url != null
+        ? 'direct:${stream.url}'
+        : hash != null
+        ? 'torrent:$hash:file:${stream.fileIdx ?? 'auto'}'
+        : 'source:${stream.addonName}:${stream.title}';
+    candidates.putIfAbsent(key, () => stream);
+  }
+
+  return candidates.values
+      .map((stream) {
+        if (!stream.isTorrent) return stream;
+        final hash = canonicalTorrentInfoHash(stream.infoHash!);
+        final trackers = trackersByHash[hash];
+        final addons = addonsByHash[hash];
+        return stream.copyWith(
+          trackers: trackers == null
+              ? stream.trackers
+              : trackers.take(24).toList(growable: false),
+          addonName: addons == null || addons.isEmpty
+              ? stream.addonName
+              : addons.join(' + '),
+          seeders: reportedSeedersByHash[hash] ?? stream.seeders,
+        );
+      })
+      .toList(growable: false);
+}
+
+/// Rank torrent fallbacks consistently for every Play action. StreamLink.score
+/// weights reported swarm size above resolution when choosing a P2P source.
+List<StreamLink> rankTorrentPlaybackCandidates(Iterable<StreamLink> streams) {
+  final candidates = mergeStreamCandidates(
+    streams.where((stream) => stream.isTorrent),
+  );
+  candidates.sort((a, b) => b.score.compareTo(a.score));
+  return candidates;
 }
 
 class OttBrand {
@@ -898,7 +1101,7 @@ class CatalogEngine {
     // Each addon resolves as soon as its parallel manifest request completes.
     final accumulated = <String, StreamLink>{};
     List<StreamLink> ranked() {
-      final streams = accumulated.values.toList()
+      final streams = mergeStreamCandidates(accumulated.values)
         ..sort((a, b) => b.score.compareTo(a.score));
       return streams;
     }
@@ -1003,18 +1206,30 @@ class CatalogEngine {
               final requestHeaders = proxyHeaders is Map
                   ? proxyHeaders['request']
                   : null;
+              // Stremio's standard shape is proxyHeaders.request. Accept the
+              // direct-map form as a compatibility fallback for addons that
+              // expose request headers without the wrapper object.
+              final directProxyHeaders =
+                  proxyHeaders is Map && !proxyHeaders.containsKey('request')
+                  ? proxyHeaders
+                  : null;
               final rawHeaders = requestHeaders is Map
                   ? requestHeaders
-                  : (item['headers'] is Map
-                        ? item['headers']
-                        : const <String, dynamic>{});
+                  : (directProxyHeaders ??
+                        (item['headers'] is Map
+                            ? item['headers']
+                            : const <String, dynamic>{}));
               final streamHeaders = <String, String>{};
               if (rawHeaders is Map) {
                 for (final entry in rawHeaders.entries) {
-                  final key = entry.key.toString().trim();
-                  final value = entry.value.toString().trim();
-                  if (key.isNotEmpty && value.isNotEmpty)
+                  if (entry.key is! String || entry.value is! String) {
+                    continue;
+                  }
+                  final key = (entry.key as String).trim();
+                  final value = (entry.value as String).trim();
+                  if (key.isNotEmpty && value.isNotEmpty) {
                     streamHeaders[key] = value;
+                  }
                 }
               }
               final probe = '$title ${directUrl ?? ''}'.toLowerCase();
@@ -1059,11 +1274,18 @@ class CatalogEngine {
         }
         final streams = await resolveAddon(addon);
         for (final stream in streams) {
-          final key =
-              stream.url ??
-              stream.infoHash ??
-              '${stream.addonName}:${stream.title}';
-          accumulated.putIfAbsent(key, () => stream);
+          final hash = stream.isTorrent
+              ? canonicalTorrentInfoHash(stream.infoHash!)
+              : null;
+          final key = stream.url != null
+              ? 'direct:${stream.url}'
+              : hash != null
+              ? 'torrent:$hash:file:${stream.fileIdx ?? 'auto'}'
+              : '${stream.addonName}:${stream.title}';
+          final existing = accumulated[key];
+          accumulated[key] = existing == null
+              ? stream
+              : mergeStreamCandidates(<StreamLink>[existing, stream]).first;
         }
         if (streams.isNotEmpty) onUpdate?.call(ranked());
       }),
@@ -1094,28 +1316,37 @@ class CatalogEngine {
       'https://ngosang.github.io/trackerslist/trackers_best.txt',
       'https://cdn.jsdelivr.net/gh/ngosang/trackerslist@master/trackers_best.txt',
     ];
-    for (final url in urls) {
-      try {
-        final response = await _client
-            .get(
-              Uri.parse(url),
-              headers: const {
-                'User-Agent': 'MovieBoxNexus/1.2',
-                'Accept': 'text/plain',
-              },
-            )
-            .timeout(const Duration(seconds: 5));
-        if (response.statusCode != 200) continue;
-        final trackers = _parsePublicTrackers(response.body);
-        if (trackers.isEmpty) continue;
+    // Probe mirrors concurrently: a slow first host must not serialize
+    // three separate five-second waits before playback can even start.
+    final results = await Future.wait(
+      urls.map((url) async {
         try {
-          await cacheFile.parent.create(recursive: true);
-          await cacheFile.writeAsString(trackers.join('\n'), flush: true);
-        } catch (_) {}
-        return trackers;
-      } catch (_) {}
-    }
-    return <String>[];
+          final response = await _client
+              .get(
+                Uri.parse(url),
+                headers: const {
+                  'User-Agent': 'MovieBoxNexus/1.2',
+                  'Accept': 'text/plain',
+                },
+              )
+              .timeout(const Duration(seconds: 5));
+          if (response.statusCode != 200) return <String>[];
+          return _parsePublicTrackers(response.body);
+        } catch (_) {
+          return <String>[];
+        }
+      }),
+    );
+    final trackers = results.firstWhere(
+      (candidate) => candidate.isNotEmpty,
+      orElse: () => <String>[],
+    );
+    if (trackers.isEmpty) return <String>[];
+    try {
+      await cacheFile.parent.create(recursive: true);
+      await cacheFile.writeAsString(trackers.join('\n'), flush: true);
+    } catch (_) {}
+    return trackers;
   }
 
   List<String> _parsePublicTrackers(String body) {
@@ -1143,52 +1374,13 @@ class CatalogEngine {
   Future<bool> probeDirectStream(StreamLink stream) async {
     final rawUrl = stream.url;
     if (!stream.isDirect || rawUrl == null) return false;
-    try {
-      final request = http.Request('GET', Uri.parse(rawUrl))
-        ..headers.addAll(stream.headers)
-        ..headers['Range'] = 'bytes=0-1023'
-        ..headers.putIfAbsent('Accept', () => '*/*');
-      final response = await _client
-          .send(request)
-          .timeout(const Duration(seconds: 3));
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        await response.stream.listen((_) {}).cancel();
-        return false;
-      }
-      final contentType = (response.headers['content-type'] ?? '')
-          .toLowerCase();
-      if (contentType.contains('text/html')) {
-        await response.stream.listen((_) {}).cancel();
-        return false;
-      }
-      final firstChunk = await response.stream.first.timeout(
-        const Duration(seconds: 2),
-        onTimeout: () => <int>[],
-      );
-      if (firstChunk.isEmpty) return false;
-      final prefix = utf8
-          .decode(firstChunk.take(512).toList(), allowMalformed: true)
-          .trimLeft()
-          .toLowerCase();
-      if (prefix.startsWith('<!doctype html') ||
-          prefix.startsWith('<html') ||
-          prefix.startsWith('{"error')) {
-        return false;
-      }
-      if (contentType.contains('mpegurl') ||
-          contentType.contains('dash+xml') ||
-          contentType.contains('mp2t') ||
-          contentType.contains('octet-stream') ||
-          contentType.startsWith('video/') ||
-          prefix.startsWith('#extm3u') ||
-          prefix.contains('<mpd')) {
-        return true;
-      }
-      // Some providers use generic content types but still honor byte ranges.
-      return response.statusCode == 206 || response.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null || !uri.hasAuthority) return false;
+
+    // Use the same media-level probe as Live TV. A reachable HLS manifest is
+    // not enough: follow its selected variant and confirm the first media
+    // segment responds before Smart Play accepts the source.
+    return _probeLiveTvUrl(uri, headers: stream.headers);
   }
 
   /// Match alternate public feeds by official channel ID first, then exact normalized name.
@@ -1393,10 +1585,74 @@ class CatalogEngine {
     _client.close();
   }
 
-  /// Cached public IPTV playlist enriched with structured country/category data.
+  /// Loads user-added remote playlists and imported files. One failed source
+  /// never prevents the built-in or other user playlists from loading.
+  Future<List<Map<String, String>>> fetchUserLiveTvChannels(
+    List<UserPlaylistSource> sources,
+  ) async {
+    final enabled = sources.where((source) => source.enabled).take(20).toList();
+    if (enabled.isEmpty) return <Map<String, String>>[];
+    final batches = await Future.wait(
+      enabled.map((source) async {
+        try {
+          String body;
+          if (source.url.isNotEmpty) {
+            final uri = Uri.tryParse(source.url);
+            if (uri == null ||
+                !uri.hasAuthority ||
+                !{'http', 'https'}.contains(uri.scheme) ||
+                uri.host.isEmpty) {
+              return <Map<String, String>>[];
+            }
+            final response = await _client
+                .get(
+                  uri,
+                  headers: const <String, String>{
+                    'User-Agent': 'MovieBoxNexus/1.2',
+                    'Accept': '*/*',
+                  },
+                )
+                .timeout(const Duration(seconds: 12));
+            if (response.statusCode != 200 ||
+                response.bodyBytes.length > 15 * 1024 * 1024) {
+              return <Map<String, String>>[];
+            }
+            body = response.body;
+          } else if (source.localPath.isNotEmpty) {
+            final file = File(source.localPath);
+            if (!await file.exists() ||
+                await file.length() > 15 * 1024 * 1024) {
+              return <Map<String, String>>[];
+            }
+            body = await file.readAsString();
+          } else {
+            return <Map<String, String>>[];
+          }
+          return parsePlaylistDocument(body, source: source.name)
+              .take(10000)
+              .map(
+                (channel) => <String, String>{
+                  ...channel,
+                  'source': 'My playlist · ${source.name}',
+                  'userPlaylistId': source.id,
+                },
+              )
+              .toList(growable: false);
+        } catch (error) {
+          debugPrint('MovieBox custom playlist ${source.name} failed: $error');
+          return <Map<String, String>>[];
+        }
+      }),
+    );
+    return _uniqueLiveChannels(batches.expand((batch) => batch).toList());
+  }
+
+  /// Combines built-in cached feeds with every enabled user playlist.
   Future<List<Map<String, String>>> fetchIptv({
     bool forceRefresh = false,
+    List<UserPlaylistSource> userSources = const <UserPlaylistSource>[],
   }) async {
+    final userChannelsFuture = fetchUserLiveTvChannels(userSources);
     final support = await getApplicationSupportDirectory();
     final cacheFile = File(support.path + '/live_tv_multi_source_v3.m3u');
     String? cachedBody;
@@ -1421,19 +1677,37 @@ class CatalogEngine {
     )) {
       if (!isFresh) unawaited(_refreshIptvPlaylist(cacheFile));
       final metadata = await _loadLiveTvMetadata();
-      return enrichLiveTvChannels(cachedChannels, metadata);
+      final userChannels = await userChannelsFuture;
+      return enrichLiveTvChannels(
+        _uniqueLiveChannels(<Map<String, String>>[
+          ...cachedChannels,
+          ...userChannels,
+        ]),
+        metadata,
+      );
     }
     final metadataFuture = _loadLiveTvMetadata(forceRefresh: forceRefresh);
     final channels = await _refreshIptvPlaylist(cacheFile);
+    final userChannels = await userChannelsFuture;
     if (channels.isNotEmpty) {
-      return enrichLiveTvChannels(channels, await metadataFuture);
+      return enrichLiveTvChannels(
+        _uniqueLiveChannels(<Map<String, String>>[
+          ...channels,
+          ...userChannels,
+        ]),
+        await metadataFuture,
+      );
     }
-    // Preserve a previously parsed list during an upstream outage, never an empty cache.
     if (cachedChannels.isNotEmpty) {
-      final metadata = await _loadLiveTvMetadata();
-      return enrichLiveTvChannels(cachedChannels, metadata);
+      return enrichLiveTvChannels(
+        _uniqueLiveChannels(<Map<String, String>>[
+          ...cachedChannels,
+          ...userChannels,
+        ]),
+        await _loadLiveTvMetadata(),
+      );
     }
-    return <Map<String, String>>[];
+    return enrichLiveTvChannels(userChannels, await metadataFuture);
   }
 
   Future<List<Map<String, String>>> _refreshIptvPlaylist(File cacheFile) async {
@@ -1792,7 +2066,7 @@ class EmbeddedTorrentService {
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
         if (fileIdx != null) 'fileIdx': fileIdx,
-        if (trackers.isNotEmpty) 'trackers': trackers.take(24).toList(),
+        if (trackers.isNotEmpty) 'trackers': trackers.take(28).toList(),
       },
     );
     final uri = Uri.tryParse(url ?? '');
@@ -1814,6 +2088,12 @@ class EmbeddedTorrentService {
     return snapshot ?? <String, dynamic>{};
   }
 
+  Future<void> cleanupCache() async {
+    await _channel
+        .invokeMethod<void>('cleanupCache')
+        .timeout(const Duration(seconds: 8));
+  }
+
   void dispose() {
     _initialized = false;
     unawaited(
@@ -1826,6 +2106,13 @@ class EmbeddedTorrentService {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Remove torrent payloads left behind if Android killed the previous process.
+  // This lightweight call does not start libtorrent or delay the first frame.
+  unawaited(
+    EmbeddedTorrentService.instance.cleanupCache().catchError((Object error) {
+      debugPrint('MovieBox startup torrent cache cleanup skipped: $error');
+    }),
+  );
   // Native torrent startup is lazy; catalog navigation must not wait for it.
   PaintingBinding.instance.imageCache
     ..maximumSize = 250
@@ -1872,6 +2159,7 @@ class _RootShellState extends State<RootShell> {
   final engine = CatalogEngine();
   final addonManager = AddonManager();
   List<ManagedAddon> managedAddons = [];
+  List<UserPlaylistSource> liveTvPlaylists = <UserPlaylistSource>[];
 
   final watchlist = <String>{};
   final watchedEpisodes = <String>{};
@@ -1923,6 +2211,23 @@ class _RootShellState extends State<RootShell> {
         // Ignore malformed local resume cache; the app remains usable.
       }
 
+      final savedPlaylists = p.getStringList('live_tv_playlists') ?? <String>[];
+      for (final item in savedPlaylists) {
+        try {
+          final decoded = jsonDecode(item);
+          if (decoded is Map) {
+            final source = UserPlaylistSource.fromJson(
+              Map<String, dynamic>.from(decoded),
+            );
+            if (source.id.isNotEmpty &&
+                (source.url.isNotEmpty || source.localPath.isNotEmpty)) {
+              liveTvPlaylists.add(source);
+            }
+          }
+        } catch (_) {
+          // Ignore one damaged playlist record; preserve the rest.
+        }
+      }
       final cached = p.getStringList('managed_addons') ?? [];
       for (final item in cached) {
         try {
@@ -1947,6 +2252,10 @@ class _RootShellState extends State<RootShell> {
     await p.setStringList(
       'managed_addons',
       managedAddons.map((a) => jsonEncode(a.toJson())).toList(),
+    );
+    await p.setStringList(
+      'live_tv_playlists',
+      liveTvPlaylists.map((source) => jsonEncode(source.toJson())).toList(),
     );
   }
 
@@ -2004,6 +2313,131 @@ class _RootShellState extends State<RootShell> {
     if (!mounted) return;
     setState(() => managedAddons.add(addon));
     await _save();
+  }
+
+  Future<void> _addLiveTvPlaylistUrl(String name, String rawUrl) async {
+    final uri = Uri.tryParse(rawUrl.trim());
+    if (uri == null ||
+        !uri.hasAuthority ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      throw const FormatException(
+        'Valid HTTP/HTTPS M3U playlist URL enter karein.',
+      );
+    }
+    if (liveTvPlaylists.any(
+      (source) => source.url.isNotEmpty && source.url == uri.toString(),
+    )) {
+      throw const FormatException('Ye playlist pehle se add hai.');
+    }
+    final response = await http
+        .get(
+          uri,
+          headers: const <String, String>{
+            'User-Agent': 'MovieBoxNexus/1.2',
+            'Accept': '*/*',
+          },
+        )
+        .timeout(const Duration(seconds: 15));
+    if (response.statusCode != 200) {
+      throw Exception('Playlist HTTP ${response.statusCode}');
+    }
+    if (response.bodyBytes.length > 15 * 1024 * 1024) {
+      throw const FormatException('Playlist 15 MB se badi hai.');
+    }
+    if (parsePlaylistDocument(response.body).isEmpty) {
+      throw const FormatException(
+        'Readable M3U/M3U8 playlist ya URL-per-line text nahi mila.',
+      );
+    }
+    final source = UserPlaylistSource(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      name: name.trim().isEmpty ? uri.host : name.trim(),
+      url: uri.toString(),
+    );
+    if (!mounted) return;
+    setState(() => liveTvPlaylists.add(source));
+    await _save();
+  }
+
+  Future<void> _importLiveTvPlaylistFile(
+    String fileName,
+    String contents,
+  ) async {
+    final lowerName = fileName.toLowerCase();
+    if (!RegExp(r'\.(m3u|m3u8|txt)$').hasMatch(lowerName)) {
+      throw const FormatException(
+        'Sirf .m3u, .m3u8 aur .txt files supported hain.',
+      );
+    }
+    if (contents.isEmpty || contents.length > 15 * 1024 * 1024) {
+      throw const FormatException(
+        'Playlist empty hai ya 15 MB limit se badi hai.',
+      );
+    }
+    if (parsePlaylistDocument(contents).isEmpty) {
+      throw const FormatException(
+        'File mein valid M3U entries ya HTTP(S) stream URLs nahi mile.',
+      );
+    }
+    final id = DateTime.now().microsecondsSinceEpoch.toString();
+    final support = await getApplicationSupportDirectory();
+    final directory = Directory(
+      support.path + Platform.pathSeparator + 'user_playlists',
+    );
+    await directory.create(recursive: true);
+    final extension = lowerName.endsWith('.m3u8')
+        ? '.m3u8'
+        : lowerName.endsWith('.txt')
+        ? '.txt'
+        : '.m3u';
+    final file = File(
+      directory.path + Platform.pathSeparator + 'playlist_$id$extension',
+    );
+    await file.writeAsString(contents, flush: true);
+    final source = UserPlaylistSource(
+      id: id,
+      name: fileName.trim().isEmpty ? 'Imported playlist' : fileName.trim(),
+      localPath: file.path,
+    );
+    if (!mounted) {
+      await file.delete();
+      return;
+    }
+    setState(() => liveTvPlaylists.add(source));
+    try {
+      await _save();
+    } catch (_) {
+      await file.delete();
+      rethrow;
+    }
+  }
+
+  Future<void> _setLiveTvPlaylistEnabled(
+    UserPlaylistSource source,
+    bool enabled,
+  ) async {
+    final index = liveTvPlaylists.indexWhere((item) => item.id == source.id);
+    if (index < 0) return;
+    setState(() {
+      liveTvPlaylists[index] = liveTvPlaylists[index].copyWith(
+        enabled: enabled,
+      );
+    });
+    await _save();
+  }
+
+  Future<void> _removeLiveTvPlaylist(UserPlaylistSource source) async {
+    setState(() => liveTvPlaylists.removeWhere((item) => item.id == source.id));
+    await _save();
+    if (source.localPath.isNotEmpty) {
+      try {
+        final file = File(source.localPath);
+        if (await file.exists()) await file.delete();
+      } catch (error) {
+        debugPrint('Could not remove imported playlist file: $error');
+      }
+    }
   }
 
   Future<void> _removeAddon(ManagedAddon addon) async {
@@ -2115,30 +2549,111 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
     } catch (_) {}
   }
 
+  /// Apply display configuration before the native video surface exists.
+  /// PlayerScreen itself never rotates the Activity during Media3 initialization.
+  Future<void> _preparePlayerDisplay() async {
+    try {
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.immersiveSticky,
+      ).timeout(const Duration(seconds: 5));
+      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]).timeout(const Duration(seconds: 5));
+
+      // setPreferredOrientations acknowledges the platform request; wait until
+      // Android has actually reported landscape metrics before creating ExoPlayer.
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (DateTime.now().isBefore(deadline)) {
+        final views = WidgetsBinding.instance.platformDispatcher.views;
+        if (views.isNotEmpty) {
+          final size = views.first.physicalSize;
+          if (size.width > size.height) {
+            await WidgetsBinding.instance.endOfFrame;
+            return;
+          }
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      debugPrint(
+        'MovieBox display did not confirm landscape; opening player in the stable current orientation.',
+      );
+    } catch (error) {
+      debugPrint('MovieBox player display preparation warning: $error');
+    }
+  }
+
   void _pushPlayer(
     String title,
     String url,
     String key, {
     VoidCallback? onNext,
     Map<String, String>? headers,
+    bool isLive = false,
   }) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => PlayerScreen(
-          title: title,
-          url: url,
-          initialMs: resumeMs[key] ?? 0,
-          onSave: (ms) async {
-            resumeMs[key] = ms;
-            resumeTitles[key] = title;
-            await _save();
-          },
-          onNext: onNext,
-          headers: headers ?? const <String, String>{},
-        ),
+    unawaited(
+      _pushPlayerAfterDisplayPreparation(
+        title,
+        url,
+        key,
+        onNext: onNext,
+        headers: headers,
+        isLive: isLive,
       ),
     );
+  }
+
+  Future<void> _pushPlayerAfterDisplayPreparation(
+    String title,
+    String url,
+    String key, {
+    VoidCallback? onNext,
+    Map<String, String>? headers,
+    bool isLive = false,
+  }) async {
+    await _preparePlayerDisplay();
+    if (!mounted) {
+      await _restoreCatalogDisplay();
+      return;
+    }
+    try {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => PlayerScreen(
+            title: title,
+            url: url,
+            initialMs: resumeMs[key] ?? 0,
+            onSave: (ms) async {
+              resumeMs[key] = ms;
+              resumeTitles[key] = title;
+              await _save();
+            },
+            onNext: onNext,
+            headers: headers ?? const <String, String>{},
+            isLive: isLive,
+          ),
+        ),
+      );
+    } finally {
+      await _restoreCatalogDisplay();
+    }
+  }
+
+  Future<void> _restoreCatalogDisplay() async {
+    try {
+      await SystemChrome.setPreferredOrientations(const <DeviceOrientation>[
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]).timeout(const Duration(seconds: 5));
+      await SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.edgeToEdge,
+      ).timeout(const Duration(seconds: 5));
+    } catch (error) {
+      debugPrint('MovieBox catalog display restore warning: $error');
+    }
   }
 
   void _openDetails(Meta m) {
@@ -2390,7 +2905,15 @@ document.getElementById('play').addEventListener('submit',async e=>{e.preventDef
       case 3:
         return MoodScreen(engine: engine, onShowDetails: _openDetails);
       case 4:
-        return LiveTvScreen(engine: engine, onPlay: _pushPlayer);
+        return LiveTvScreen(
+          engine: engine,
+          onPlay: _pushPlayer,
+          userPlaylists: liveTvPlaylists,
+          onAddPlaylistUrl: _addLiveTvPlaylistUrl,
+          onImportPlaylist: _importLiveTvPlaylistFile,
+          onSetPlaylistEnabled: _setLiveTvPlaylistEnabled,
+          onRemovePlaylist: _removeLiveTvPlaylist,
+        );
       case 5:
         return HubScreen(
           engine: engine,
@@ -3044,6 +3567,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _smartPlay(Meta m) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
       final streams = await widget.engine.resolveStreams(
         m.type,
@@ -3053,7 +3577,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       if (streams.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           const SnackBar(
             content: Text(
               'No stream results. Check addon status and configuration.',
@@ -3079,15 +3603,74 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
       if (!mounted) return;
-      final torrentOnly = streams.every((stream) => stream.isTorrent);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            torrentOnly
-                ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
-                : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.',
+
+      // The home-screen Play Now action must use the same embedded torrent
+      // bridge as the Details screen. Previously it stopped here with a
+      // "direct HTTP source unavailable" message whenever addons returned
+      // magnets only, even though the app had a native torrent player.
+      final torrents = rankTorrentPlaybackCandidates(streams);
+      if (torrents.isNotEmpty) {
+        final reachable = torrents
+            .where((stream) => stream.seeders == null || stream.seeders! > 0)
+            .toList();
+        final selected = reachable.isNotEmpty
+            ? reachable.first
+            : torrents.first;
+        if (selected.seeders == 0) {
+          final tryAnyway = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              backgroundColor: _panel,
+              title: const Text('No seeders reported'),
+              content: const Text(
+                'This provider reports zero seeders. Playback may remain at 00:00 because no peer can provide the first video pieces. Choose another source or try this swarm anyway.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Choose another source'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Try anyway'),
+                ),
+              ],
+            ),
+          );
+          if (!mounted || tryAnyway != true) return;
+        }
+
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Starting built-in torrent playback…'),
+            duration: Duration(seconds: 8),
           ),
-          duration: const Duration(seconds: 7),
+        );
+        final supplementalTrackers = await widget.engine
+            .fetchSupplementalTrackers();
+        final trackers = <String>{
+          ...supplementalTrackers.take(16),
+          ...selected.trackers.take(12),
+        }.toList(growable: false);
+        final url = await EmbeddedTorrentService.instance.startPlayback(
+          selected.infoHash!,
+          title: m.name,
+          fileIdx: selected.fileIdx,
+          trackers: trackers,
+        );
+        if (!mounted) return;
+        messenger.hideCurrentSnackBar();
+        widget.onPlay(m.name, url, m.id);
+        return;
+      }
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Koi verified direct stream ya torrent source nahi mila. Provider refresh karein ya doosra source chunein.',
+          ),
+          duration: Duration(seconds: 7),
         ),
       );
     } catch (error, stackTrace) {
@@ -3095,7 +3678,8 @@ class _HomeScreenState extends State<HomeScreen> {
         'MovieBox Smart Play failed for ${m.id}: $error\\n$stackTrace',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
         SnackBar(
           content: Text('Could not start ${m.name}: $error'),
           duration: const Duration(seconds: 8),
@@ -3114,15 +3698,32 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class LiveTvScreen extends StatefulWidget {
   final CatalogEngine engine;
+  final List<UserPlaylistSource> userPlaylists;
+  final Future<void> Function(String name, String url)? onAddPlaylistUrl;
+  final Future<void> Function(String fileName, String contents)?
+  onImportPlaylist;
+  final Future<void> Function(UserPlaylistSource source, bool enabled)?
+  onSetPlaylistEnabled;
+  final Future<void> Function(UserPlaylistSource source)? onRemovePlaylist;
   final void Function(
     String,
     String,
     String, {
     VoidCallback? onNext,
     Map<String, String>? headers,
+    required bool isLive,
   })
   onPlay;
-  const LiveTvScreen({super.key, required this.engine, required this.onPlay});
+  const LiveTvScreen({
+    super.key,
+    required this.engine,
+    required this.onPlay,
+    this.userPlaylists = const <UserPlaylistSource>[],
+    this.onAddPlaylistUrl,
+    this.onImportPlaylist,
+    this.onSetPlaylistEnabled,
+    this.onRemovePlaylist,
+  });
   @override
   State<LiveTvScreen> createState() => _LiveTvScreenState();
 }
@@ -3210,6 +3811,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     try {
       final channels = await widget.engine.fetchIptv(
         forceRefresh: forceRefresh,
+        userSources: widget.userPlaylists,
       );
       if (!mounted) return;
       setState(() {
@@ -3243,6 +3845,224 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             : 'Refresh failed; showing the cached channel list.';
       });
     }
+  }
+
+  static const MethodChannel _playlistPickerChannel = MethodChannel(
+    'moviebox_nexus/playlist',
+  );
+
+  Future<void> _showAddPlaylistDialog() async {
+    if (widget.onAddPlaylistUrl == null && widget.onImportPlaylist == null)
+      return;
+    final nameController = TextEditingController();
+    final urlController = TextEditingController();
+    final action = await showDialog<Map<String, String>>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: _panel,
+        title: const Text('Add your Live TV playlist'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                style: const TextStyle(color: _textPri),
+                decoration: const InputDecoration(
+                  labelText: 'Playlist name (optional)',
+                  hintText: 'My India channels',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: urlController,
+                keyboardType: TextInputType.url,
+                style: const TextStyle(color: _textPri),
+                decoration: const InputDecoration(
+                  labelText: 'M3U / M3U8 playlist URL',
+                  hintText: 'https://provider.example/playlist.m3u',
+                ),
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Supported: M3U/M3U8 links, imported .m3u/.m3u8 files, and .txt files with one HTTP(S) stream URL per line. Xtream providers can use their generated M3U link.',
+                style: TextStyle(color: _muted, fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Cancel'),
+          ),
+          if (widget.onImportPlaylist != null)
+            OutlinedButton.icon(
+              onPressed: () => Navigator.pop(dialogContext, <String, String>{
+                'kind': 'file',
+                'name': nameController.text.trim(),
+              }),
+              icon: const Icon(Icons.folder_open),
+              label: const Text('Import file'),
+            ),
+          if (widget.onAddPlaylistUrl != null)
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, <String, String>{
+                'kind': 'url',
+                'name': nameController.text.trim(),
+                'url': urlController.text.trim(),
+              }),
+              child: const Text('Add URL'),
+            ),
+        ],
+      ),
+    );
+    final requestedName = nameController.text.trim();
+    nameController.dispose();
+    urlController.dispose();
+    if (!mounted || action == null) return;
+    try {
+      if (action['kind'] == 'url') {
+        final url = action['url'] ?? '';
+        if (url.isEmpty)
+          throw const FormatException('Playlist URL enter karein.');
+        await widget.onAddPlaylistUrl?.call(
+          action['name'] ?? requestedName,
+          url,
+        );
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Playlist saved. Channels are loading.'),
+          ),
+        );
+      } else if (action['kind'] == 'file') {
+        final picked = await _playlistPickerChannel
+            .invokeMapMethod<String, dynamic>('pickPlaylistFile');
+        if (picked == null) return;
+        final fileName = (picked['name'] ?? 'playlist.m3u').toString();
+        final contents = (picked['content'] ?? '').toString();
+        if (contents.isEmpty)
+          throw const FormatException('Selected playlist file is empty.');
+        final customName = action['name']?.trim() ?? '';
+        final name = customName.isEmpty ? fileName : customName;
+        await widget.onImportPlaylist?.call(name, contents);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$name imported. Channels are loading.')),
+        );
+      }
+      if (mounted) await _load(forceRefresh: true);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Playlist add failed: $error'),
+          duration: const Duration(seconds: 8),
+        ),
+      );
+    }
+  }
+
+  Future<void> _managePlaylists() async {
+    if (widget.userPlaylists.isEmpty) {
+      await _showAddPlaylistDialog();
+      return;
+    }
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _panel,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: StatefulBuilder(
+          builder: (context, setSheetState) => Padding(
+            padding: const EdgeInsets.fromLTRB(16, 18, 16, 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'My playlists',
+                        style: TextStyle(
+                          color: _cyan,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () {
+                        Navigator.pop(sheetContext);
+                        _showAddPlaylistDialog();
+                      },
+                      icon: const Icon(Icons.add, color: _cyan),
+                      tooltip: 'Add playlist',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: widget.userPlaylists.map((source) {
+                      final location = source.isImportedFile
+                          ? 'Imported file · stored on this device'
+                          : (Uri.tryParse(source.url)?.host ?? source.url);
+                      return ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          source.name,
+                          style: const TextStyle(
+                            color: _textPri,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        subtitle: Text(
+                          location,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: _muted, fontSize: 11),
+                        ),
+                        leading: Switch(
+                          value: source.enabled,
+                          onChanged: widget.onSetPlaylistEnabled == null
+                              ? null
+                              : (enabled) async {
+                                  await widget.onSetPlaylistEnabled!(
+                                    source,
+                                    enabled,
+                                  );
+                                  setSheetState(() {});
+                                  await _load(forceRefresh: true);
+                                },
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Remove playlist',
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.redAccent,
+                          ),
+                          onPressed: widget.onRemovePlaylist == null
+                              ? null
+                              : () async {
+                                  await widget.onRemovePlaylist!(source);
+                                  setSheetState(() {});
+                                  await _load(forceRefresh: true);
+                                },
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _playChannel(Map<String, String> channel) async {
@@ -3294,6 +4114,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         working['url'] ?? '',
         working['url'] ?? '',
         headers: headers,
+        isLive: true,
       );
     } catch (error) {
       if (!mounted) return;
@@ -3381,6 +4202,37 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
             ],
           ),
         ),
+        if (widget.onAddPlaylistUrl != null || widget.onImportPlaylist != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _showAddPlaylistDialog,
+                    icon: const Icon(Icons.playlist_add, size: 18),
+                    label: const Text('Add playlist'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _cyan,
+                      side: const BorderSide(color: Colors.white24),
+                    ),
+                  ),
+                ),
+                if (widget.userPlaylists.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _managePlaylists,
+                    icon: const Icon(Icons.library_music, size: 18),
+                    label: Text('My sources (${widget.userPlaylists.length})'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: _textPri,
+                      side: const BorderSide(color: Colors.white24),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Row(
@@ -4564,8 +5416,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
 
       // No verified direct URL: use the healthiest available swarm, ranked by
       // seeders first and then quality. P2P startup remains swarm-dependent.
-      final torrents = _streams.where((stream) => stream.isTorrent).toList()
-        ..sort((a, b) => b.score.compareTo(a.score));
+      final torrents = rankTorrentPlaybackCandidates(_streams);
       final reachableCandidates = torrents
           .where((stream) => stream.seeders == null || stream.seeders! > 0)
           .toList();
@@ -4637,8 +5488,8 @@ class _DetailsSheetState extends State<DetailsSheet> {
           .fetchSupplementalTrackers();
       // Trackerlist's daily health-ranked 20 lead; keep a few add-on hints too.
       final trackers = <String>{
-        ...supplementalTrackers.take(20),
-        ...stream.trackers.take(4),
+        ...supplementalTrackers.take(16),
+        ...stream.trackers.take(12),
       }.toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,

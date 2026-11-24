@@ -142,6 +142,16 @@ jobs:
               repositoryHandler.google()
           }
 
+          // Maven Central returned HTTP 403 for the LibVLC AAR on the hosted runner.
+          // This mirror is restricted to VideoLAN artifacts only.
+          def addVideoLanRepository = { repositoryHandler ->
+              repositoryHandler.maven {
+                  name = 'VideoLanLiferayFallback'
+                  url = new URI('https://repository-cdn.liferay.com/nexus/content/repositories/public/')
+                  content { includeGroup('org.videolan.android') }
+              }
+          }
+
           // Plugin markers and Gradle's own Kotlin DSL plugin must resolve from
           // the Plugin Portal first. Keep mirrors as fallbacks for normal modules.
           gradle.beforeSettings { settings ->
@@ -156,6 +166,9 @@ jobs:
                   'PluginFallback'
               )
 
+              addVideoLanRepository.call(
+                  settings.dependencyResolutionManagement.repositories
+              )
               addMovieBoxMirrors.call(
                   settings.dependencyResolutionManagement.repositories,
                   'Dependency'
@@ -488,6 +501,14 @@ jobs:
           }
           '''
 
+          videolan_repository = '''repositories {
+              maven {
+                  url = uri("https://repository-cdn.liferay.com/nexus/content/repositories/public/")
+                  content { includeGroup("org.videolan.android") }
+              }
+          }
+          '''
+
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
 
@@ -508,6 +529,8 @@ jobs:
           # Gradle reports that project repositories override settings repositories.
           if 'https://dl.frostwire.com/maven' not in app_text:
               app_text += '\n\n' + frostwire_repository + '\n'
+          if 'repository-cdn.liferay.com/nexus/content/repositories/public/' not in app_text:
+              app_text += '\n\n' + videolan_repository + '\n'
 
           dependency = 'jlibtorrent-android:2.0.15.3@aar'
           if dependency not in app_text:
@@ -531,6 +554,8 @@ jobs:
           final_app = app_gradle.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in final_app:
               raise SystemExit('FrostWire Maven repository is missing from the app project repositories.')
+          if 'repository-cdn.liferay.com/nexus/content/repositories/public/' not in final_app:
+              raise SystemExit('VideoLAN fallback Maven repository is missing from the app project repositories.')
           if dependency not in final_app:
               raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
           if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
@@ -540,6 +565,8 @@ jobs:
           init_text = init_script.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in init_text:
               raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
+          if 'VideoLanLiferayFallback' not in init_text:
+              raise SystemExit('VideoLAN fallback repository is missing from the Gradle init script.')
           if "task.kotlinOptions.jvmTarget = '17'" not in init_text:
               raise SystemExit('Kotlin JVM target alignment is missing from the Gradle init script.')
           print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 in project and settings repositories (all ABIs, minSdk 26).')
@@ -569,7 +596,7 @@ jobs:
           PY
 
       - name: Run deterministic native JVM tests
-        run: ./android/gradlew -p android testDebugUnitTest
+        run: ./android/gradlew -p android :app:testDebugUnitTest
 
       - name: Format Dart source
         id: dart-format
@@ -915,7 +942,7 @@ jobs:
             focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
             main_window_block="$(printf '%s\n' "$window_dump" | awk '
               /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
-              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+              capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {capture=0}
               capture {print}
             ')"
             main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
@@ -950,7 +977,7 @@ jobs:
           focused_app_line="$(printf '%s\n' "$activity_dump" | grep -m 1 'mFocusedApp=' || true)"
           main_window_block="$(printf '%s\n' "$window_dump" | awk '
             /Window #[0-9]+ Window\{.*com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity\}/ {capture=1}
-            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {exit}
+            capture && /^  Window #[0-9]+ Window\{/ && !/com\.moviebox\.nexus\/com\.moviebox\.nexus\.MainActivity/ {capture=0}
             capture {print}
           ')"
           main_window_drawn="$(printf '%s\n' "$main_window_block" | grep -m 1 -E 'mDrawState=HAS_DRAWN' || true)"
@@ -1257,16 +1284,43 @@ jobs:
           state_file="$RUNNER_TEMP/moviebox-local-seed.json"
           mkdir -p "$seed_dir"
 
-          # Keep the CI fixture inside the emulator's default 320x240 H.264
-          # decoder configuration and omit audio so headless CI does not depend
-          # on a host audio device. CBR keeps the file above libtorrent's 8 MiB
-          # video-selection threshold while retaining real decodable video frames.
-          ffmpeg -hide_banner -loglevel error -y \
-            -f lavfi -i "testsrc2=size=320x240:rate=24" \
-            -t 48 -an -c:v libx264 -preset ultrafast -tune zerolatency \
+          # Use a real 30-second Big Buck Bunny clip (CC BY 3.0), pinned to a
+          # specific source commit and verified against its Git blob SHA-1.
+          # This tests moving picture content and the original soundtrack,
+          # not a generated test pattern or a synthetic sine-wave audio track.
+          source_video="$RUNNER_TEMP/moviebox-big-buck-bunny-source.mp4"
+          source_url="https://raw.githubusercontent.com/bower-media-samples/big-buck-bunny-1080p-60fps-30s/c4c7ec6aa5d68944d32faa28f332f999c8866cbc/video.mp4"
+          if ! curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time 180 "$source_url" -o "$source_video"; then
+            fallback_url="https://cdn.jsdelivr.net/gh/bower-media-samples/big-buck-bunny-1080p-60fps-30s@c4c7ec6aa5d68944d32faa28f332f999c8866cbc/video.mp4"
+            curl --fail --location --silent --show-error --retry 3 --connect-timeout 20 --max-time 180 "$fallback_url" -o "$source_video"
+          fi
+          python3 - "$source_video" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          data = path.read_bytes()
+          expected_size = 14_423_025
+          expected_blob = "2edb1cbfe160977d26ae71580094530512b5f41d"
+          if len(data) != expected_size:
+              raise SystemExit(f"Big Buck Bunny fixture size mismatch: {len(data)} bytes")
+          actual_blob = hashlib.sha1(b"blob " + str(len(data)).encode() + bytes([0]) + data).hexdigest()
+          if actual_blob != expected_blob:
+              raise SystemExit(f"Big Buck Bunny fixture checksum mismatch: {actual_blob}")
+          print("Verified Big Buck Bunny CC BY 3.0: (c) 2008 Blender Foundation / www.bigbuckbunny.org")
+          PY
+
+          # Re-encode the real clip to device-friendly H.264 Baseline + AAC.
+          # CBR keeps the 30-second output above the torrent engine's 8 MiB threshold.
+          ffmpeg -hide_banner -loglevel error -y -i "$source_video" \
+            -t 30 -map 0:v:0 -map 0:a:0 \
+            -vf "scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2,fps=24" \
+            -c:v libx264 -preset ultrafast -tune zerolatency \
             -profile:v baseline -level 3.0 -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
-            -b:v 1800k -minrate 1800k -maxrate 1800k -bufsize 3600k \
+            -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k \
             -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -ar 48000 -ac 2 \
             -movflags +faststart "$seed_dir/moviebox-ci-video.mp4"
 
           test "$(stat -c %s "$seed_dir/moviebox-ci-video.mp4")" -gt 8388608
@@ -1274,11 +1328,18 @@ jobs:
             -show_entries stream=codec_name,profile,width,height,nb_read_frames \
             -of default=noprint_wrappers=1 "$seed_dir/moviebox-ci-video.mp4")"
           printf '%s\n' "$video_probe"
+          video_codec="$(printf '%s\n' "$video_probe" | sed -n 's/^codec_name=//p')"
+          video_width="$(printf '%s\n' "$video_probe" | sed -n 's/^width=//p')"
+          video_height="$(printf '%s\n' "$video_probe" | sed -n 's/^height=//p')"
           video_frames="$(printf '%s\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
-          test "${video_frames:-0}" -ge 1000
+          test "$video_codec" = "h264"
+          test "$video_width" = "320"
+          test "$video_height" = "240"
+          test "${video_frames:-0}" -ge 600
           audio_codec="$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_name -of csv=p=0 "$seed_dir/moviebox-ci-video.mp4")"
-          test -z "$audio_codec"
+          printf 'Audio codec: %s\n' "$audio_codec"
+          test "$audio_codec" = "aac"
           ffmpeg -hide_banner -v error -i "$seed_dir/moviebox-ci-video.mp4" -f null -
 
           # Serve the same known-good MP4 to Media3 over a real HTTP byte-range

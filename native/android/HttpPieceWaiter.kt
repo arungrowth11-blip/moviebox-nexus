@@ -1,5 +1,7 @@
 package com.moviebox.nexus
 
+import com.frostwire.jlibtorrent.Priority
+import java.io.File
 import kotlin.math.min
 
 /**
@@ -57,9 +59,42 @@ internal object HttpRangePolicy {
     // Do not reject a torrent startup before a normal full piece can be verified.
     const val FIRST_RESPONSE_PIECE_WAIT_MS = 45_000L
     const val STREAM_PIECE_WAIT_MS = 180_000L
-    const val PREFETCH_PIECES = 3
-    const val PREFETCH_DEADLINE_STEP_MS = 2_500
+    // Keep a larger verified-piece window in flight so libtorrent can
+    // schedule useful blocks across multiple connected peers instead of
+    // starving high-bandwidth or higher-latency links with a 1 MiB window.
+    // Default to the former 16-piece window until live swarm measurements exist.
+    const val PREFETCH_PIECES = 15
+    const val PREFETCH_DEADLINE_STEP_MS = 1_000
     const val RETRY_AFTER_SECONDS = 1
+    const val BASE_PREFETCH_WINDOW_BYTES = 16L * 1024L * 1024L
+    const val MAX_PREFETCH_WINDOW_BYTES = 64L * 1024L * 1024L
+    const val MAX_PREFETCH_LOOK_AHEAD_PIECES = 63
+
+    /**
+     * Size the sliding request window from this torrent's measured swarm state.
+     *
+     * Libtorrent still chooses the actual peer/block assignments. This policy
+     * only keeps enough consecutive pieces eligible so several peers can serve
+     * different blocks without building an unbounded mobile cache backlog.
+     */
+    fun adaptiveLookAheadPieces(
+        pieceLengthBytes: Int,
+        connectedSources: Int,
+        downloadRateBytesPerSecond: Long
+    ): Int {
+        require(pieceLengthBytes > 0) { "pieceLengthBytes must be positive" }
+
+        val peerAllowance = connectedSources.coerceIn(0, 32).toLong() * 512L * 1024L
+        val rateAllowance = downloadRateBytesPerSecond
+            .coerceAtLeast(0L)
+            .coerceAtMost(16L * 1024L * 1024L) * 2L
+        val targetBytes = (BASE_PREFETCH_WINDOW_BYTES + peerAllowance + rateAllowance)
+            .coerceAtMost(MAX_PREFETCH_WINDOW_BYTES)
+        val piecesInWindow = (targetBytes + pieceLengthBytes - 1L) / pieceLengthBytes
+        return (piecesInWindow - 1L)
+            .coerceIn(0L, MAX_PREFETCH_LOOK_AHEAD_PIECES.toLong())
+            .toInt()
+    }
 
     fun playbackWindow(
         currentPiece: Int,
@@ -160,4 +195,87 @@ internal object HttpRangePolicy {
         val pieceRemaining = pieceLength - (globalOffset % pieceLength).toInt()
         return min(min(remainingBytes, pieceRemaining.toLong()), maxBufferBytes.toLong()).toInt()
     }
+}
+
+
+/**
+ * Tracks the last piece verified for one sequential HTTP response. The reader
+ * may split a piece into bounded buffers without waiting for it more than once.
+ */
+internal class HttpPieceReadGate {
+    private var lastVerifiedPieceIndex: Int? = null
+
+    fun needsWait(pieceIndex: Int): Boolean {
+        require(pieceIndex >= 0) { "pieceIndex must be non-negative" }
+        return lastVerifiedPieceIndex != pieceIndex
+    }
+
+    fun markVerified(pieceIndex: Int) {
+        require(pieceIndex >= 0) { "pieceIndex must be non-negative" }
+        lastVerifiedPieceIndex = pieceIndex
+    }
+}
+
+
+/**
+ * Storage policy for temporary torrent media. Stream directories must be
+ * direct children of the dedicated cache root. Canonical-path checks prevent
+ * cleanup from escaping that root through malformed paths or symlinks.
+ */
+internal object TorrentStartupCleanupPolicy {
+    // Once a stream target exists, HTTP readers may be using its file. The
+    // reader-aware stop path must own deletion instead of the startup worker.
+    fun shouldDeleteCacheBeforeReaders(targetReady: Boolean): Boolean = !targetReady
+}
+
+internal object TorrentCachePolicy {
+    const val DIRECTORY_NAME = "moviebox-torrents"
+
+    fun clearRoot(root: File, expectedParent: File): Boolean {
+        val canonicalRoot = root.canonicalFile
+        val canonicalParent = expectedParent.canonicalFile
+        if (canonicalRoot.parentFile != canonicalParent) return false
+        return !root.exists() || root.deleteRecursively()
+    }
+
+    fun deleteStreamDirectory(streamDir: File, cacheRoot: File): Boolean {
+        val canonicalRoot = cacheRoot.canonicalFile
+        val canonicalStream = streamDir.canonicalFile
+        if (canonicalStream.parentFile != canonicalRoot || canonicalStream == canonicalRoot) {
+            return false
+        }
+        return !streamDir.exists() || streamDir.deleteRecursively()
+    }
+}
+
+
+/**
+ * Torrent media is streamed from explicitly requested pieces only. Leaving the
+ * full selected file at NORMAL would let libtorrent download the rest of a
+ * movie in the background while the viewer is still watching.
+ */
+internal object TorrentDownloadPriorityPolicy {
+    val activePiece: Priority = Priority.SEVEN
+    val inactivePiece: Priority = Priority.IGNORE
+
+    fun filePriorities(fileCount: Int): Array<Priority> {
+        require(fileCount > 0) { "fileCount must be positive" }
+        return Array(fileCount) { Priority.IGNORE }
+    }
+}
+
+
+/**
+ * Distinguishes a valid HTTP request-side half-close from a socket read failure.
+ * EOF on the request direction does not prove the peer has closed its response
+ * direction; only an actual read error should cancel a pending body wait.
+ */
+internal enum class HttpRequestReadOutcome {
+    END_OF_STREAM,
+    IO_ERROR
+}
+
+internal object HttpRequestReadPolicy {
+    fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
+        outcome == HttpRequestReadOutcome.IO_ERROR
 }

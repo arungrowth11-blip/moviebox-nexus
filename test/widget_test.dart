@@ -25,6 +25,124 @@ void main() {
     expect(channels.single['group'], 'News');
   });
 
+  test('custom playlist parser accepts M3U8 metadata and plain URL text', () {
+    final m3u = parsePlaylistDocument(
+      '#EXTM3U\n'
+      '#EXTINF:-1 tvg-id="TestNews.in" group-title="News",Test News\n'
+      'https://tv.example.test/live/index.m3u8\n',
+    );
+    expect(m3u, hasLength(1));
+    expect(m3u.single['name'], 'Test News');
+    expect(m3u.single['id'], 'TestNews.in');
+
+    final text = parsePlaylistDocument(
+      '# My personal streams\n'
+      'https://streams.example.test/channel-one.m3u8\n'
+      'https://streams.example.test/channel-two.m3u8\n'
+      'not-a-stream-url\n',
+    );
+    expect(text, hasLength(2));
+    expect(text.first['name'], 'channel one');
+    expect(text.first['group'], 'User Playlist');
+  });
+
+  test(
+    'custom URL and imported-file playlists load independently and deduplicate',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'moviebox-playlists-',
+      );
+      final file = File('${directory.path}/local.m3u8');
+      await file.writeAsString(
+        '#EXTM3U\n'
+        '#EXTINF:-1 tvg-id="LocalNews.in" group-title="News",Local News\n'
+        'https://local.example.test/news.m3u8\n',
+      );
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.text;
+        request.response.write(
+          '#EXTM3U\n'
+          '#EXTINF:-1 tvg-id="RemoteNews.in" group-title="News",Remote News\n'
+          'https://remote.example.test/news.m3u8\n'
+          '#EXTINF:-1 tvg-id="LocalNews.in" group-title="News",Local News\n'
+          'https://local.example.test/news.m3u8\n',
+        );
+        await request.response.close();
+      });
+      final engine = CatalogEngine();
+      try {
+        final channels = await engine.fetchUserLiveTvChannels([
+          UserPlaylistSource(
+            id: 'local',
+            name: 'Imported local',
+            localPath: file.path,
+          ),
+          UserPlaylistSource(
+            id: 'remote',
+            name: 'Remote provider',
+            url: 'http://127.0.0.1:${server.port}/playlist.m3u',
+          ),
+          const UserPlaylistSource(
+            id: 'disabled',
+            name: 'Disabled source',
+            url: 'https://disabled.example.test/list.m3u',
+            enabled: false,
+          ),
+        ]);
+        expect(channels, hasLength(2));
+        expect(
+          channels.map((channel) => channel['name']),
+          containsAll(['Remote News', 'Local News']),
+        );
+        expect(
+          channels.map((channel) => channel['userPlaylistId']),
+          containsAll(['remote', 'local']),
+        );
+        expect(
+          channels.where(
+            (channel) =>
+                channel['url'] == 'https://local.example.test/news.m3u8',
+          ),
+          hasLength(1),
+        );
+      } finally {
+        engine.close();
+        await server.close(force: true);
+        await directory.delete(recursive: true);
+      }
+    },
+  );
+
+  test(
+    'user playlist source preferences round-trip URL, file path and enabled state',
+    () {
+      const source = UserPlaylistSource(
+        id: 'playlist-1',
+        name: 'My channels',
+        url: 'https://provider.example/list.m3u',
+        enabled: false,
+      );
+      final restored = UserPlaylistSource.fromJson(source.toJson());
+      expect(restored.id, source.id);
+      expect(restored.name, source.name);
+      expect(restored.url, source.url);
+      expect(restored.enabled, isFalse);
+      expect(restored.isImportedFile, isFalse);
+
+      const imported = UserPlaylistSource(
+        id: 'playlist-2',
+        name: 'Local file',
+        localPath: '/app/private/user_playlists/custom.m3u',
+      );
+      expect(
+        UserPlaylistSource.fromJson(imported.toJson()).localPath,
+        imported.localPath,
+      );
+      expect(imported.isImportedFile, isTrue);
+    },
+  );
+
   test('M3U parser preserves provider headers and health score metadata', () {
     const playlist =
         '#EXTM3U\n'
@@ -428,8 +546,15 @@ void main() {
         final response = request.response;
         if (request.uri.path == '/working.m3u8') {
           response.statusCode = HttpStatus.ok;
-          response.headers.contentType = ContentType.text;
-          response.write('#EXTM3U\\n#EXT-X-VERSION:3\\n');
+          response.headers.contentType = ContentType(
+            'application',
+            'vnd.apple.mpegurl',
+          );
+          response.write('#EXTM3U\n#EXTINF:6,\nsegment.ts\n');
+        } else if (request.uri.path == '/segment.ts') {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType('video', 'mp2t');
+          response.add(List<int>.filled(188, 0x47));
         } else if (request.uri.path == '/blocked.m3u8') {
           response.statusCode = HttpStatus.forbidden;
           response.headers.contentType = ContentType.html;

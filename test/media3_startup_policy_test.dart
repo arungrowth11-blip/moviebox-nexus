@@ -3,12 +3,19 @@ import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 void main() {
   group('Media3StartupPolicy', () {
-    test('uses a bounded recovery window for an in-playback torrent stall', () {
-      expect(
-        Media3StartupPolicy.torrentPlaybackStallTimeout,
-        const Duration(seconds: 35),
-      );
-    });
+    test(
+      'does not restart a torrent before its native piece wait can expire',
+      () {
+        expect(
+          Media3StartupPolicy.torrentPlaybackStallTimeout,
+          greaterThan(const Duration(seconds: 180)),
+        );
+        expect(
+          Media3StartupPolicy.torrentPlaybackStallTimeout,
+          lessThan(const Duration(seconds: 260)),
+        );
+      },
+    );
     test(
       'keeps torrent startup pending while bounded first-piece retries run',
       () {
@@ -36,6 +43,29 @@ void main() {
         const Duration(seconds: 20),
       );
     });
+
+    test('allows extended HTTP reads to finish before decoder fallback', () {
+      expect(
+        Media3StartupPolicy.timeoutFor(
+          isEmbeddedTorrent: false,
+          isExtendedReadTimeout: true,
+        ),
+        const Duration(seconds: 260),
+      );
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: false,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 25),
+          isEmbeddedTorrent: false,
+          isExtendedReadTimeout: true,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.wait,
+      );
+    });
+
     test(
       'does not switch torrent transport failures to VLC before bytes arrive',
       () {
@@ -104,6 +134,49 @@ void main() {
           currentPosition: const Duration(seconds: 5),
           elapsed: const Duration(seconds: 30),
           isEmbeddedTorrent: false,
+          httpBytesSent: 0,
+        ),
+        Media3StartupDecision.started,
+      );
+    });
+
+    test(
+      'does not accept a frozen VOD clock just because isPlaying is true',
+      () {
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: true,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: const Duration(seconds: 3),
+            isEmbeddedTorrent: false,
+            httpBytesSent: 0,
+          ),
+          Media3StartupDecision.wait,
+        );
+        expect(
+          Media3StartupPolicy.evaluate(
+            isPlaying: true,
+            initialPosition: Duration.zero,
+            currentPosition: Duration.zero,
+            elapsed: const Duration(seconds: 21),
+            isEmbeddedTorrent: false,
+            httpBytesSent: 0,
+          ),
+          Media3StartupDecision.useCompatibilityPlayer,
+        );
+      },
+    );
+
+    test('allows an active live controller without a finite media clock', () {
+      expect(
+        Media3StartupPolicy.evaluate(
+          isPlaying: true,
+          initialPosition: Duration.zero,
+          currentPosition: Duration.zero,
+          elapsed: const Duration(seconds: 5),
+          isEmbeddedTorrent: false,
+          isLive: true,
           httpBytesSent: 0,
         ),
         Media3StartupDecision.started,

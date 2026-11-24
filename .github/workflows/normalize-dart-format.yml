@@ -1,6 +1,8 @@
 name: Normalize Dart formatting
 
 on:
+  push:
+    branches: [fix/player-reliability-20261122]
   pull_request:
     branches: [main, feat/frostwire-jlibtorrent-bridge]
     types: [opened, reopened, synchronize, ready_for_review]
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   format:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout exact PR head

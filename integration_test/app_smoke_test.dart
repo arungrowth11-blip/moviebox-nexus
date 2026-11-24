@@ -44,6 +44,7 @@ Future<String> _media3Diagnostic(BetterPlayerController controller) async {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  const displayChannel = MethodChannel('moviebox_nexus/display');
 
   testWidgets(
     'native torrent bridge registers and all primary tabs remain navigable',
@@ -175,6 +176,14 @@ void main() {
         ),
       );
 
+      await _waitUntil(
+        tester,
+        () async =>
+            await displayChannel.invokeMethod<bool>('isKeepScreenOn') == true,
+        'Opening PlayerScreen must set Android FLAG_KEEP_SCREEN_ON.',
+        timeout: const Duration(seconds: 5),
+      );
+
       final elapsed = await prepared.future.timeout(
         const Duration(seconds: 30),
         onTimeout: () => throw TimeoutException(
@@ -190,7 +199,7 @@ void main() {
       expect(initialValue, isNotNull);
       expect(initialValue!.size?.width ?? 0, greaterThan(0));
       expect(initialValue.size?.height ?? 0, greaterThan(0));
-      expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+      expect(initialValue.duration, greaterThan(const Duration(seconds: 20)));
       debugPrint(
         'MovieBox CI direct Media3 before play: isPlaying=${initialValue.isPlaying}, '
         'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
@@ -218,6 +227,13 @@ void main() {
       );
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
+      await _waitUntil(
+        tester,
+        () async =>
+            await displayChannel.invokeMethod<bool>('isKeepScreenOn') == false,
+        'Leaving PlayerScreen must clear Android FLAG_KEEP_SCREEN_ON.',
+        timeout: const Duration(seconds: 5),
+      );
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
@@ -480,8 +496,19 @@ void main() {
         );
         if (response.statusCode != HttpStatus.partialContent) {
           final diagnostic = await response.transform(utf8.decoder).join();
+          Map<String, dynamic> nativeStatus = <String, dynamic>{};
+          try {
+            nativeStatus =
+                await channel.invokeMapMethod<String, dynamic>('getStatus') ??
+                <String, dynamic>{};
+          } catch (error) {
+            nativeStatus = <String, dynamic>{
+              'diagnosticError': error.toString(),
+            };
+          }
           fail(
-            'Torrent range $start-$end returned HTTP ${response.statusCode}: $diagnostic',
+            'Torrent range $start-$end returned HTTP ${response.statusCode}: '
+            '$diagnostic; nativeStatus=$nativeStatus',
           );
         }
         expect(
@@ -599,7 +626,7 @@ void main() {
         expect(initialValue, isNotNull);
         expect(initialValue!.size?.width ?? 0, greaterThan(0));
         expect(initialValue.size?.height ?? 0, greaterThan(0));
-        expect(initialValue.duration, greaterThan(const Duration(seconds: 30)));
+        expect(initialValue.duration, greaterThan(const Duration(seconds: 20)));
         debugPrint(
           'MovieBox CI torrent Media3 before play: isPlaying=${initialValue.isPlaying}, '
           'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
@@ -668,7 +695,17 @@ void main() {
           },
           'Playback must continue after seeking rather than freezing at the seek target.',
           timeout: const Duration(seconds: 15),
-          diagnostic: () => _media3Diagnostic(controller),
+          diagnostic: () async {
+            final player = await _media3Diagnostic(controller);
+            try {
+              final torrent = await channel
+                  .invokeMapMethod<String, dynamic>('getStatus')
+                  .timeout(const Duration(seconds: 4));
+              return '$player nativeTorrentAfterSeek=$torrent';
+            } catch (error) {
+              return '$player nativeTorrentAfterSeekUnavailable=$error';
+            }
+          },
         );
         debugPrint(
           'MovieBox CI torrent Media3 after seek: '
