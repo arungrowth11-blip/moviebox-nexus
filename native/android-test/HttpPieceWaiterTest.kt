@@ -435,4 +435,204 @@ class HttpPieceWaiterTest {
         assertEquals(null, HttpRangePolicy.parseRange("bytes=0-1", 0L))
     }
 
+
+    private fun identityProof(
+        hash: String,
+        size: Long = 10_000L,
+        pieceLength: Int = 1024,
+        offset: Long = 0L,
+        v1: Boolean = true,
+        root: String? = null,
+        firstInteriorOffset: Long = 0L,
+        hashes: List<String> = listOf("a".repeat(40), "b".repeat(40), "c".repeat(40),
+            "d".repeat(40), "e".repeat(40), "f".repeat(40), "1".repeat(40),
+            "2".repeat(40), "3".repeat(40))
+    ) = TorrentFileIdentityProof(
+        infoHash = hash,
+        fileSize = size,
+        pieceLength = pieceLength,
+        fileOffset = offset,
+        hasV1 = v1,
+        v2PiecesRootHex = root,
+        firstInteriorOffset = firstInteriorOffset,
+        interiorPieceHashes = hashes
+    )
+
+    @Test
+    fun v2IdenticalRootAndSizeAllowsFullFileAcrossCompatiblePieceLengths() {
+        val root = "a".repeat(64)
+        val primary = identityProof("primary", size = 12_000_000L, pieceLength = 256 * 1024,
+            root = root, hashes = emptyList())
+        val candidate = identityProof("candidate", size = 12_000_000L, pieceLength = 1024 * 1024,
+            root = root, hashes = emptyList())
+
+        val result = ContentIdentityVerifier.verify(primary, candidate)
+
+        assertEquals(ContentIdentityKind.V2_FULL_FILE, result.kind)
+        assertEquals(0L, result.verifiedStart)
+        assertEquals(12_000_000L, result.verifiedEndExclusive)
+        assertEquals(1024 * 1024, result.canonicalChunkBytes)
+    }
+
+    @Test
+    fun v2DifferentMerkleRootIsRejectedEvenWhenFileSizesMatch() {
+        val primary = identityProof("primary", size = 900_000L, root = "a".repeat(64))
+        val candidate = identityProof("candidate", size = 900_000L, root = "b".repeat(64))
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun v2PieceLengthsWithoutPowerOfTwoCommonUnitAreRejected() {
+        val root = "c".repeat(64)
+        val primary = identityProof("primary", size = 900_000L, pieceLength = 32 * 1024,
+            root = root)
+        val candidate = identityProof("candidate", size = 900_000L, pieceLength = 48 * 1024,
+            root = root)
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun v1AlignedInteriorPiecesAreAcceptedButBoundaryBytesRemainPrimaryOnly() {
+        val hashes = listOf("a".repeat(40), "b".repeat(40), "c".repeat(40))
+        val primary = identityProof(
+            "primary", size = 4_500L, pieceLength = 1024, offset = 100L,
+            firstInteriorOffset = 924L, hashes = hashes
+        )
+        val candidate = identityProof(
+            "candidate", size = 4_500L, pieceLength = 1024, offset = 2_148L,
+            firstInteriorOffset = 924L, hashes = hashes
+        )
+
+        val result = ContentIdentityVerifier.verify(primary, candidate)
+
+        assertEquals(ContentIdentityKind.V1_INTERIOR_ONLY, result.kind)
+        assertEquals(924L, result.verifiedStart)
+        assertEquals(4_020L, result.verifiedEndExclusive)
+        assertEquals(1024, result.canonicalChunkBytes)
+    }
+
+    @Test
+    fun v1MismatchedPieceLengthIsRejected() {
+        val primary = identityProof("primary", size = 4_500L, pieceLength = 1024)
+        val candidate = identityProof("candidate", size = 4_500L, pieceLength = 2048)
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun v1ShiftedFileOffsetPhaseIsRejected() {
+        val primary = identityProof("primary", size = 4_500L, pieceLength = 1024, offset = 100L,
+            firstInteriorOffset = 924L)
+        val candidate = identityProof("candidate", size = 4_500L, pieceLength = 1024, offset = 101L,
+            firstInteriorOffset = 923L)
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun v1AnyInteriorPieceMismatchIsRejected() {
+        val primary = identityProof("primary", size = 4_500L, pieceLength = 1024,
+            offset = 100L, firstInteriorOffset = 924L,
+            hashes = listOf("a".repeat(40), "b".repeat(40), "c".repeat(40)))
+        val candidate = identityProof("candidate", size = 4_500L, pieceLength = 1024,
+            offset = 100L, firstInteriorOffset = 924L,
+            hashes = listOf("a".repeat(40), "f".repeat(40), "c".repeat(40)))
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun v1WithNoCompleteInteriorPieceIsRejected() {
+        val primary = identityProof("primary", size = 500L, pieceLength = 1024,
+            hashes = emptyList())
+        val candidate = identityProof("candidate", size = 500L, pieceLength = 1024,
+            hashes = emptyList())
+
+        assertEquals(
+            ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(primary, candidate).kind
+        )
+    }
+
+    @Test
+    fun identityVerifierRejectsSameHashMalformedProofAndSizeMismatch() {
+        val valid = identityProof("same")
+        assertEquals(ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(valid, valid).kind)
+        assertEquals(ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(valid, identityProof("other", size = 9_999L)).kind)
+        assertEquals(ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(valid, identityProof("other", hashes = listOf("not-a-hash"))).kind)
+        assertEquals(ContentIdentityKind.REJECTED,
+            ContentIdentityVerifier.verify(
+                identityProof("v2", root = "0".repeat(64)),
+                identityProof("v2-candidate", root = "0".repeat(64))
+            ).kind)
+    }
+
+    @Test
+    fun schedulerUsesLowestProjectedEtaAndKeepsSingleOwnerNormally() {
+        val scheduler = CrossSwarmPieceScheduler(canonicalChunkBytes = 1024 * 1024)
+        val candidates = listOf(
+            CrossSwarmCandidateMetrics("slow", true, 1L * 1024 * 1024, queuedBytes = 8L * 1024 * 1024),
+            CrossSwarmCandidateMetrics("fast", true, 8L * 1024 * 1024, queuedBytes = 0L)
+        )
+
+        assertEquals(listOf("fast"), scheduler.assign(12L, 1_000L, candidates, critical = false))
+        assertEquals(1, scheduler.snapshot().size)
+    }
+
+    @Test
+    fun schedulerAllowsOnlyOneHedgeForAStalledCriticalChunk() {
+        val scheduler = CrossSwarmPieceScheduler(canonicalChunkBytes = 1024 * 1024)
+        val candidates = listOf(
+            CrossSwarmCandidateMetrics("first", true, 1L * 1024 * 1024),
+            CrossSwarmCandidateMetrics("second", true, 4L * 1024 * 1024),
+            CrossSwarmCandidateMetrics("third", true, 8L * 1024 * 1024)
+        )
+
+        assertEquals(listOf("third"), scheduler.assign(7L, 0L, candidates, critical = true))
+        assertEquals(
+            listOf("third", "second"),
+            scheduler.assign(7L, 1_201L, candidates, critical = true)
+        )
+        assertEquals(
+            listOf("third", "second"),
+            scheduler.assign(7L, 5_000L, candidates, critical = true)
+        )
+    }
+
+    @Test
+    fun schedulerPromotesBackupOnProgressAndReleasesCompletedChunk() {
+        val scheduler = CrossSwarmPieceScheduler(canonicalChunkBytes = 1024)
+        val candidates = listOf(
+            CrossSwarmCandidateMetrics("owner", true, 1024L),
+            CrossSwarmCandidateMetrics("backup", true, 4096L)
+        )
+        scheduler.assign(2L, 0L, candidates, critical = true)
+        scheduler.assign(2L, 2_000L, candidates, critical = true)
+        scheduler.recordProgress(2L, "backup", 2_100L)
+
+        assertEquals("backup", scheduler.snapshot()[2L]?.ownerId)
+        scheduler.complete(2L)
+        assertTrue(scheduler.snapshot().isEmpty())
+    }
+
 }
