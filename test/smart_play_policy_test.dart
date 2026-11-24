@@ -46,50 +46,50 @@ void main() {
     expect(ranked, hasLength(1));
     expect(ranked.single.seeders, isNull);
   });
-  test('same-infohash addon results pool trackers without merging different files', () {
-    const hash = '0000000000000000000000000000000000000001';
-    final merged = mergeStreamCandidates(<StreamLink>[
-      StreamLink(
-        infoHash: hash,
-        title: 'Movie 1080p Hindi',
-        addonName: 'Addon A',
-        seeders: 4,
-        fileIdx: 0,
-        trackers: <String>['udp://tracker-a.example:80/announce'],
-      ),
-      StreamLink(
-        infoHash: hash.toUpperCase(),
-        title: 'Movie 1080p',
-        addonName: 'Addon B',
-        seeders: 9,
-        fileIdx: 0,
-        trackers: <String>['udp://tracker-b.example:80/announce'],
-      ),
-      StreamLink(
-        infoHash: hash,
-        title: 'Movie sample file',
-        addonName: 'Addon C',
-        seeders: 6,
-        fileIdx: 1,
-        trackers: <String>['https://tracker-c.example/announce'],
-      ),
-    ]);
+  test(
+    'same-infohash addon results pool trackers without merging different files',
+    () {
+      const hash = '0000000000000000000000000000000000000001';
+      final merged = mergeStreamCandidates(<StreamLink>[
+        StreamLink(
+          infoHash: hash,
+          title: 'Movie 1080p Hindi',
+          addonName: 'Addon A',
+          seeders: 4,
+          fileIdx: 0,
+          trackers: <String>['udp://tracker-a.example:80/announce'],
+        ),
+        StreamLink(
+          infoHash: hash.toUpperCase(),
+          title: 'Movie 1080p',
+          addonName: 'Addon B',
+          seeders: 9,
+          fileIdx: 0,
+          trackers: <String>['udp://tracker-b.example:80/announce'],
+        ),
+        StreamLink(
+          infoHash: hash,
+          title: 'Movie sample file',
+          addonName: 'Addon C',
+          seeders: 6,
+          fileIdx: 1,
+          trackers: <String>['https://tracker-c.example/announce'],
+        ),
+      ]);
 
-    expect(merged, hasLength(2));
-    expect(merged.first.fileIdx, 0);
-    expect(merged.first.seeders, 9);
-    expect(merged.first.addonName, 'Addon A + Addon B + Addon C');
-    expect(
-      merged.first.trackers,
-      <String>[
+      expect(merged, hasLength(2));
+      expect(merged.first.fileIdx, 0);
+      expect(merged.first.seeders, 9);
+      expect(merged.first.addonName, 'Addon A + Addon B + Addon C');
+      expect(merged.first.trackers, <String>[
         'udp://tracker-a.example:80/announce',
         'udp://tracker-b.example:80/announce',
         'https://tracker-c.example/announce',
-      ],
-    );
-    expect(merged.last.fileIdx, 1);
-    expect(merged.last.trackers, merged.first.trackers);
-  });
+      ]);
+      expect(merged.last.fileIdx, 1);
+      expect(merged.last.trackers, merged.first.trackers);
+    },
+  );
 
   test('torrent infohash canonicalization accepts BTIH hex and base32', () {
     expect(
@@ -129,5 +129,4 @@ void main() {
     expect(merged.first.isDirect, isTrue);
     expect(merged.last.isTorrent, isTrue);
   });
-
 }

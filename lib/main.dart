@@ -644,9 +644,10 @@ class StreamLink {
 /// Convert v1 BTIH hex/base32 representations to one stable key.
 /// Invalid values are retained in lowercase so they never alias a valid hash.
 String canonicalTorrentInfoHash(String raw) {
-  final value = raw
-      .trim()
-      .replaceFirst(RegExp(r'^urn:btih:', caseSensitive: false), '');
+  final value = raw.trim().replaceFirst(
+    RegExp(r'^urn:btih:', caseSensitive: false),
+    '',
+  );
   if (RegExp(r'^[a-fA-F0-9]{40}$').hasMatch(value)) {
     return value.toLowerCase();
   }
@@ -670,9 +671,7 @@ String canonicalTorrentInfoHash(String raw) {
     }
   }
   if (bytes.length != 20) return value.toLowerCase();
-  return bytes
-      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-      .join();
+  return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 }
 
 /// Merge addon metadata for duplicate swarms without discarding source hints.
@@ -689,9 +688,11 @@ List<StreamLink> mergeStreamCandidates(Iterable<StreamLink> input) {
         ? canonicalTorrentInfoHash(stream.infoHash!)
         : null;
     if (hash != null && hash.isNotEmpty) {
-      trackersByHash.putIfAbsent(hash, () => <String>{}).addAll(
-        stream.trackers.where((tracker) => tracker.trim().isNotEmpty),
-      );
+      trackersByHash
+          .putIfAbsent(hash, () => <String>{})
+          .addAll(
+            stream.trackers.where((tracker) => tracker.trim().isNotEmpty),
+          );
       final addonNames = addonsByHash.putIfAbsent(hash, () => <String>{});
       for (final addon in stream.addonName.split(' + ')) {
         final name = addon.trim();
@@ -714,21 +715,23 @@ List<StreamLink> mergeStreamCandidates(Iterable<StreamLink> input) {
     candidates.putIfAbsent(key, () => stream);
   }
 
-  return candidates.values.map((stream) {
-    if (!stream.isTorrent) return stream;
-    final hash = canonicalTorrentInfoHash(stream.infoHash!);
-    final trackers = trackersByHash[hash];
-    final addons = addonsByHash[hash];
-    return stream.copyWith(
-      trackers: trackers == null
-          ? stream.trackers
-          : trackers.take(24).toList(growable: false),
-      addonName: addons == null || addons.isEmpty
-          ? stream.addonName
-          : addons.join(' + '),
-      seeders: reportedSeedersByHash[hash] ?? stream.seeders,
-    );
-  }).toList(growable: false);
+  return candidates.values
+      .map((stream) {
+        if (!stream.isTorrent) return stream;
+        final hash = canonicalTorrentInfoHash(stream.infoHash!);
+        final trackers = trackersByHash[hash];
+        final addons = addonsByHash[hash];
+        return stream.copyWith(
+          trackers: trackers == null
+              ? stream.trackers
+              : trackers.take(24).toList(growable: false),
+          addonName: addons == null || addons.isEmpty
+              ? stream.addonName
+              : addons.join(' + '),
+          seeders: reportedSeedersByHash[hash] ?? stream.seeders,
+        );
+      })
+      .toList(growable: false);
 }
 
 /// Rank torrent fallbacks consistently for every Play action. StreamLink.score
