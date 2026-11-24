@@ -276,6 +276,9 @@ internal enum class HttpRequestReadOutcome {
 }
 
 internal object HttpRequestReadPolicy {
+    fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
+        outcome == HttpRequestReadOutcome.IO_ERROR
+}
 
 /**
  * Cryptographic description of one selected file inside a torrent.
@@ -565,6 +568,3 @@ internal class CrossSwarmPieceScheduler(
         }
 }
 
-    fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
-        outcome == HttpRequestReadOutcome.IO_ERROR
-}
