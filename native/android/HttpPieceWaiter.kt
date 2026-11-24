@@ -189,6 +189,12 @@ internal class HttpPieceReadGate {
  * direct children of the dedicated cache root. Canonical-path checks prevent
  * cleanup from escaping that root through malformed paths or symlinks.
  */
+internal object TorrentStartupCleanupPolicy {
+    // Once a stream target exists, HTTP readers may be using its file. The
+    // reader-aware stop path must own deletion instead of the startup worker.
+    fun shouldDeleteCacheBeforeReaders(targetReady: Boolean): Boolean = !targetReady
+}
+
 internal object TorrentCachePolicy {
     const val DIRECTORY_NAME = "moviebox-torrents"
 
