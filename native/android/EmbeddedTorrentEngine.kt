@@ -37,12 +37,39 @@ import java.util.concurrent.atomic.AtomicLong
 internal class DeferredTorrentCleanupTask(
     private val awaitStartup: () -> Unit,
     private val awaitReaders: () -> Unit,
-    private val cleanup: () -> Unit
+    private val cleanup: () -> Boolean,
+    private val retryDelayMs: Long = 250L
 ) {
     fun run() {
-        awaitStartup()
-        awaitReaders()
-        cleanup()
+        var interrupted = false
+        fun awaitUninterruptibly(action: () -> Unit) {
+            while (true) {
+                try {
+                    action()
+                    return
+                } catch (_: InterruptedException) {
+                    // Keep the cleanup obligation alive even if shutdown interrupts this worker.
+                    interrupted = true
+                }
+            }
+        }
+
+        try {
+            awaitUninterruptibly(awaitStartup)
+            awaitUninterruptibly(awaitReaders)
+            while (true) {
+                var cleaned = false
+                try {
+                    cleaned = cleanup()
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+                if (cleaned) return
+                awaitUninterruptibly { Thread.sleep(retryDelayMs) }
+            }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt()
+        }
     }
 }
 
@@ -111,7 +138,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             // Never remove the currently active stream while an Activity/Flutter
             // engine is being recreated. An abandoned previous-process stream has
             // no in-memory PendingStream and is safe to sweep here.
-            val currentClean = if (activePending == null) {
+            // A stopped stream may still have readers closing on the deferred
+            // cleanup worker. Never sweep its directory during Activity/engine recreation.
+            val currentClean = if (activePending == null && deferredCleanupHashes.isEmpty()) {
                 TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
             } else {
                 true
@@ -467,6 +496,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val (pending, oldHandle) = synchronized(lock) {
             val stopped = activePending
             val previousHandle = activeHandle
+            // Publish the pending cleanup before clearing activePending so initialize()
+            // cannot race in and delete this stream's cache while readers are closing.
+            stopped?.let { deferredCleanupHashes.add(it.infoHash) }
             activeHandle = null
             activePending = null
             startupTask?.cancel(true)
@@ -495,21 +527,36 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             return
         }
 
-        removeTorrentAndCache(managerForCleanup, pending, oldHandle)
+        if (!removeTorrentAndCache(managerForCleanup, pending, oldHandle)) {
+            Log.w(TAG, "Torrent cleanup did not complete; retrying asynchronously.")
+            deferTorrentCleanup(managerForCleanup, pending, oldHandle)
+            return
+        }
+        pending?.let { deferredCleanupHashes.remove(it.infoHash) }
     }
 
     fun close() {
         stopPlayback()
         val old = session
         session = null
-        if (old != null) {
-            Thread({ runCatching { old.stop() } }, "moviebox-torrent-shutdown").apply {
-                isDaemon = true
-                start()
-            }
-        }
         requestPool.shutdownNow()
         startupExecutor.shutdownNow()
+        if (old != null) {
+            val stopSession = {
+                runCatching { old.stop() }
+                    .onFailure { error -> Log.w(TAG, "Torrent session shutdown failed: ${error.message}") }
+            }
+            if (deferredCleanupHashes.isNotEmpty()) {
+                // The single-thread cleanup executor runs this only after queued stream
+                // cleanup has removed handles and cache data from the still-live session.
+                cleanupExecutor.execute { stopSession() }
+            } else {
+                Thread(stopSession, "moviebox-torrent-shutdown").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+        }
     }
 
     private fun startHttpServer(pending: PendingStream) {
@@ -584,26 +631,47 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         manager: SessionManager?,
         pending: PendingStream?,
         oldHandle: TorrentHandle?
-    ) {
+    ): Boolean {
         if (pending != null) {
-            runCatching {
-                manager?.getTorrentHandles()
-                    ?.filter { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
-                    ?.forEach { handle -> manager.remove(handle) }
-            }.onFailure { error ->
-                Log.w(TAG, "Could not remove stopped torrent handle: ${error.message}")
+            var handlesRemoved = true
+            if (manager != null) {
+                val matchingHandles = runCatching {
+                    manager.getTorrentHandles().filter {
+                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                    }
+                }.getOrElse { error ->
+                    Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
+                    return false
+                }
+                matchingHandles.forEach { handle ->
+                    if (runCatching { manager.remove(handle) }.isFailure) handlesRemoved = false
+                }
+                val handleRemains = runCatching {
+                    manager.getTorrentHandles().any {
+                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                    }
+                }.getOrElse { true }
+                if (handleRemains) handlesRemoved = false
             }
-            val removed = runCatching {
+
+            val cacheRemoved = runCatching {
                 TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
             }.getOrDefault(false)
-            if (!removed) {
+            if (!handlesRemoved) {
+                Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
+            }
+            if (!cacheRemoved) {
                 Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
             } else {
                 Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
             }
-        } else if (oldHandle != null) {
-            runCatching { manager?.remove(oldHandle) }
+            return handlesRemoved && cacheRemoved
         }
+
+        if (oldHandle != null && manager != null) {
+            return runCatching { manager.remove(oldHandle); true }.getOrDefault(false)
+        }
+        return true
     }
 
     private fun deferTorrentCleanup(
@@ -613,10 +681,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     ) {
         pending?.let { deferredCleanupHashes.add(it.infoHash) }
         cleanupExecutor.execute {
+            var cleaned = false
             try {
                 // Retain the PendingStream/handle until startup and every reader
-                // belonging to this stream have actually exited. Never drop the
-                // only cleanup reference on a bounded-wait timeout.
+                // belonging to this stream have actually exited. Retry failed native
+                // handle/cache removal instead of silently dropping the cleanup obligation.
                 DeferredTorrentCleanupTask(
                     awaitStartup = { pending?.startupFinished?.await() },
                     awaitReaders = {
@@ -628,11 +697,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     },
                     cleanup = { removeTorrentAndCache(manager, pending, oldHandle) }
                 ).run()
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
-                Log.w(TAG, "Deferred torrent cleanup interrupted; cache retained for next startup sweep.")
+                cleaned = true
+            } catch (error: Exception) {
+                Log.e(TAG, "Deferred torrent cleanup worker failed; cleanup remains blocked.", error)
             } finally {
-                pending?.let { deferredCleanupHashes.remove(it.infoHash) }
+                if (cleaned) pending?.let { deferredCleanupHashes.remove(it.infoHash) }
             }
         }
     }
