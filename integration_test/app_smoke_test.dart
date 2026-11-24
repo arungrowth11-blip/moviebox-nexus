@@ -175,6 +175,15 @@ void main() {
         ),
       );
 
+      const displayChannel = MethodChannel('moviebox_nexus/display');
+      await _waitUntil(
+        tester,
+        () async =>
+            await displayChannel.invokeMethod<bool>('isKeepScreenOn') == true,
+        'Opening PlayerScreen must set Android FLAG_KEEP_SCREEN_ON.',
+        timeout: const Duration(seconds: 5),
+      );
+
       final elapsed = await prepared.future.timeout(
         const Duration(seconds: 30),
         onTimeout: () => throw TimeoutException(
@@ -218,6 +227,13 @@ void main() {
       );
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());
+      await _waitUntil(
+        tester,
+        () async =>
+            await displayChannel.invokeMethod<bool>('isKeepScreenOn') == false,
+        'Leaving PlayerScreen must clear Android FLAG_KEEP_SCREEN_ON.',
+        timeout: const Duration(seconds: 5),
+      );
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
