@@ -16,7 +16,9 @@ class Media3StartupPolicy {
   static const Duration torrentStartupTimeout = Duration(seconds: 140);
   // Must outlive the plugin's 240s extended HTTP read timeout plus cleanup.
   static const Duration extendedReadStartupTimeout = Duration(seconds: 260);
-  static const Duration torrentPlaybackStallTimeout = Duration(seconds: 35);
+  // The native HTTP bridge waits up to 180s for a verified mid-stream piece.
+  // Do not tear down and restart that same torrent request at 35s.
+  static const Duration torrentPlaybackStallTimeout = Duration(seconds: 195);
 
   static Duration timeoutFor({
     required bool isEmbeddedTorrent,
