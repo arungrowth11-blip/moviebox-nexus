@@ -1334,51 +1334,84 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         }
     }
 
-    private fun waitForPiece(
-        pending: PendingStream,
-        target: StreamTarget,
-        filePosition: Long,
-        timeoutMs: Long,
-        requestGeneration: Long,
-        isRequestCancelled: () -> Boolean
-    ): Boolean {
-        val globalOffset = target.fileOffset + filePosition
-        val pieceIndex = (globalOffset / target.pieceLength).toInt()
-        val waitStartedAt = System.currentTimeMillis()
-        pending.lastPieceIndex = pieceIndex
-        if (!prioritizePlaybackWindow(pending, target, pieceIndex, requestGeneration, isRequestCancelled)) {
-            return false
-        }
 
-        val waiter = HttpPieceWaiter(
-            hasPiece = { index ->
-                runCatching { target.handle.havePiece(index) }.getOrDefault(false)
-            }
-        )
-        val available = waiter.await(
-            pieceIndex = pieceIndex,
-            timeoutMs = timeoutMs,
-            isCancelled = isRequestCancelled
-        )
-        pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
-        if (!available && !isRequestCancelled() && !pending.cancelled && activePending === pending) {
-            pending.lastHttpError =
-                "Timed out waiting for torrent piece=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
-            Log.w(
-                TAG,
-                "Timed out waiting for torrent piece=$pieceIndex filePosition=$filePosition timeoutMs=$timeoutMs"
-            )
-        } else if (!available) {
-            pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
-        }
-        return available
+    private fun sourceSlots(pending: PendingStream): List<VerifiedSwarmSlot> =
+        listOfNotNull(pending.primarySlot) + pending.secondarySources.toList()
+
+    private fun sourceForId(pending: PendingStream, sourceId: String): VerifiedSwarmSlot? =
+        sourceSlots(pending).firstOrNull { it.id == sourceId }
+
+    private fun sourceCoversRange(
+        source: VerifiedSwarmSlot,
+        fileStart: Long,
+        fileEndExclusive: Long
+    ): Boolean {
+        if (fileStart < 0L || fileEndExclusive <= fileStart ||
+            fileEndExclusive > source.target.fileSize
+        ) return false
+        val proof = source.identity ?: return true
+        return fileStart >= proof.verifiedStart && fileEndExclusive <= proof.verifiedEndExclusive
     }
 
-    /**
-     * Keep the current piece urgent and prefetch a contiguous forward window.
-     * A seek clears old deadlines and lowers obsolete pieces so they cannot
-     * starve the newly requested position.
-     */
+    private fun sourceHasRange(
+        source: VerifiedSwarmSlot,
+        fileStart: Long,
+        fileEndExclusive: Long
+    ): Boolean {
+        if (!sourceCoversRange(source, fileStart, fileEndExclusive)) return false
+        val target = source.target
+        val firstPiece = ((target.fileOffset + fileStart) / target.pieceLength).toInt()
+        val lastPiece = ((target.fileOffset + fileEndExclusive - 1L) / target.pieceLength).toInt()
+        for (piece in firstPiece..lastPiece) {
+            if (!runCatching { target.handle.havePiece(piece) }.getOrDefault(false)) return false
+        }
+        return true
+    }
+
+    private fun sampleSourceMetrics(
+        pending: PendingStream,
+        slots: List<VerifiedSwarmSlot>,
+        nowMs: Long
+    ): List<CrossSwarmCandidateMetrics> {
+        slots.forEach { slot ->
+            if (nowMs - slot.lastSampleAtMs >= 1_000L) {
+                val status = runCatching {
+                    slot.target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+                }.getOrNull()
+                if (status != null) {
+                    slot.goodputBytesPerSecond = status.downloadRate().toLong().coerceAtLeast(0L)
+                    slot.connectedPeers = status.numPeers().coerceAtLeast(0)
+                    slot.lastSampleAtMs = nowMs
+                }
+            }
+        }
+        pending.prefetchConnectedSources = slots.sumOf { it.connectedPeers }
+        pending.prefetchDownloadRateBytesPerSecond =
+            slots.sumOf { it.goodputBytesPerSecond.coerceAtLeast(0L) }
+        pending.prefetchLastSampleAtMs = nowMs
+        return slots.map { slot ->
+            val measured = slot.goodputBytesPerSecond.coerceAtLeast(0L)
+            val peerEstimate = slot.connectedPeers.toLong() * 512L * 1024L
+            CrossSwarmCandidateMetrics(
+                sourceId = slot.id,
+                healthy = !pending.cancelled,
+                goodputBytesPerSecond = maxOf(measured, peerEstimate),
+                queuedBytes = 0L,
+                failurePenalty = 1.0
+            )
+        }
+    }
+
+    private fun nativePiecesForRange(
+        target: StreamTarget,
+        fileStart: Long,
+        fileEndExclusive: Long
+    ): IntRange {
+        val first = ((target.fileOffset + fileStart) / target.pieceLength).toInt()
+        val last = ((target.fileOffset + fileEndExclusive - 1L) / target.pieceLength).toInt()
+        return first..last
+    }
+
     private fun prioritizePlaybackWindow(
         pending: PendingStream,
         target: StreamTarget,
@@ -1390,37 +1423,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             if (isRequestCancelled() || pending.requestGeneration.get() != requestGeneration) {
                 return false
             }
-            // Read this torrent's real counters (not add-on seeder claims).
-            // The adaptive window grows only when there are connected sources
-            // and/or measured download throughput to make parallel prefetch useful.
-            // status() is synchronous with libtorrent's session thread. Sample
-            // at most once per second, not once per downloaded piece, and reuse
-            // the last accurate aggregate counters between samples.
-            val sampleNowMs = System.nanoTime() / 1_000_000L
-            if (sampleNowMs - pending.prefetchLastSampleAtMs >= 1_000L) {
-                val swarmStatus = runCatching {
-                    target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
-                }.getOrNull()
-                if (swarmStatus != null) {
-                    // numSeeds is a subset of the connected peers, not an
-                    // additional population; never double-count seed peers.
-                    pending.prefetchConnectedSources = swarmStatus.numPeers().coerceAtLeast(0)
-                    pending.prefetchDownloadRateBytesPerSecond =
-                        swarmStatus.downloadRate().toLong().coerceAtLeast(0L)
-                    pending.prefetchLastSampleAtMs = sampleNowMs
-                }
-            }
-            val connectedSources = pending.prefetchConnectedSources
-            val downloadRate = pending.prefetchDownloadRateBytesPerSecond
+            val primary = pending.primarySlot ?: return false
+            val slots = sourceSlots(pending)
+            val metrics = sampleSourceMetrics(slots = slots, pending = pending, nowMs = System.nanoTime() / 1_000_000L)
             val lookAheadPieces = HttpRangePolicy.adaptiveLookAheadPieces(
                 pieceLengthBytes = target.pieceLength,
-                connectedSources = connectedSources,
-                downloadRateBytesPerSecond = downloadRate
+                connectedSources = pending.prefetchConnectedSources,
+                downloadRateBytesPerSecond = pending.prefetchDownloadRateBytesPerSecond
             )
             pending.prefetchLookAheadPieces = lookAheadPieces
-            pending.prefetchConnectedSources = connectedSources
-            pending.prefetchDownloadRateBytesPerSecond = downloadRate
-
             val window = HttpRangePolicy.playbackWindow(
                 currentPiece = currentPiece,
                 firstPiece = target.firstPiece,
@@ -1429,39 +1440,141 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             )
             pending.prefetchWindowBytes = window.size.toLong() * target.pieceLength
             if (window.isEmpty()) return false
-            val wanted = window.toSet()
+            val scheduler = pending.pieceScheduler
+                ?: CrossSwarmPieceScheduler(target.pieceLength).also { pending.pieceScheduler = it }
+            val wantedPieces = window.toSet()
+            val nextPriorities = HashMap<String, MutableSet<Int>>()
 
-            pending.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
-                runCatching { target.handle.resetPieceDeadline(stalePiece) }
-                runCatching {
-                    target.handle.piecePriority(
-                        stalePiece,
-                        TorrentDownloadPriorityPolicy.inactivePiece
-                    )
+            window.forEachIndexed { offset, primaryPiece ->
+                val globalPieceStart = primaryPiece.toLong() * target.pieceLength
+                val fileStart = (globalPieceStart - target.fileOffset).coerceAtLeast(0L)
+                val fileEndExclusive = minOf(
+                    target.fileSize,
+                    (globalPieceStart + target.pieceLength) - target.fileOffset
+                )
+                if (fileEndExclusive <= fileStart) return@forEachIndexed
+                val eligibleSlots = slots.filter { slot ->
+                    sourceCoversRange(slot, fileStart, fileEndExclusive)
+                }
+                val eligibleIds = eligibleSlots.mapTo(hashSetOf()) { it.id }
+                val eligibleMetrics = metrics.filter { it.sourceId in eligibleIds }
+                // Rotate equal-score candidates across the window so idle swarms
+                // get a first piece and can establish measured goodput.
+                val rotatedMetrics = if (eligibleMetrics.size > 1) {
+                    val rotation = offset % eligibleMetrics.size
+                    eligibleMetrics.drop(rotation) + eligibleMetrics.take(rotation)
+                } else {
+                    eligibleMetrics
+                }
+                val leases = scheduler.assign(
+                    canonicalChunk = primaryPiece.toLong(),
+                    nowMs = System.nanoTime() / 1_000_000L,
+                    candidates = rotatedMetrics,
+                    critical = offset <= 1,
+                    stallThresholdMs = if (offset <= 1) 1_200L else 4_000L
+                ).ifEmpty { listOf(primary.id) }
+                pending.sourceAssignments[primaryPiece.toLong()] = leases
+
+                leases.forEach sourceLoop@{ sourceId ->
+                    val slot = eligibleSlots.firstOrNull { it.id == sourceId } ?: return@sourceLoop
+                    val pieceSet = nextPriorities.getOrPut(sourceId) { linkedSetOf() }
+                    nativePiecesForRange(slot.target, fileStart, fileEndExclusive).forEach { nativePiece ->
+                        if (!runCatching { slot.target.handle.havePiece(nativePiece) }.getOrDefault(false)) {
+                            runCatching {
+                                slot.target.handle.piecePriority(nativePiece, TorrentDownloadPriorityPolicy.activePiece)
+                            }
+                            runCatching {
+                                slot.target.handle.setPieceDeadline(
+                                    nativePiece,
+                                    HttpRangePolicy.deadlineForWindowOffset(offset)
+                                )
+                            }
+                            pieceSet.add(nativePiece)
+                        } else {
+                            runCatching { slot.target.handle.resetPieceDeadline(nativePiece) }
+                        }
+                    }
                 }
             }
-            pending.prioritizedPieces.clear()
-            window.forEachIndexed { offset, piece ->
-                if (runCatching { target.handle.havePiece(piece) }.getOrDefault(false)) {
-                    runCatching { target.handle.resetPieceDeadline(piece) }
-                } else {
+
+            slots.forEach { slot ->
+                val wanted = nextPriorities[slot.id] ?: emptySet()
+                slot.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
+                    runCatching { slot.target.handle.resetPieceDeadline(stalePiece) }
                     runCatching {
-                        target.handle.piecePriority(
-                            piece,
-                            TorrentDownloadPriorityPolicy.activePiece
-                        )
+                        slot.target.handle.piecePriority(stalePiece, TorrentDownloadPriorityPolicy.inactivePiece)
                     }
-                    runCatching {
-                        target.handle.setPieceDeadline(
-                            piece,
-                            HttpRangePolicy.deadlineForWindowOffset(offset)
-                        )
-                    }
-                    pending.prioritizedPieces.add(piece)
                 }
+                slot.prioritizedPieces.clear()
+                slot.prioritizedPieces.addAll(wanted)
+            }
+            pending.sourceAssignments.keys.toList().filterNot { it in wantedPieces }.forEach { stale ->
+                scheduler.complete(stale)
+                pending.sourceAssignments.remove(stale)
             }
             return !isRequestCancelled()
         }
+    }
+
+    private fun waitForPiece(
+        pending: PendingStream,
+        target: StreamTarget,
+        filePosition: Long,
+        timeoutMs: Long,
+        requestGeneration: Long,
+        isRequestCancelled: () -> Boolean
+    ): String? {
+        val globalOffset = target.fileOffset + filePosition
+        val pieceIndex = (globalOffset / target.pieceLength).toInt()
+        val pieceEndExclusive = minOf(
+            target.fileSize,
+            ((pieceIndex + 1L) * target.pieceLength) - target.fileOffset
+        )
+        val waitStartedAt = System.currentTimeMillis()
+        pending.lastPieceIndex = pieceIndex
+        if (!prioritizePlaybackWindow(pending, target, pieceIndex, requestGeneration, isRequestCancelled)) {
+            return null
+        }
+
+        var lastScheduleAt = 0L
+        while (System.currentTimeMillis() - waitStartedAt <= timeoutMs) {
+            if (isRequestCancelled()) {
+                pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
+                pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
+                return null
+            }
+            val now = System.currentTimeMillis()
+            if (now - lastScheduleAt >= 250L) {
+                if (!prioritizePlaybackWindow(pending, target, pieceIndex, requestGeneration, isRequestCancelled)) {
+                    return null
+                }
+                lastScheduleAt = now
+            }
+            val assigned = pending.sourceAssignments[pieceIndex.toLong()] ?: listOf(pending.infoHash)
+            for (sourceId in assigned) {
+                val slot = sourceForId(pending, sourceId) ?: continue
+                if (sourceHasRange(slot, filePosition, pieceEndExclusive)) {
+                    pending.pieceScheduler?.recordProgress(pieceIndex.toLong(), sourceId, now)
+                    pending.lastPieceWaitMs = now - waitStartedAt
+                    pending.lastHttpError = ""
+                    return sourceId
+                }
+            }
+            Thread.sleep(120L)
+        }
+
+        pending.lastPieceWaitMs = System.currentTimeMillis() - waitStartedAt
+        if (!isRequestCancelled() && !pending.cancelled && activePending === pending) {
+            pending.lastHttpError =
+                "Timed out waiting for verified piece/range=$pieceIndex at filePosition=$filePosition after ${pending.lastPieceWaitMs}ms."
+            Log.w(
+                TAG,
+                "Timed out waiting for verified piece/range=$pieceIndex filePosition=$filePosition timeoutMs=$timeoutMs"
+            )
+        } else {
+            pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
+        }
+        return null
     }
 
     private fun parseRange(header: String?, size: Long): HttpByteRange? =
