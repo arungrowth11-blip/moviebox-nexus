@@ -75,6 +75,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   Timer? _torrentStatusTimer;
   Timer? _torrentPlaybackStallTimer;
   Timer? _torrentRecoveryResetTimer;
+  Timer? _preferredHindiAudioTimer;
   bool _torrentRecoveryInProgress = false;
   bool _torrentPlaybackProgressObserved = false;
   int _torrentRecoveryAttempts = 0;
@@ -553,6 +554,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _startMedia3() {
     if (_disposed || !mounted) return;
+    _preferredHindiAudioTimer?.cancel();
+    _preferredHindiAudioApplied = false;
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentPlaybackStallTimer?.cancel();
@@ -701,11 +704,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         _reportPrepared();
         _preferredHindiAudioApplied = false;
-        _applyPreferredHindiAudio();
-        Future<void>.delayed(
-          const Duration(milliseconds: 900),
-          _applyPreferredHindiAudio,
-        );
+        _schedulePreferredHindiAudio(initializedController);
         setState(() {
           _loading = false;
           _error = null;
@@ -1149,31 +1148,56 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (mounted) setState(() => _controlsVisible = true);
   }
 
-  void _applyPreferredHindiAudio() {
-    if (_disposed || _preferredHindiAudioApplied) return;
-    final controller = _media3;
-    if (controller == null) return;
-    final tracks =
-        controller.betterPlayerAsmsAudioTracks ??
-        const <BetterPlayerAsmsAudioTrack>[];
-    if (tracks.isEmpty) return;
-    // Live HLS feeds should keep the broadcaster's default rendition.
-    // Automatically overriding it with a secondary language rendition can
-    // mute streams whose alternate-audio metadata is present but unavailable.
+  void _schedulePreferredHindiAudio(BetterPlayerController controller) {
+    _preferredHindiAudioTimer?.cancel();
+    // Preserve the broadcaster's selected/default rendition for live channels.
     if (_isLive) {
       _preferredHindiAudioApplied = true;
       return;
     }
-    final hindi = tracks.where((track) {
-      final language = (track.language ?? '').toLowerCase();
-      final label = (track.label ?? '').toLowerCase();
-      return language == 'hi' ||
-          language.startsWith('hi-') ||
-          label.contains('hindi') ||
-          label.contains('हिंदी');
-    }).toList();
-    if (hindi.isNotEmpty) controller.setAudioTrack(hindi.first);
-    _preferredHindiAudioApplied = true;
+
+    var attempts = 0;
+    _preferredHindiAudioTimer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (timer) {
+        if (_disposed || !mounted || _usingVlc || !identical(_media3, controller)) {
+          timer.cancel();
+          return;
+        }
+        attempts++;
+        final tracks =
+            controller.betterPlayerAsmsAudioTracks ??
+            const <BetterPlayerAsmsAudioTrack>[];
+        final hindi = tracks.where((track) {
+          final language = (track.language ?? '').toLowerCase();
+          final label = (track.label ?? '').toLowerCase();
+          return language == 'hi' ||
+              language == 'hin' ||
+              language.startsWith('hi-') ||
+              label.contains('hindi') ||
+              label.contains('हिंदी');
+        }).toList();
+
+        if (hindi.isNotEmpty) {
+          try {
+            controller.setAudioTrack(hindi.first);
+            _preferredHindiAudioApplied = true;
+            timer.cancel();
+            return;
+          } catch (error) {
+            debugPrint('MovieBox delayed Hindi audio selection failed: $error');
+          }
+        }
+
+        // Adaptive manifests may publish alternate audio after the player has
+        // raised its initialized event. Keep checking for six seconds, but
+        // never override the user's later manual selection.
+        if (attempts >= 12) {
+          _preferredHindiAudioApplied = true;
+          timer.cancel();
+        }
+      },
+    );
   }
 
   String _audioTrackLabel(BetterPlayerAsmsAudioTrack track) {
@@ -1233,6 +1257,8 @@ class _PlayerScreenState extends State<PlayerScreen>
                     ? const Icon(Icons.check, color: _movieBoxCyan)
                     : null,
                 onTap: () {
+                  _preferredHindiAudioApplied = true;
+                  _preferredHindiAudioTimer?.cancel();
                   controller.setAudioTrack(track);
                   Navigator.pop(sheetContext);
                 },
@@ -1723,6 +1749,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentStatusTimer?.cancel();
     _torrentPlaybackStallTimer?.cancel();
     _torrentRecoveryResetTimer?.cancel();
+    _preferredHindiAudioTimer?.cancel();
     _media3?.dispose(forceDispose: true);
     if (_isEmbeddedTorrent) {
       // Stop the native range server and release its temporary video file when
