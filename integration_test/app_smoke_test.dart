@@ -502,7 +502,9 @@ void main() {
                 await channel.invokeMapMethod<String, dynamic>('getStatus') ??
                 <String, dynamic>{};
           } catch (error) {
-            nativeStatus = <String, dynamic>{'diagnosticError': error.toString()};
+            nativeStatus = <String, dynamic>{
+              'diagnosticError': error.toString(),
+            };
           }
           fail(
             'Torrent range $start-$end returned HTTP ${response.statusCode}: '
