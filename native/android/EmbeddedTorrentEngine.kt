@@ -34,6 +34,18 @@ import java.util.concurrent.atomic.AtomicLong
  * libtorrent reports each backing piece as complete, so the player never reads
  * the sparse/preallocated zero-filled areas of an incomplete file.
  */
+internal class DeferredTorrentCleanupTask(
+    private val awaitStartup: () -> Unit,
+    private val awaitReaders: () -> Unit,
+    private val cleanup: () -> Unit
+) {
+    fun run() {
+        awaitStartup()
+        awaitReaders()
+        cleanup()
+    }
+}
+
 internal class EmbeddedTorrentEngine(private val context: Context) {
     private val lock = Any()
     private val requestPool = Executors.newCachedThreadPool { runnable ->
@@ -603,13 +615,17 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // Retain the PendingStream/handle until startup and every reader
                 // belonging to this stream have actually exited. Never drop the
                 // only cleanup reference on a bounded-wait timeout.
-                if (pending != null) {
-                    pending.startupFinished.await()
-                    while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
-                } else {
-                    while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
-                }
-                removeTorrentAndCache(manager, pending, oldHandle)
+                DeferredTorrentCleanupTask(
+                    awaitStartup = { pending?.startupFinished?.await() },
+                    awaitReaders = {
+                        if (pending != null) {
+                            while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
+                        } else {
+                            while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
+                        }
+                    },
+                    cleanup = { removeTorrentAndCache(manager, pending, oldHandle) }
+                ).run()
             } catch (interrupted: InterruptedException) {
                 Thread.currentThread().interrupt()
                 Log.w(TAG, "Deferred torrent cleanup interrupted; cache retained for next startup sweep.")
