@@ -3,16 +3,19 @@ import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 void main() {
   group('Media3StartupPolicy', () {
-    test('does not restart a torrent before its native piece wait can expire', () {
-      expect(
-        Media3StartupPolicy.torrentPlaybackStallTimeout,
-        greaterThan(const Duration(seconds: 180)),
-      );
-      expect(
-        Media3StartupPolicy.torrentPlaybackStallTimeout,
-        lessThan(const Duration(seconds: 260)),
-      );
-    });
+    test(
+      'does not restart a torrent before its native piece wait can expire',
+      () {
+        expect(
+          Media3StartupPolicy.torrentPlaybackStallTimeout,
+          greaterThan(const Duration(seconds: 180)),
+        );
+        expect(
+          Media3StartupPolicy.torrentPlaybackStallTimeout,
+          lessThan(const Duration(seconds: 260)),
+        );
+      },
+    );
     test(
       'keeps torrent startup pending while bounded first-piece retries run',
       () {

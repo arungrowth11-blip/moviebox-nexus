@@ -1160,7 +1160,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     _preferredHindiAudioTimer = Timer.periodic(
       const Duration(milliseconds: 500),
       (timer) {
-        if (_disposed || !mounted || _usingVlc || !identical(_media3, controller)) {
+        if (_disposed ||
+            !mounted ||
+            _usingVlc ||
+            !identical(_media3, controller)) {
           timer.cancel();
           return;
         }
