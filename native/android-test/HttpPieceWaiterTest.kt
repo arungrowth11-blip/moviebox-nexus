@@ -13,6 +13,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpPieceWaiterTest {
+    @Test
+    fun torrentCacheIsNotDeletedUntilNativeHandleRemovalIsConfirmed() {
+        val deletionCalled = AtomicBoolean(false)
+        val cleanup = TorrentCleanupOrder(
+            removeNativeHandles = { false },
+            deleteCache = {
+                deletionCalled.set(true)
+                true
+            }
+        )
+
+        assertFalse(cleanup.run())
+        assertFalse(deletionCalled.get())
+    }
+
+    @Test
+    fun torrentCacheDeletionRunsOnlyAfterNativeHandleRemovalSucceeds() {
+        val steps = mutableListOf<String>()
+        val cleanup = TorrentCleanupOrder(
+            removeNativeHandles = {
+                steps += "remove-handle"
+                true
+            },
+            deleteCache = {
+                steps += "delete-cache"
+                true
+            }
+        )
+
+        assertTrue(cleanup.run())
+        assertEquals(listOf("remove-handle", "delete-cache"), steps)
+    }
+
 
     @Test
     fun deferredTorrentCleanupRecoversAfterBothBoundedStopWaitsTimeOut() {
