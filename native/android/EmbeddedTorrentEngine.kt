@@ -1184,7 +1184,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // For GET, keep the HTTP status uncommitted until the first requested
                 // piece is verified and flushed by libtorrent. This prevents a 206
                 // response followed by an empty body when the swarm is still starting.
-                if (HttpRangePolicy.shouldWaitForFirstPiece(method) && !waitForPiece(
+                val firstPieceSourceId = if (HttpRangePolicy.shouldWaitForFirstPiece(method)) {
+                    waitForPiece(
                         pending,
                         target,
                         start,
@@ -1192,7 +1193,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         requestGeneration,
                         isRequestCancelled
                     )
-                ) {
+                } else {
+                    null
+                }
+                if (HttpRangePolicy.shouldWaitForFirstPiece(method) && firstPieceSourceId == null) {
                     when (HttpRangePolicy.beforeHeaders(
                         pieceReady = false,
                         cancelled = isRequestCancelled()
@@ -1252,34 +1256,34 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 output.flush()
                 if (method == "HEAD") return
 
-                RandomAccessFile(target.file, "r").use { media ->
+                val sourceReaders = HashMap<String, RandomAccessFile>()
+                try {
                     var position = start
                     var bytesSent = 0L
-                    // GET already passed the pre-header piece gate above.
-                    // Wait only when entering a new torrent piece. Multiple 128 KiB
-                    // reads inside a verified piece must not repeat an 80 ms delay
-                    // or reset the libtorrent playback-priority window.
+                    var selectedSourceId = firstPieceSourceId ?: pending.infoHash
+                    // Each source has isolated storage and has passed the identity gate.
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
                         val globalOffset = target.fileOffset + position
                         val pieceIndex = (globalOffset / target.pieceLength).toInt()
                         if (pieceReadGate.needsWait(pieceIndex)) {
-                            if (!waitForPiece(
-                                    pending,
-                                    target,
-                                    position,
-                                    STREAM_PIECE_TIMEOUT_MS,
-                                    requestGeneration,
-                                    isRequestCancelled
-                                )
-                            ) {
+                            selectedSourceId = waitForPiece(
+                                pending,
+                                target,
+                                position,
+                                STREAM_PIECE_TIMEOUT_MS,
+                                requestGeneration,
+                                isRequestCancelled
+                            ) ?: run {
                                 when (HttpRangePolicy.afterHeaders(
                                     pieceReady = false,
                                     cancelled = isRequestCancelled()
                                 )) {
                                     HttpPieceDecision.CANCELLED -> return
                                     HttpPieceDecision.ABORT ->
-                                        throw java.net.SocketTimeoutException("Torrent piece is not available yet.")
+                                        throw java.net.SocketTimeoutException(
+                                            "No verified swarm source delivered the requested piece."
+                                        )
                                     else -> return
                                 }
                             }
@@ -1291,6 +1295,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             remainingBytes = end - position + 1,
                             maxBufferBytes = buffer.size
                         )
+                        val sourceSlot = sourceForId(pending, selectedSourceId)
+                            ?: pending.primarySlot
+                            ?: throw IllegalStateException("No verified primary torrent source is available.")
+                        val media = sourceReaders.getOrPut(sourceSlot.id) {
+                            RandomAccessFile(sourceSlot.target.file, "r")
+                        }
                         media.seek(position)
                         media.readFully(buffer, 0, amount)
                         output.write(buffer, 0, amount)
@@ -1305,6 +1315,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         pending.lastHttpError = ""
                     }
                     Log.i(TAG, "HTTP response complete bytes=$bytesSent expected=$contentLength")
+                } finally {
+                    sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
                 }
             } catch (error: Exception) {
                 // A timeout after headers are flushed cannot be converted to a new
