@@ -1470,10 +1470,13 @@ class CatalogEngine {
               return <Map<String, String>>[];
             }
             final response = await _client
-                .get(uri, headers: const <String, String>{
-                  'User-Agent': 'MovieBoxNexus/1.2',
-                  'Accept': '*/*',
-                })
+                .get(
+                  uri,
+                  headers: const <String, String>{
+                    'User-Agent': 'MovieBoxNexus/1.2',
+                    'Accept': '*/*',
+                  },
+                )
                 .timeout(const Duration(seconds: 12));
             if (response.statusCode != 200 ||
                 response.bodyBytes.length > 15 * 1024 * 1024) {
@@ -1492,11 +1495,13 @@ class CatalogEngine {
           }
           return parsePlaylistDocument(body, source: source.name)
               .take(10000)
-              .map((channel) => <String, String>{
-                ...channel,
-                'source': 'My playlist · ${source.name}',
-                'userPlaylistId': source.id,
-              })
+              .map(
+                (channel) => <String, String>{
+                  ...channel,
+                  'source': 'My playlist · ${source.name}',
+                  'userPlaylistId': source.id,
+                },
+              )
               .toList(growable: false);
         } catch (error) {
           debugPrint('MovieBox custom playlist ${source.name} failed: $error');
@@ -2076,8 +2081,11 @@ class _RootShellState extends State<RootShell> {
         try {
           final decoded = jsonDecode(item);
           if (decoded is Map) {
-            final source = UserPlaylistSource.fromJson(Map<String, dynamic>.from(decoded));
-            if (source.id.isNotEmpty && (source.url.isNotEmpty || source.localPath.isNotEmpty)) {
+            final source = UserPlaylistSource.fromJson(
+              Map<String, dynamic>.from(decoded),
+            );
+            if (source.id.isNotEmpty &&
+                (source.url.isNotEmpty || source.localPath.isNotEmpty)) {
               liveTvPlaylists.add(source);
             }
           }
@@ -2174,20 +2182,28 @@ class _RootShellState extends State<RootShell> {
 
   Future<void> _addLiveTvPlaylistUrl(String name, String rawUrl) async {
     final uri = Uri.tryParse(rawUrl.trim());
-    if (uri == null || !uri.hasAuthority ||
-        !{'http', 'https'}.contains(uri.scheme) || uri.host.isEmpty) {
-      throw const FormatException('Valid HTTP/HTTPS M3U playlist URL enter karein.');
+    if (uri == null ||
+        !uri.hasAuthority ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty) {
+      throw const FormatException(
+        'Valid HTTP/HTTPS M3U playlist URL enter karein.',
+      );
     }
-    if (liveTvPlaylists.any((source) => source.url.isNotEmpty && source.url == uri.toString())) {
+    if (liveTvPlaylists.any(
+      (source) => source.url.isNotEmpty && source.url == uri.toString(),
+    )) {
       throw const FormatException('Ye playlist pehle se add hai.');
     }
-    final response = await http.get(
-      uri,
-      headers: const <String, String>{
-        'User-Agent': 'MovieBoxNexus/1.2',
-        'Accept': '*/*',
-      },
-    ).timeout(const Duration(seconds: 15));
+    final response = await http
+        .get(
+          uri,
+          headers: const <String, String>{
+            'User-Agent': 'MovieBoxNexus/1.2',
+            'Accept': '*/*',
+          },
+        )
+        .timeout(const Duration(seconds: 15));
     if (response.statusCode != 200) {
       throw Exception('Playlist HTTP ${response.statusCode}');
     }
@@ -2195,7 +2211,9 @@ class _RootShellState extends State<RootShell> {
       throw const FormatException('Playlist 15 MB se badi hai.');
     }
     if (parsePlaylistDocument(response.body).isEmpty) {
-      throw const FormatException('Readable M3U/M3U8 playlist ya URL-per-line text nahi mila.');
+      throw const FormatException(
+        'Readable M3U/M3U8 playlist ya URL-per-line text nahi mila.',
+      );
     }
     final source = UserPlaylistSource(
       id: DateTime.now().microsecondsSinceEpoch.toString(),
@@ -2207,27 +2225,40 @@ class _RootShellState extends State<RootShell> {
     await _save();
   }
 
-  Future<void> _importLiveTvPlaylistFile(String fileName, String contents) async {
+  Future<void> _importLiveTvPlaylistFile(
+    String fileName,
+    String contents,
+  ) async {
     final lowerName = fileName.toLowerCase();
     if (!RegExp(r'\.(m3u|m3u8|txt)$').hasMatch(lowerName)) {
-      throw const FormatException('Sirf .m3u, .m3u8 aur .txt files supported hain.');
+      throw const FormatException(
+        'Sirf .m3u, .m3u8 aur .txt files supported hain.',
+      );
     }
     if (contents.isEmpty || contents.length > 15 * 1024 * 1024) {
-      throw const FormatException('Playlist empty hai ya 15 MB limit se badi hai.');
+      throw const FormatException(
+        'Playlist empty hai ya 15 MB limit se badi hai.',
+      );
     }
     if (parsePlaylistDocument(contents).isEmpty) {
-      throw const FormatException('File mein valid M3U entries ya HTTP(S) stream URLs nahi mile.');
+      throw const FormatException(
+        'File mein valid M3U entries ya HTTP(S) stream URLs nahi mile.',
+      );
     }
     final id = DateTime.now().microsecondsSinceEpoch.toString();
     final support = await getApplicationSupportDirectory();
-    final directory = Directory(support.path + Platform.pathSeparator + 'user_playlists');
+    final directory = Directory(
+      support.path + Platform.pathSeparator + 'user_playlists',
+    );
     await directory.create(recursive: true);
     final extension = lowerName.endsWith('.m3u8')
         ? '.m3u8'
         : lowerName.endsWith('.txt')
         ? '.txt'
         : '.m3u';
-    final file = File(directory.path + Platform.pathSeparator + 'playlist_$id$extension');
+    final file = File(
+      directory.path + Platform.pathSeparator + 'playlist_$id$extension',
+    );
     await file.writeAsString(contents, flush: true);
     final source = UserPlaylistSource(
       id: id,
@@ -2247,11 +2278,16 @@ class _RootShellState extends State<RootShell> {
     }
   }
 
-  Future<void> _setLiveTvPlaylistEnabled(UserPlaylistSource source, bool enabled) async {
+  Future<void> _setLiveTvPlaylistEnabled(
+    UserPlaylistSource source,
+    bool enabled,
+  ) async {
     final index = liveTvPlaylists.indexWhere((item) => item.id == source.id);
     if (index < 0) return;
     setState(() {
-      liveTvPlaylists[index] = liveTvPlaylists[index].copyWith(enabled: enabled);
+      liveTvPlaylists[index] = liveTvPlaylists[index].copyWith(
+        enabled: enabled,
+      );
     });
     await _save();
   }
@@ -3468,8 +3504,10 @@ class LiveTvScreen extends StatefulWidget {
   final CatalogEngine engine;
   final List<UserPlaylistSource> userPlaylists;
   final Future<void> Function(String name, String url)? onAddPlaylistUrl;
-  final Future<void> Function(String fileName, String contents)? onImportPlaylist;
-  final Future<void> Function(UserPlaylistSource source, bool enabled)? onSetPlaylistEnabled;
+  final Future<void> Function(String fileName, String contents)?
+  onImportPlaylist;
+  final Future<void> Function(UserPlaylistSource source, bool enabled)?
+  onSetPlaylistEnabled;
   final Future<void> Function(UserPlaylistSource source)? onRemovePlaylist;
   final void Function(
     String,
@@ -3618,7 +3656,8 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
   );
 
   Future<void> _showAddPlaylistDialog() async {
-    if (widget.onAddPlaylistUrl == null && widget.onImportPlaylist == null) return;
+    if (widget.onAddPlaylistUrl == null && widget.onImportPlaylist == null)
+      return;
     final nameController = TextEditingController();
     final urlController = TextEditingController();
     final action = await showDialog<Map<String, String>>(
@@ -3689,11 +3728,17 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     try {
       if (action['kind'] == 'url') {
         final url = action['url'] ?? '';
-        if (url.isEmpty) throw const FormatException('Playlist URL enter karein.');
-        await widget.onAddPlaylistUrl?.call(action['name'] ?? requestedName, url);
+        if (url.isEmpty)
+          throw const FormatException('Playlist URL enter karein.');
+        await widget.onAddPlaylistUrl?.call(
+          action['name'] ?? requestedName,
+          url,
+        );
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Playlist saved. Channels are loading.')),
+          const SnackBar(
+            content: Text('Playlist saved. Channels are loading.'),
+          ),
         );
       } else if (action['kind'] == 'file') {
         final picked = await _playlistPickerChannel
@@ -3701,7 +3746,8 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
         if (picked == null) return;
         final fileName = (picked['name'] ?? 'playlist.m3u').toString();
         final contents = (picked['content'] ?? '').toString();
-        if (contents.isEmpty) throw const FormatException('Selected playlist file is empty.');
+        if (contents.isEmpty)
+          throw const FormatException('Selected playlist file is empty.');
         final customName = action['name']?.trim() ?? '';
         final name = customName.isEmpty ? fileName : customName;
         await widget.onImportPlaylist?.call(name, contents);
@@ -3714,7 +3760,10 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Playlist add failed: $error'), duration: const Duration(seconds: 8)),
+        SnackBar(
+          content: Text('Playlist add failed: $error'),
+          duration: const Duration(seconds: 8),
+        ),
       );
     }
   }
@@ -3741,7 +3790,11 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                     const Expanded(
                       child: Text(
                         'My playlists',
-                        style: TextStyle(color: _cyan, fontSize: 20, fontWeight: FontWeight.w800),
+                        style: TextStyle(
+                          color: _cyan,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                        ),
                       ),
                     ),
                     IconButton(
@@ -3764,7 +3817,13 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                           : (Uri.tryParse(source.url)?.host ?? source.url);
                       return ListTile(
                         contentPadding: EdgeInsets.zero,
-                        title: Text(source.name, style: const TextStyle(color: _textPri, fontWeight: FontWeight.w700)),
+                        title: Text(
+                          source.name,
+                          style: const TextStyle(
+                            color: _textPri,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                         subtitle: Text(
                           location,
                           maxLines: 1,
@@ -3776,13 +3835,19 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                           onChanged: widget.onSetPlaylistEnabled == null
                               ? null
                               : (enabled) async {
-                                  await widget.onSetPlaylistEnabled!(source, enabled);
+                                  await widget.onSetPlaylistEnabled!(
+                                    source,
+                                    enabled,
+                                  );
                                   setSheetState(() {});
                                 },
                         ),
                         trailing: IconButton(
                           tooltip: 'Remove playlist',
-                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.redAccent,
+                          ),
                           onPressed: widget.onRemovePlaylist == null
                               ? null
                               : () async {
