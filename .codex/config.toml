@@ -1,0 +1,13 @@
+# Project-scoped Codex configuration for MovieBox Nexus.
+# Codex versions/policies may differ; inspect effective configuration before use.
+# Multi-agent support is experimental and can be disabled by setting it false.
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 3
+max_depth = 1
+
+[agents.reviewer]
+description = "Read-only MovieBox reviewer for playback correctness, lifecycle, cache/torrent safety, privacy, and regression coverage."
+config_file = "agents/reviewer.toml"
