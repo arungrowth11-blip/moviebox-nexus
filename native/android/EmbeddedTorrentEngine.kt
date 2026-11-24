@@ -650,7 +650,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     ): Boolean {
         if (pending != null) {
             val cleanup = TorrentCleanupOrder(
-                removeNativeHandles = {
+                removeNativeHandles = removeHandles@ {
                     if (manager == null) {
                         Log.w(TAG, "Cannot confirm torrent handle removal without a live session.")
                         false
@@ -663,7 +663,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             }
                         }.getOrElse { error ->
                             Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
-                            return@TorrentCleanupOrder false
+                            return@removeHandles false
                         }
                         matchingHandles.forEach { handle ->
                             if (runCatching { manager.remove(handle) }.isFailure) {
