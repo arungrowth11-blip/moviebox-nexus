@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -39,6 +40,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         Thread(runnable, "moviebox-torrent-http").apply { isDaemon = true }
     }
     private val activeHttpSockets = CopyOnWriteArraySet<Socket>()
+    private val deferredCleanupHashes = ConcurrentHashMap.newKeySet<String>()
+    private val cleanupExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "moviebox-torrent-cleanup").apply { isDaemon = true }
+    }
     private val torrentCacheRoot = File(context.cacheDir, TorrentCachePolicy.DIRECTORY_NAME)
 
     @Volatile private var session: SessionManager? = null
@@ -70,6 +75,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val ready = CountDownLatch(1)
         val startupStarted = AtomicBoolean(false)
         val startupFinished = CountDownLatch(1)
+        val activeReaders = AtomicLong(0L)
         val httpRequestCount = AtomicLong(0L)
         val httpBytesSent = AtomicLong(0L)
         val requestGeneration = AtomicLong(0L)
@@ -171,6 +177,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
         stopPlayback()
+        check(hashHex !in deferredCleanupHashes) {
+            "Previous playback for this torrent is still closing its readers; retry playback shortly."
+        }
         playbackPaused = false
 
         val manager = session ?: throw IllegalStateException("Torrent session did not initialize.")
@@ -466,31 +475,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val startupSettled = pending == null || runCatching {
             pending.startupFinished.await(5, TimeUnit.SECONDS)
         }.getOrDefault(false)
-        val readersSettled = waitForHttpReadersToClose()
+        val readersSettled = waitForHttpReadersToClose(pending)
+        val managerForCleanup = session
         if (!startupSettled || !readersSettled) {
-            Log.w(TAG, "Deferred torrent cache deletion: startupSettled=$startupSettled readersSettled=$readersSettled")
+            Log.w(TAG, "Deferring torrent cleanup until workers settle: startupSettled=$startupSettled readersSettled=$readersSettled")
+            deferTorrentCleanup(managerForCleanup, pending, oldHandle)
             return
         }
 
-        if (pending != null) {
-            runCatching {
-                session?.let { manager ->
-                    manager.getTorrentHandles()
-                        .filter { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
-                        .forEach { handle -> manager.remove(handle) }
-                }
-            }
-            val removed = runCatching {
-                TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
-            }.getOrDefault(false)
-            if (!removed) {
-                Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
-            } else {
-                Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
-            }
-        } else if (oldHandle != null) {
-            runCatching { session?.remove(oldHandle) }
-        }
+        removeTorrentAndCache(managerForCleanup, pending, oldHandle)
     }
 
     fun close() {
@@ -526,12 +519,21 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         runCatching { socket.close() }
                         continue
                     }
-                    requestPool.execute {
-                        try {
-                            serveRequest(socket, pending)
-                        } finally {
-                            activeHttpSockets.remove(socket)
+                    pending.activeReaders.incrementAndGet()
+                    try {
+                        requestPool.execute {
+                            try {
+                                serveRequest(socket, pending)
+                            } finally {
+                                pending.activeReaders.decrementAndGet()
+                                activeHttpSockets.remove(socket)
+                            }
                         }
+                    } catch (error: Exception) {
+                        pending.activeReaders.decrementAndGet()
+                        activeHttpSockets.remove(socket)
+                        runCatching { socket.close() }
+                        Log.w(TAG, "Could not schedule torrent HTTP reader", error)
                     }
                 } catch (_: Exception) {
                     // Closing the server socket is the normal way to leave this loop.
@@ -548,9 +550,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         serverSocket = null
     }
 
-    private fun waitForHttpReadersToClose(timeoutMs: Long = 2_000L): Boolean {
+    private fun waitForHttpReadersToClose(pending: PendingStream?, timeoutMs: Long = 2_000L): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        while (activeHttpSockets.isNotEmpty() && System.currentTimeMillis() < deadline) {
+        while ((pending?.activeReaders?.get() ?: 0L) > 0L && System.currentTimeMillis() < deadline) {
             try {
                 Thread.sleep(20L)
             } catch (_: InterruptedException) {
@@ -558,7 +560,60 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 return false
             }
         }
-        return activeHttpSockets.isEmpty()
+        return (pending?.activeReaders?.get() ?: 0L) == 0L
+    }
+
+    private fun removeTorrentAndCache(
+        manager: SessionManager?,
+        pending: PendingStream?,
+        oldHandle: TorrentHandle?
+    ) {
+        if (pending != null) {
+            runCatching {
+                manager?.getTorrentHandles()
+                    ?.filter { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
+                    ?.forEach { handle -> manager.remove(handle) }
+            }.onFailure { error ->
+                Log.w(TAG, "Could not remove stopped torrent handle: ${error.message}")
+            }
+            val removed = runCatching {
+                TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
+            }.getOrDefault(false)
+            if (!removed) {
+                Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
+            } else {
+                Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
+            }
+        } else if (oldHandle != null) {
+            runCatching { manager?.remove(oldHandle) }
+        }
+    }
+
+    private fun deferTorrentCleanup(
+        manager: SessionManager?,
+        pending: PendingStream?,
+        oldHandle: TorrentHandle?
+    ) {
+        pending?.let { deferredCleanupHashes.add(it.infoHash) }
+        cleanupExecutor.execute {
+            try {
+                // Retain the PendingStream/handle until startup and every reader
+                // belonging to this stream have actually exited. Never drop the
+                // only cleanup reference on a bounded-wait timeout.
+                if (pending != null) {
+                    pending.startupFinished.await()
+                    while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
+                } else {
+                    while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
+                }
+                removeTorrentAndCache(manager, pending, oldHandle)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                Log.w(TAG, "Deferred torrent cleanup interrupted; cache retained for next startup sweep.")
+            } finally {
+                pending?.let { deferredCleanupHashes.remove(it.infoHash) }
+            }
+        }
     }
 
     private fun serveRequest(socket: Socket, pending: PendingStream) {
