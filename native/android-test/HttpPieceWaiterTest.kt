@@ -163,6 +163,41 @@ class HttpPieceWaiterTest {
     }
 
     @Test
+    fun adaptivePrefetchWindowUsesConnectedSourcesAndMeasuredDownloadRate() {
+        val baseline = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 1024 * 1024,
+            connectedSources = 0,
+            downloadRateBytesPerSecond = 0L
+        )
+        val morePeers = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 1024 * 1024,
+            connectedSources = 12,
+            downloadRateBytesPerSecond = 0L
+        )
+        val fasterSwarm = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 1024 * 1024,
+            connectedSources = 0,
+            downloadRateBytesPerSecond = 4L * 1024L * 1024L
+        )
+        val capped = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 1024 * 1024,
+            connectedSources = 200,
+            downloadRateBytesPerSecond = 100L * 1024L * 1024L
+        )
+        val largePieces = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 64 * 1024 * 1024,
+            connectedSources = 32,
+            downloadRateBytesPerSecond = 16L * 1024L * 1024L
+        )
+
+        assertEquals(HttpRangePolicy.PREFETCH_PIECES, baseline)
+        assertTrue("More connected sources should widen the window", morePeers > baseline)
+        assertTrue("Higher observed throughput should widen the window", fasterSwarm > baseline)
+        assertEquals(HttpRangePolicy.MAX_PREFETCH_LOOK_AHEAD_PIECES, capped)
+        assertEquals(0, largePieces)
+    }
+
+    @Test
     fun playbackPriorityWindowStartsAtSeekPieceAndPrefetchesFifteenPieces() {
         assertEquals(
             (1979..1994).toList(),
