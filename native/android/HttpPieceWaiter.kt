@@ -59,8 +59,11 @@ internal object HttpRangePolicy {
     // Do not reject a torrent startup before a normal full piece can be verified.
     const val FIRST_RESPONSE_PIECE_WAIT_MS = 45_000L
     const val STREAM_PIECE_WAIT_MS = 180_000L
-    const val PREFETCH_PIECES = 3
-    const val PREFETCH_DEADLINE_STEP_MS = 2_500
+    // Keep a larger verified-piece window in flight so libtorrent can
+    // schedule useful blocks across multiple connected peers instead of
+    // starving high-bandwidth or higher-latency links with a 1 MiB window.
+    const val PREFETCH_PIECES = 15
+    const val PREFETCH_DEADLINE_STEP_MS = 1_000
     const val RETRY_AFTER_SECONDS = 1
 
     fun playbackWindow(
