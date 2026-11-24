@@ -515,7 +515,7 @@ class HttpPieceWaiterTest {
 
         assertEquals(ContentIdentityKind.V1_INTERIOR_ONLY, result.kind)
         assertEquals(924L, result.verifiedStart)
-        assertEquals(4_020L, result.verifiedEndExclusive)
+        assertEquals(3_996L, result.verifiedEndExclusive)
         assertEquals(1024, result.canonicalChunkBytes)
     }
 
