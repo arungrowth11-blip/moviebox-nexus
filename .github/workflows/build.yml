@@ -142,6 +142,16 @@ jobs:
               repositoryHandler.google()
           }
 
+          // Maven Central returned HTTP 403 for the LibVLC AAR on the hosted runner.
+          // This mirror is restricted to VideoLAN artifacts only.
+          def addVideoLanRepository = { repositoryHandler ->
+              repositoryHandler.maven {
+                  name = 'VideoLanLiferayFallback'
+                  url = new URI('https://repository-cdn.liferay.com/nexus/content/repositories/public/')
+                  content { includeGroup('org.videolan.android') }
+              }
+          }
+
           // Plugin markers and Gradle's own Kotlin DSL plugin must resolve from
           // the Plugin Portal first. Keep mirrors as fallbacks for normal modules.
           gradle.beforeSettings { settings ->
@@ -156,6 +166,9 @@ jobs:
                   'PluginFallback'
               )
 
+              addVideoLanRepository.call(
+                  settings.dependencyResolutionManagement.repositories
+              )
               addMovieBoxMirrors.call(
                   settings.dependencyResolutionManagement.repositories,
                   'Dependency'
@@ -488,6 +501,14 @@ jobs:
           }
           '''
 
+          videolan_repository = '''repositories {
+              maven {
+                  url = uri("https://repository-cdn.liferay.com/nexus/content/repositories/public/")
+                  content { includeGroup("org.videolan.android") }
+              }
+          }
+          '''
+
           app_gradle = Path('android/app/build.gradle.kts')
           app_text = app_gradle.read_text(encoding='utf-8')
 
@@ -508,6 +529,8 @@ jobs:
           # Gradle reports that project repositories override settings repositories.
           if 'https://dl.frostwire.com/maven' not in app_text:
               app_text += '\n\n' + frostwire_repository + '\n'
+          if 'repository-cdn.liferay.com/nexus/content/repositories/public/' not in app_text:
+              app_text += '\n\n' + videolan_repository + '\n'
 
           dependency = 'jlibtorrent-android:2.0.15.3@aar'
           if dependency not in app_text:
@@ -531,6 +554,8 @@ jobs:
           final_app = app_gradle.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in final_app:
               raise SystemExit('FrostWire Maven repository is missing from the app project repositories.')
+          if 'repository-cdn.liferay.com/nexus/content/repositories/public/' not in final_app:
+              raise SystemExit('VideoLAN fallback Maven repository is missing from the app project repositories.')
           if dependency not in final_app:
               raise SystemExit('FrostWire jlibtorrent Android AAR dependency was not configured.')
           if 'minSdk = maxOf(26, flutter.minSdkVersion)' not in final_app:
@@ -540,6 +565,8 @@ jobs:
           init_text = init_script.read_text(encoding='utf-8')
           if 'https://dl.frostwire.com/maven' not in init_text:
               raise SystemExit('FrostWire Maven repository is missing from the Gradle init script.')
+          if 'VideoLanLiferayFallback' not in init_text:
+              raise SystemExit('VideoLAN fallback repository is missing from the Gradle init script.')
           if "task.kotlinOptions.jvmTarget = '17'" not in init_text:
               raise SystemExit('Kotlin JVM target alignment is missing from the Gradle init script.')
           print('Configured FrostWire jlibtorrent Android AAR 2.0.15.3 in project and settings repositories (all ABIs, minSdk 26).')
