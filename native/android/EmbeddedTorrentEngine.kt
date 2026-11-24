@@ -22,6 +22,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,9 +35,17 @@ import java.util.concurrent.atomic.AtomicLong
  * libtorrent reports each backing piece as complete, so the player never reads
  * the sparse/preallocated zero-filled areas of an incomplete file.
  */
+internal data class TorrentSourceCandidate(
+    val infoHash: String,
+    val title: String,
+    val fileIdx: Int?,
+    val trackers: List<String>
+)
+
 internal class DeferredTorrentCleanupTask(
     private val awaitStartup: () -> Unit,
     private val awaitReaders: () -> Unit,
+    private val awaitAggregation: () -> Unit = {},
     private val cleanup: () -> Boolean,
     private val retryDelayMs: Long = 250L
 ) {
@@ -56,6 +65,7 @@ internal class DeferredTorrentCleanupTask(
 
         try {
             awaitUninterruptibly(awaitStartup)
+            awaitUninterruptibly(awaitAggregation)
             awaitUninterruptibly(awaitReaders)
             while (true) {
                 var cleaned = false
@@ -108,6 +118,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private val startupExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "moviebox-torrent-startup").apply { isDaemon = true }
     }
+    private val aggregationExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "moviebox-cross-swarm-discovery").apply { isDaemon = true }
+    }
 
     private data class StreamTarget(
         val handle: TorrentHandle,
@@ -117,13 +130,27 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val pieceLength: Int,
         val firstPiece: Int,
         val lastPiece: Int,
-        val token: String
+        val token: String,
+        val fileIndex: Int
+    )
+
+    private data class VerifiedSwarmSlot(
+        val id: String,
+        val target: StreamTarget,
+        val identity: ContentIdentityResult?,
+        val storageDir: File,
+        val isPrimary: Boolean,
+        val prioritizedPieces: MutableSet<Int> = linkedSetOf(),
+        @Volatile var lastSampleAtMs: Long = 0L,
+        @Volatile var goodputBytesPerSecond: Long = 0L,
+        @Volatile var connectedPeers: Int = 0
     )
 
     private class PendingStream(
         val token: String,
         val infoHash: String,
-        val storageDir: File
+        val storageDir: File,
+        val additionalSources: List<TorrentSourceCandidate>
     ) {
         val ready = CountDownLatch(1)
         val startupStarted = AtomicBoolean(false)
@@ -134,6 +161,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val requestGeneration = AtomicLong(0L)
         val priorityLock = Any()
         val prioritizedPieces = linkedSetOf<Int>()
+        val sourceInfoHashes = ConcurrentHashMap.newKeySet<String>()
+        val sourceStorageDirs = CopyOnWriteArrayList<File>()
+        val secondarySources = CopyOnWriteArrayList<VerifiedSwarmSlot>()
+        val sourceAssignments = ConcurrentHashMap<Long, List<String>>()
+        val aggregationFinished = CountDownLatch(if (additionalSources.isEmpty()) 0 else 1)
+        val aggregationStarted = AtomicBoolean(false)
+        @Volatile var aggregationTask: Future<*>? = null
+        @Volatile var primaryProof: TorrentFileIdentityProof? = null
+        @Volatile var primarySlot: VerifiedSwarmSlot? = null
+        @Volatile var pieceScheduler: CrossSwarmPieceScheduler? = null
         @Volatile var target: StreamTarget? = null
         @Volatile var error: String? = null
         @Volatile var lastHttpStatus = 0
@@ -232,13 +269,25 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         title: String,
         fileIdx: Int?,
         suppliedTrackers: List<String> = emptyList(),
-        testPeerEndpoint: String? = null
+        testPeerEndpoint: String? = null,
+        additionalSources: List<TorrentSourceCandidate> = emptyList()
     ): String {
         initialize()
         val hashHex = normalizeInfoHash(infoHash)
+        val seenHashes = linkedSetOf(hashHex)
+        val safeAdditionalSources = additionalSources.mapNotNull { source ->
+            val normalized = runCatching { normalizeInfoHash(source.infoHash) }.getOrNull() ?: return@mapNotNull null
+            if (!seenHashes.add(normalized)) return@mapNotNull null
+            source.copy(
+                infoHash = normalized,
+                title = source.title.take(160),
+                fileIdx = source.fileIdx?.takeIf { it >= 0 },
+                trackers = source.trackers.map { it.trim() }.filter { isSafeTracker(it) }.distinct().take(28)
+            )
+        }.take(MAX_ADDITIONAL_SOURCES)
         stopPlayback()
-        check(hashHex !in deferredCleanupHashes) {
-            "Previous playback for this torrent is still closing its readers; retry playback shortly."
+        check(deferredCleanupHashes.isEmpty()) {
+            "A previous multi-source playback is still cleaning up; retry when that cleanup settles."
         }
         playbackPaused = false
 
@@ -254,8 +303,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val pending = PendingStream(
             token = UUID.randomUUID().toString().replace("-", ""),
             infoHash = hashHex,
-            storageDir = saveDir
+            storageDir = saveDir,
+            additionalSources = safeAdditionalSources
         )
+        pending.sourceInfoHashes.add(hashHex)
+        pending.sourceStorageDirs.add(saveDir)
         startHttpServer(pending)
         activePending = pending
         val port = serverSocket?.localPort
@@ -362,6 +414,18 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                     activeHandle = handle
                     pending.target = target
+                    pending.primaryProof = buildIdentityProof(info, target)
+                    pending.primarySlot = VerifiedSwarmSlot(
+                        id = hashHex,
+                        target = target,
+                        identity = null,
+                        storageDir = saveDir,
+                        isPrimary = true
+                    )
+                    pending.pieceScheduler = CrossSwarmPieceScheduler(target.pieceLength)
+                }
+                if (pending.target != null && safeAdditionalSources.isNotEmpty()) {
+                    startAdditionalSourceDiscovery(pending, manager)
                 }
             } catch (error: Throwable) {
                 discoveredHandle?.let { runCatching { manager.remove(it) } }
@@ -373,6 +437,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             } finally {
                 try {
                     pending.ready.countDown()
+                    if (pending.target == null && !pending.aggregationStarted.get()) {
+                        pending.aggregationFinished.countDown()
+                    }
                     // Failed or cancelled startups never become playable. Do not
                     // retain partial pieces or a preallocated media file.
                     if (TorrentStartupCleanupPolicy.shouldDeleteCacheBeforeReaders(pending.target != null)) {
@@ -448,7 +515,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             pieceLength = torrentInfo.pieceLength(),
             firstPiece = firstPiece,
             lastPiece = lastPiece,
-            token = token
+            token = token,
+            fileIndex = selected.first
         )
     }
 
