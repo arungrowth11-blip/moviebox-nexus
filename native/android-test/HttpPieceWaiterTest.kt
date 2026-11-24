@@ -60,6 +60,12 @@ class HttpPieceWaiterTest {
 
 
     @Test
+    fun readyStreamCacheIsOnlyDeletedByReaderAwareStopPath() {
+        assertTrue(TorrentStartupCleanupPolicy.shouldDeleteCacheBeforeReaders(targetReady = false))
+        assertFalse(TorrentStartupCleanupPolicy.shouldDeleteCacheBeforeReaders(targetReady = true))
+    }
+
+    @Test
     fun torrentDownloadPolicyKeepsUnrequestedFilesAndPiecesIgnored() {
         val filePriorities = TorrentDownloadPriorityPolicy.filePriorities(4)
         assertEquals(4, filePriorities.size)
