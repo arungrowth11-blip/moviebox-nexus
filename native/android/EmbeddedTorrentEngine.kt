@@ -63,6 +63,10 @@ internal class DeferredTorrentCleanupTask(
                     cleaned = cleanup()
                 } catch (_: InterruptedException) {
                     interrupted = true
+                } catch (_: Exception) {
+                    // A transient native/filesystem exception must not discard
+                    // the deferred cleanup obligation.
+                    cleaned = false
                 }
                 if (cleaned) return
                 awaitUninterruptibly { Thread.sleep(retryDelayMs) }
@@ -70,6 +74,16 @@ internal class DeferredTorrentCleanupTask(
         } finally {
             if (interrupted) Thread.currentThread().interrupt()
         }
+    }
+}
+
+internal class TorrentCleanupOrder(
+    private val removeNativeHandles: () -> Boolean,
+    private val deleteCache: () -> Boolean
+) {
+    fun run(): Boolean {
+        if (!removeNativeHandles()) return false
+        return deleteCache()
     }
 }
 
@@ -635,52 +649,70 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         oldHandle: TorrentHandle?
     ): Boolean {
         if (pending != null) {
-            var handlesRemoved = true
-            if (manager != null) {
-                val matchingHandles = runCatching {
-                    manager.getTorrentHandles().filter { handle ->
-                        runCatching {
-                            handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
-                        }.getOrDefault(false)
+            val cleanup = TorrentCleanupOrder(
+                removeNativeHandles = {
+                    if (manager == null) {
+                        Log.w(TAG, "Cannot confirm torrent handle removal without a live session.")
+                        false
+                    } else {
+                        val matchingHandles = runCatching {
+                            manager.getTorrentHandles().filter { handle ->
+                                runCatching {
+                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                                }.getOrDefault(false)
+                            }
+                        }.getOrElse { error ->
+                            Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
+                            return@TorrentCleanupOrder false
+                        }
+                        matchingHandles.forEach { handle ->
+                            if (runCatching { manager.remove(handle) }.isFailure) {
+                                Log.w(TAG, "Native torrent handle removal failed: " + pending.infoHash)
+                                return@TorrentCleanupOrder false
+                            }
+                        }
+                        val handleRemains = runCatching {
+                            manager.getTorrentHandles().any { handle ->
+                                runCatching {
+                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                                }.getOrDefault(false)
+                            }
+                        }.getOrElse { true }
+                        if (handleRemains) {
+                            Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
+                            false
+                        } else {
+                            true
+                        }
                     }
-                }.getOrElse { error ->
-                    Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
-                    return false
+                },
+                deleteCache = {
+                    runCatching {
+                        TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
+                    }.onFailure { error ->
+                        Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
+                    }.getOrDefault(false)
                 }
-                matchingHandles.forEach { handle ->
-                    if (runCatching { manager.remove(handle) }.isFailure) handlesRemoved = false
-                }
-                val handleRemains = runCatching {
-                    manager.getTorrentHandles().any { handle ->
-                        runCatching {
-                            handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
-                        }.getOrDefault(false)
-                    }
-                }.getOrElse { true }
-                if (handleRemains) handlesRemoved = false
-            }
-
-            if (!handlesRemoved) {
-                // Fail closed: never touch the backing files while libtorrent may
-                // still own the torrent handle or have storage descriptors open.
-                Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
-                return false
-            }
-            val cacheRemoved = runCatching {
-                TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
-            }.onFailure { error ->
-                Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
-            }.getOrDefault(false)
-            if (!cacheRemoved) {
-                Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
+            )
+            val cleaned = cleanup.run()
+            if (!cleaned) {
+                Log.w(TAG, "Torrent cleanup did not complete; cache is retained for retry.")
             } else {
                 Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
             }
-            return cacheRemoved
+            return cleaned
         }
 
-        if (oldHandle != null && manager != null) {
-            return runCatching { manager.remove(oldHandle); true }.getOrDefault(false)
+        if (oldHandle != null) {
+            val managerAvailable = manager ?: return false
+            val removed = runCatching {
+                managerAvailable.remove(oldHandle)
+                managerAvailable.getTorrentHandles().none { handle ->
+                    runCatching { handle.infoHash() == oldHandle.infoHash() }.getOrDefault(false)
+                }
+            }.getOrDefault(false)
+            if (!removed) Log.w(TAG, "Legacy torrent handle removal is not yet confirmed.")
+            return removed
         }
         return true
     }
