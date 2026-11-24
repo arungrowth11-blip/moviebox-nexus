@@ -356,12 +356,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     pending.ready.countDown()
                     // Failed or cancelled startups never become playable. Do not
                     // retain partial pieces or a preallocated media file.
-                    if (pending.target == null || activePending !== pending) {
+                    if (TorrentStartupCleanupPolicy.shouldDeleteCacheBeforeReaders(pending.target != null)) {
+                        // A stream with a ready target may already have HTTP readers.
+                        // stopPlayback owns its cache deletion after those readers settle.
                         val removed = runCatching {
                             TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)
                         }.getOrDefault(false)
                         if (!removed) {
-                            Log.w(TAG, "Could not remove failed/cancelled torrent cache: " + saveDir.name)
+                            Log.w(TAG, "Could not remove failed torrent startup cache: " + saveDir.name)
                         }
                     }
                 } finally {
