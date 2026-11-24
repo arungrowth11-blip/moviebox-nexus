@@ -668,7 +668,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         matchingHandles.forEach { handle ->
                             if (runCatching { manager.remove(handle) }.isFailure) {
                                 Log.w(TAG, "Native torrent handle removal failed: " + pending.infoHash)
-                                return@TorrentCleanupOrder false
+                                return@removeHandles false
                             }
                         }
                         val handleRemains = runCatching {
