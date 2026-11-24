@@ -704,7 +704,9 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
         _reportPrepared();
         _preferredHindiAudioApplied = false;
-        _schedulePreferredHindiAudio(initializedController);
+        if (initializedController != null) {
+          _schedulePreferredHindiAudio(initializedController);
+        }
         setState(() {
           _loading = false;
           _error = null;
@@ -1149,6 +1151,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   }
 
   void _schedulePreferredHindiAudio(BetterPlayerController controller) {
+    if (_disposed || _preferredHindiAudioApplied) return;
     _preferredHindiAudioTimer?.cancel();
     // Preserve the broadcaster's selected/default rendition for live channels.
     if (_isLive) {
