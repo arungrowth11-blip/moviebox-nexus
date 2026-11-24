@@ -81,6 +81,11 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(true)
                 }
+                "isKeepScreenOn" -> {
+                    val enabled = (window.attributes.flags and
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+                    result.success(enabled)
+                }
                 else -> result.notImplemented()
             }
         }
