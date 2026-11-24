@@ -660,14 +660,17 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 if (handleRemains) handlesRemoved = false
             }
 
-            val cacheRemoved = runCatching {
-                TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
-            }.getOrDefault(false)
             if (!handlesRemoved) {
-                // Never delete files while libtorrent may still own/open the torrent.
+                // Fail closed: never touch the backing files while libtorrent may
+                // still own the torrent handle or have storage descriptors open.
                 Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
                 return false
             }
+            val cacheRemoved = runCatching {
+                TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
+            }.onFailure { error ->
+                Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
+            }.getOrDefault(false)
             if (!cacheRemoved) {
                 Log.w(TAG, "Could not remove stopped torrent cache: " + pending.storageDir.name)
             } else {
