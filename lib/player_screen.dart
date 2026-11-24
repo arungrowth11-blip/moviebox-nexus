@@ -88,9 +88,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   static const MethodChannel _externalPlayer = MethodChannel(
     'moviebox_nexus/external_player',
   );
-  static const MethodChannel _display = MethodChannel(
-    'moviebox_nexus/display',
-  );
+  static const MethodChannel _display = MethodChannel('moviebox_nexus/display');
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
@@ -140,10 +138,9 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   Future<void> _setPlaybackScreenAwake(bool enabled) async {
     try {
-      await _display.invokeMethod<void>(
-        'setKeepScreenOn',
-        <String, Object>{'enabled': enabled},
-      );
+      await _display.invokeMethod<void>('setKeepScreenOn', <String, Object>{
+        'enabled': enabled,
+      });
     } on MissingPluginException {
       // Keep playback functional on platforms that do not register Android's
       // display channel (for example, a Flutter desktop test runner).
