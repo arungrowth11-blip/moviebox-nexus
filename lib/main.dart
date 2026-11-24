@@ -2066,7 +2066,7 @@ class EmbeddedTorrentService {
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
         if (fileIdx != null) 'fileIdx': fileIdx,
-        if (trackers.isNotEmpty) 'trackers': trackers.take(24).toList(),
+        if (trackers.isNotEmpty) 'trackers': trackers.take(28).toList(),
       },
     );
     final uri = Uri.tryParse(url ?? '');
