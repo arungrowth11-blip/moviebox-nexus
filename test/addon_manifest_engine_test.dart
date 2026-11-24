@@ -29,72 +29,76 @@ Future<void> sendJson(
 }
 
 void main() {
-  test('direct HLS probe verifies a real media segment, not just a manifest', () async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final segmentBytes = List<int>.filled(188, 0x47);
-    server.listen((request) async {
-      switch (request.uri.path) {
-        case '/master.m3u8':
-          request.response.headers.contentType = ContentType(
-            'application',
-            'vnd.apple.mpegurl',
-          );
-          request.response.write(
-            '#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=800000\\nmedia.m3u8\\n',
-          );
-          break;
-        case '/media.m3u8':
-          request.response.headers.contentType = ContentType(
-            'application',
-            'vnd.apple.mpegurl',
-          );
-          request.response.write('#EXTM3U\\n#EXTINF:6,\\nsegment.ts\\n');
-          break;
-        case '/segment.ts':
-          request.response.headers.contentType = ContentType('video', 'mp2t');
-          request.response.add(segmentBytes);
-          break;
-        case '/dead.m3u8':
-          request.response.headers.contentType = ContentType(
-            'application',
-            'vnd.apple.mpegurl',
-          );
-          request.response.write('#EXTM3U\\n#EXTINF:6,\\nmissing.ts\\n');
-          break;
-        case '/missing.ts':
-          request.response.statusCode = HttpStatus.notFound;
-          request.response.write('gone');
-          break;
-        default:
-          request.response.statusCode = HttpStatus.notFound;
-          request.response.write('not found');
-      }
-      await request.response.close();
-    });
+  test(
+    'direct HLS probe verifies a real media segment, not just a manifest',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      final segmentBytes = List<int>.filled(188, 0x47);
+      server.listen((request) async {
+        switch (request.uri.path) {
+          case '/master.m3u8':
+            request.response.headers.contentType = ContentType(
+              'application',
+              'vnd.apple.mpegurl',
+            );
+            request.response.write(
+              '#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=800000\\nmedia.m3u8\\n',
+            );
+            break;
+          case '/media.m3u8':
+            request.response.headers.contentType = ContentType(
+              'application',
+              'vnd.apple.mpegurl',
+            );
+            request.response.write('#EXTM3U\\n#EXTINF:6,\\nsegment.ts\\n');
+            break;
+          case '/segment.ts':
+            request.response.headers.contentType = ContentType('video', 'mp2t');
+            request.response.add(segmentBytes);
+            break;
+          case '/dead.m3u8':
+            request.response.headers.contentType = ContentType(
+              'application',
+              'vnd.apple.mpegurl',
+            );
+            request.response.write('#EXTM3U\\n#EXTINF:6,\\nmissing.ts\\n');
+            break;
+          case '/missing.ts':
+            request.response.statusCode = HttpStatus.notFound;
+            request.response.write('gone');
+            break;
+          default:
+            request.response.statusCode = HttpStatus.notFound;
+            request.response.write('not found');
+        }
+        await request.response.close();
+      });
 
-    final engine = app.CatalogEngine();
-    final base = 'http://127.0.0.1:${server.port}';
-    try {
-      expect(
-        await engine.probeDirectStream(
-          app.StreamLink(url: '$base/master.m3u8'),
-        ),
-        isTrue,
-        reason: 'A master playlist with a reachable media segment is playable.',
-      );
-      expect(
-        await engine.probeDirectStream(
-          app.StreamLink(url: '$base/dead.m3u8'),
-        ),
-        isFalse,
-        reason:
-            'A manifest whose first segment is dead must not be selected for playback.',
-      );
-    } finally {
-      engine.close();
-      await server.close(force: true);
-    }
-  });
+      final engine = app.CatalogEngine();
+      final base = 'http://127.0.0.1:${server.port}';
+      try {
+        expect(
+          await engine.probeDirectStream(
+            app.StreamLink(url: '$base/master.m3u8'),
+          ),
+          isTrue,
+          reason:
+              'A master playlist with a reachable media segment is playable.',
+        );
+        expect(
+          await engine.probeDirectStream(
+            app.StreamLink(url: '$base/dead.m3u8'),
+          ),
+          isFalse,
+          reason:
+              'A manifest whose first segment is dead must not be selected for playback.',
+        );
+      } finally {
+        engine.close();
+        await server.close(force: true);
+      }
+    },
+  );
 
   test(
     'fresh manifest cache and seven-day stale fallback are enforced',
