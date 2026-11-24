@@ -636,8 +636,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             var handlesRemoved = true
             if (manager != null) {
                 val matchingHandles = runCatching {
-                    manager.getTorrentHandles().filter {
-                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                    manager.getTorrentHandles().filter { handle ->
+                        runCatching {
+                            handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                        }.getOrDefault(false)
                     }
                 }.getOrElse { error ->
                     Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
@@ -647,8 +649,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     if (runCatching { manager.remove(handle) }.isFailure) handlesRemoved = false
                 }
                 val handleRemains = runCatching {
-                    manager.getTorrentHandles().any {
-                        it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                    manager.getTorrentHandles().any { handle ->
+                        runCatching {
+                            handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
+                        }.getOrDefault(false)
                     }
                 }.getOrElse { true }
                 if (handleRemains) handlesRemoved = false
