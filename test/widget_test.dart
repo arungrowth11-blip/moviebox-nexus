@@ -428,8 +428,15 @@ void main() {
         final response = request.response;
         if (request.uri.path == '/working.m3u8') {
           response.statusCode = HttpStatus.ok;
-          response.headers.contentType = ContentType.text;
-          response.write('#EXTM3U\\n#EXT-X-VERSION:3\\n');
+          response.headers.contentType = ContentType(
+            'application',
+            'vnd.apple.mpegurl',
+          );
+          response.write('#EXTM3U\n#EXTINF:6,\nsegment.ts\n');
+        } else if (request.uri.path == '/segment.ts') {
+          response.statusCode = HttpStatus.ok;
+          response.headers.contentType = ContentType('video', 'mp2t');
+          response.add(List<int>.filled(188, 0x47));
         } else if (request.uri.path == '/blocked.m3u8') {
           response.statusCode = HttpStatus.forbidden;
           response.headers.contentType = ContentType.html;
