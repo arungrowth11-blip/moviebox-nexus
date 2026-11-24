@@ -66,7 +66,7 @@ internal object HttpRangePolicy {
     const val PREFETCH_PIECES = 15
     const val PREFETCH_DEADLINE_STEP_MS = 1_000
     const val RETRY_AFTER_SECONDS = 1
-    const val BASE_PREFETCH_WINDOW_BYTES = 16L * 1024L * 1024L
+    const val BASE_PREFETCH_WINDOW_PIECES = PREFETCH_PIECES + 1
     const val MAX_PREFETCH_WINDOW_BYTES = 64L * 1024L * 1024L
     const val MAX_PREFETCH_LOOK_AHEAD_PIECES = 63
 
@@ -88,7 +88,11 @@ internal object HttpRangePolicy {
         val rateAllowance = downloadRateBytesPerSecond
             .coerceAtLeast(0L)
             .coerceAtMost(16L * 1024L * 1024L) * 2L
-        val targetBytes = (BASE_PREFETCH_WINDOW_BYTES + peerAllowance + rateAllowance)
+        // Keep the baseline at sixteen pieces regardless of this torrent's
+        // piece size. A fixed 16 MiB baseline silently expands a 256 KiB torrent
+        // to 64 pieces before any peer or throughput evidence exists.
+        val baseWindowBytes = BASE_PREFETCH_WINDOW_PIECES.toLong() * pieceLengthBytes.toLong()
+        val targetBytes = (baseWindowBytes + peerAllowance + rateAllowance)
             .coerceAtMost(MAX_PREFETCH_WINDOW_BYTES)
         val piecesInWindow = (targetBytes + pieceLengthBytes - 1L) / pieceLengthBytes
         return (piecesInWindow - 1L)

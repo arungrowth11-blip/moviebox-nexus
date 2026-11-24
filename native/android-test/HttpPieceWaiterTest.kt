@@ -169,6 +169,11 @@ class HttpPieceWaiterTest {
             connectedSources = 0,
             downloadRateBytesPerSecond = 0L
         )
+        val smallTorrentPieces = HttpRangePolicy.adaptiveLookAheadPieces(
+            pieceLengthBytes = 256 * 1024,
+            connectedSources = 0,
+            downloadRateBytesPerSecond = 0L
+        )
         val morePeers = HttpRangePolicy.adaptiveLookAheadPieces(
             pieceLengthBytes = 1024 * 1024,
             connectedSources = 12,
@@ -191,6 +196,11 @@ class HttpPieceWaiterTest {
         )
 
         assertEquals(HttpRangePolicy.PREFETCH_PIECES, baseline)
+        assertEquals(
+            "A 256 KiB torrent must retain the same sixteen-piece default window.",
+            HttpRangePolicy.PREFETCH_PIECES,
+            smallTorrentPieces
+        )
         assertTrue("More connected sources should widen the window", morePeers > baseline)
         assertTrue("Higher observed throughput should widen the window", fasterSwarm > baseline)
         assertEquals(HttpRangePolicy.MAX_PREFETCH_LOOK_AHEAD_PIECES, capped)
