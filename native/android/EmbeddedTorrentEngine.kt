@@ -229,17 +229,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         synchronized(lock) {
             playbackPaused = true
             val pending = activePending ?: return
-            val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
-                runCatching { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
+            session?.getTorrentHandles()?.filter { handle ->
+                runCatching { handle.infoHash().toHex() in pending.sourceInfoHashes }
                     .getOrDefault(false)
-            }
-            if (handle != null) {
+            }.orEmpty().forEach { handle ->
                 runCatching {
-                    // Auto-managed torrents may be resumed automatically by libtorrent.
                     handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
                     handle.pause()
                 }.onFailure { error ->
-                    Log.w(TAG, "Could not pause torrent while app is backgrounded", error)
+                    Log.w(TAG, "Could not pause torrent source while app is backgrounded", error)
                 }
             }
         }
@@ -249,16 +247,15 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         synchronized(lock) {
             playbackPaused = false
             val pending = activePending ?: return
-            val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
-                runCatching { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
+            session?.getTorrentHandles()?.filter { handle ->
+                runCatching { handle.infoHash().toHex() in pending.sourceInfoHashes }
                     .getOrDefault(false)
-            }
-            if (handle != null) {
+            }.orEmpty().forEach { handle ->
                 runCatching {
                     handle.unsetFlags(TorrentFlags.AUTO_MANAGED)
                     handle.resume()
                 }.onFailure { error ->
-                    Log.w(TAG, "Could not resume torrent after app foregrounded", error)
+                    Log.w(TAG, "Could not resume torrent source after app foregrounded", error)
                 }
             }
         }
@@ -748,43 +745,33 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
      */
     fun statusSnapshot(): Map<String, Any> {
         val pending = activePending ?: return mapOf("active" to false)
-        val handle = activeHandle ?: session?.getTorrentHandles()?.firstOrNull {
-            runCatching { it.infoHash().toHex().equals(pending.infoHash, ignoreCase = true) }
-                .getOrDefault(false)
+        val slots = sourceSlots(pending)
+        val statuses = slots.mapNotNull { slot ->
+            runCatching {
+                slot.target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+            }.getOrNull()
         }
-        if (handle == null) {
-            return mapOf(
-                "active" to true, "metadataReady" to false,
-                "connectedPeers" to 0, "connectedSeeds" to 0,
-                "knownPeers" to 0, "knownSeeds" to 0,
-                "downloadRate" to 0, "downloadedBytes" to 0L,
-                "currentTracker" to "", "lastError" to (pending.error ?: "")
-            ) + httpDiagnostics(pending)
-        }
-        // Include in-flight blocks: default counters can stay at zero until a full piece completes.
-        val status = runCatching {
-            handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
-        }.getOrNull()
-        if (status == null) {
-            return mapOf(
-                "active" to true, "metadataReady" to (pending.target != null),
-                "connectedPeers" to 0, "connectedSeeds" to 0,
-                "knownPeers" to 0, "knownSeeds" to 0,
-                "downloadRate" to 0, "downloadedBytes" to 0L,
-                "currentTracker" to "",
-                "lastError" to (pending.error ?: "Torrent status is temporarily unavailable.")
-            ) + httpDiagnostics(pending)
+        val primaryStatus = pending.primarySlot?.let { slot ->
+            runCatching {
+                slot.target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+            }.getOrNull()
         }
         return mapOf(
             "active" to true,
             "metadataReady" to (pending.target != null),
-            "connectedPeers" to status.numPeers(),
-            "connectedSeeds" to status.numSeeds(),
-            "knownPeers" to status.listPeers(),
-            "knownSeeds" to status.listSeeds(),
-            "downloadRate" to status.downloadRate(),
-            "downloadedBytes" to status.totalDone(),
-            "currentTracker" to status.currentTracker(),
+            // The existing fields stay primary-swarm scoped for compatibility.
+            "connectedPeers" to (primaryStatus?.numPeers() ?: 0),
+            "connectedSeeds" to (primaryStatus?.numSeeds() ?: 0),
+            "knownPeers" to (primaryStatus?.listPeers() ?: 0),
+            "knownSeeds" to (primaryStatus?.listSeeds() ?: 0),
+            "downloadRate" to (primaryStatus?.downloadRate() ?: 0),
+            "downloadedBytes" to (primaryStatus?.totalDone() ?: 0L),
+            // Aggregate counters sum per-swarm sessions; they are not unique peer IPs.
+            "aggregateDownloadRate" to statuses.sumOf { it.downloadRate().toLong().coerceAtLeast(0L) },
+            "aggregatePeerConnections" to statuses.sumOf { it.numPeers().coerceAtLeast(0) },
+            "aggregateDownloadedBytes" to statuses.sumOf { it.totalDone().coerceAtLeast(0L) },
+            "verifiedSecondarySwarms" to pending.secondarySources.size,
+            "currentTracker" to (primaryStatus?.currentTracker() ?: ""),
             "lastError" to (pending.error ?: "")
         ) + httpDiagnostics(pending)
     }
@@ -804,7 +791,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "prefetchLookAheadPieces" to pending.prefetchLookAheadPieces,
         "prefetchWindowBytes" to pending.prefetchWindowBytes,
         "prefetchConnectedSources" to pending.prefetchConnectedSources,
-        "prefetchDownloadRateBytesPerSecond" to pending.prefetchDownloadRateBytesPerSecond
+        "prefetchDownloadRateBytesPerSecond" to pending.prefetchDownloadRateBytesPerSecond,
+        "verifiedSecondarySwarms" to pending.secondarySources.size,
+        "aggregationPending" to (pending.aggregationFinished.count > 0L)
     )
 
     fun stopPlayback() {
@@ -820,6 +809,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             startupTask = null
             stopped?.error = "Playback was stopped."
             stopped?.cancelled = true
+            stopped?.aggregationTask?.cancel(true)
+            if (stopped != null && !stopped.aggregationStarted.get()) {
+                // A queued/cancelled aggregation task may never execute its finally block.
+                stopped.aggregationFinished.countDown()
+            }
             stopped?.ready?.countDown()
             if (stopped != null && !stopped.startupStarted.get()) {
                 // A queued Future cancelled before execution never reaches its finally block.
@@ -834,10 +828,13 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val startupSettled = pending == null || runCatching {
             pending.startupFinished.await(5, TimeUnit.SECONDS)
         }.getOrDefault(false)
+        val aggregationSettled = pending == null || runCatching {
+            pending.aggregationFinished.await(5, TimeUnit.SECONDS)
+        }.getOrDefault(false)
         val readersSettled = waitForHttpReadersToClose(pending)
         val managerForCleanup = session
-        if (!startupSettled || !readersSettled) {
-            Log.w(TAG, "Deferring torrent cleanup until workers settle: startupSettled=$startupSettled readersSettled=$readersSettled")
+        if (!startupSettled || !aggregationSettled || !readersSettled) {
+            Log.w(TAG, "Deferring torrent cleanup until workers settle: startupSettled=$startupSettled aggregationSettled=$aggregationSettled readersSettled=$readersSettled")
             deferTorrentCleanup(managerForCleanup, pending, oldHandle)
             return
         }
@@ -856,6 +853,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         session = null
         requestPool.shutdownNow()
         startupExecutor.shutdownNow()
+        aggregationExecutor.shutdownNow()
         if (old != null) {
             val stopSession = {
                 runCatching { old.stop() }
@@ -954,11 +952,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         Log.w(TAG, "Cannot confirm torrent handle removal without a live session.")
                         false
                     } else {
+                        val hashes = pending.sourceInfoHashes.toSet()
                         val matchingHandles = runCatching {
                             manager.getTorrentHandles().filter { handle ->
-                                runCatching {
-                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
-                                }.getOrDefault(false)
+                                runCatching { handle.infoHash().toHex().lowercase(Locale.US) in hashes }
+                                    .getOrDefault(false)
                             }
                         }.getOrElse { error ->
                             Log.w(TAG, "Could not inspect stopped torrent handles: ${error.message}")
@@ -966,19 +964,18 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         }
                         matchingHandles.forEach { handle ->
                             if (runCatching { manager.remove(handle) }.isFailure) {
-                                Log.w(TAG, "Native torrent handle removal failed: " + pending.infoHash)
+                                Log.w(TAG, "Native torrent handle removal failed.")
                                 return@removeHandles false
                             }
                         }
                         val handleRemains = runCatching {
                             manager.getTorrentHandles().any { handle ->
-                                runCatching {
-                                    handle.infoHash().toHex().equals(pending.infoHash, ignoreCase = true)
-                                }.getOrDefault(false)
+                                runCatching { handle.infoHash().toHex().lowercase(Locale.US) in hashes }
+                                    .getOrDefault(false)
                             }
                         }.getOrElse { true }
                         if (handleRemains) {
-                            Log.w(TAG, "Torrent handle removal is not yet confirmed: " + pending.infoHash)
+                            Log.w(TAG, "One or more torrent handles remain after stop.")
                             false
                         } else {
                             true
@@ -986,18 +983,20 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     }
                 },
                 deleteCache = {
-                    runCatching {
-                        TorrentCachePolicy.deleteStreamDirectory(pending.storageDir, torrentCacheRoot)
-                    }.onFailure { error ->
-                        Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
-                    }.getOrDefault(false)
+                    pending.sourceStorageDirs.all { directory ->
+                        runCatching {
+                            TorrentCachePolicy.deleteStreamDirectory(directory, torrentCacheRoot)
+                        }.onFailure { error ->
+                            Log.w(TAG, "Stopped torrent cache deletion failed: ${error.message}")
+                        }.getOrDefault(false)
+                    }
                 }
             )
             val cleaned = cleanup.run()
             if (!cleaned) {
-                Log.w(TAG, "Torrent cleanup did not complete; cache is retained for retry.")
+                Log.w(TAG, "Multi-swarm cleanup did not complete; every source cache is retained for retry.")
             } else {
-                Log.i(TAG, "Removed temporary torrent cache: " + pending.storageDir.name)
+                Log.i(TAG, "Removed ${pending.sourceStorageDirs.size} isolated torrent cache directories.")
             }
             return cleaned
         }
@@ -1030,6 +1029,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // handle/cache removal instead of silently dropping the cleanup obligation.
                 DeferredTorrentCleanupTask(
                     awaitStartup = { pending?.startupFinished?.await() },
+                    awaitAggregation = { pending?.aggregationFinished?.await() },
                     awaitReaders = {
                         if (pending != null) {
                             while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
