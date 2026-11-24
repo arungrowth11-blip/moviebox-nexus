@@ -3840,6 +3840,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                                     enabled,
                                   );
                                   setSheetState(() {});
+                                  await _load(forceRefresh: true);
                                 },
                         ),
                         trailing: IconButton(
@@ -3853,6 +3854,7 @@ class _LiveTvScreenState extends State<LiveTvScreen> {
                               : () async {
                                   await widget.onRemovePlaylist!(source);
                                   setSheetState(() {});
+                                  await _load(forceRefresh: true);
                                 },
                         ),
                       );
