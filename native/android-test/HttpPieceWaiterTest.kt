@@ -3,12 +3,49 @@ package com.moviebox.nexus
 import com.frostwire.jlibtorrent.Priority
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HttpPieceWaiterTest {
+
+    @Test
+    fun deferredTorrentCleanupWaitsForStartupAndEveryReaderBeforeDeleting() {
+        val startupGate = CountDownLatch(1)
+        val readersGate = CountDownLatch(1)
+        val startupEntered = CountDownLatch(1)
+        val readersEntered = CountDownLatch(1)
+        val cleaned = AtomicBoolean(false)
+        val task = DeferredTorrentCleanupTask(
+            awaitStartup = {
+                startupEntered.countDown()
+                startupGate.await()
+            },
+            awaitReaders = {
+                readersEntered.countDown()
+                readersGate.await()
+            },
+            cleanup = { cleaned.set(true) }
+        )
+        val worker = Thread { task.run() }
+        worker.start()
+
+        assertTrue(startupEntered.await(1, TimeUnit.SECONDS))
+        assertFalse(cleaned.get())
+        startupGate.countDown()
+        assertTrue(readersEntered.await(1, TimeUnit.SECONDS))
+        assertFalse(cleaned.get())
+        readersGate.countDown()
+        worker.join(1_000)
+
+        assertFalse(worker.isAlive)
+        assertTrue(cleaned.get())
+    }
+
 
 
     @Test
