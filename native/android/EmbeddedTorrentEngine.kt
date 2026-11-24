@@ -148,6 +148,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var prefetchWindowBytes = 0L
         @Volatile var prefetchConnectedSources = 0
         @Volatile var prefetchDownloadRateBytesPerSecond = 0L
+        @Volatile var prefetchLastSampleAtMs = 0L
         @Volatile var cancelled = false
     }
 
@@ -1102,14 +1103,25 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             // Read this torrent's real counters (not add-on seeder claims).
             // The adaptive window grows only when there are connected sources
             // and/or measured download throughput to make parallel prefetch useful.
-            val swarmStatus = runCatching {
-                target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
-            }.getOrNull()
-            val connectedSources = (
-                (swarmStatus?.numPeers() ?: 0) + (swarmStatus?.numSeeds() ?: 0)
-            ).coerceAtLeast(0)
-            val downloadRate = swarmStatus?.downloadRate()?.toLong()
-                ?.coerceAtLeast(0L) ?: pending.prefetchDownloadRateBytesPerSecond
+            // status() is synchronous with libtorrent's session thread. Sample
+            // at most once per second, not once per downloaded piece, and reuse
+            // the last accurate aggregate counters between samples.
+            val sampleNowMs = System.nanoTime() / 1_000_000L
+            if (sampleNowMs - pending.prefetchLastSampleAtMs >= 1_000L) {
+                val swarmStatus = runCatching {
+                    target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+                }.getOrNull()
+                if (swarmStatus != null) {
+                    // numSeeds is a subset of the connected peers, not an
+                    // additional population; never double-count seed peers.
+                    pending.prefetchConnectedSources = swarmStatus.numPeers().coerceAtLeast(0)
+                    pending.prefetchDownloadRateBytesPerSecond =
+                        swarmStatus.downloadRate().toLong().coerceAtLeast(0L)
+                    pending.prefetchLastSampleAtMs = sampleNowMs
+                }
+            }
+            val connectedSources = pending.prefetchConnectedSources
+            val downloadRate = pending.prefetchDownloadRateBytesPerSecond
             val lookAheadPieces = HttpRangePolicy.adaptiveLookAheadPieces(
                 pieceLengthBytes = target.pieceLength,
                 connectedSources = connectedSources,
