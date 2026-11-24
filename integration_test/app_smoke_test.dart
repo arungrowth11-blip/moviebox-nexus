@@ -695,7 +695,17 @@ void main() {
           },
           'Playback must continue after seeking rather than freezing at the seek target.',
           timeout: const Duration(seconds: 15),
-          diagnostic: () => _media3Diagnostic(controller),
+          diagnostic: () async {
+            final player = await _media3Diagnostic(controller);
+            try {
+              final torrent = await channel
+                  .invokeMapMethod<String, dynamic>('getStatus')
+                  .timeout(const Duration(seconds: 4));
+              return '$player nativeTorrentAfterSeek=$torrent';
+            } catch (error) {
+              return '$player nativeTorrentAfterSeekUnavailable=$error';
+            }
+          },
         );
         debugPrint(
           'MovieBox CI torrent Media3 after seek: '
