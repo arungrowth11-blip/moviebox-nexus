@@ -521,17 +521,19 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             while (!server.isClosed) {
                 try {
                     val socket = server.accept()
-                    if (pending.cancelled || activePending !== pending) {
-                        runCatching { socket.close() }
-                        continue
+                    // Serialize reader registration with stopPlayback's cancellation
+                    // and socket-close section. This prevents cleanup from seeing zero
+                    // readers while an accepted socket is not yet registered.
+                    val registered = synchronized(lock) {
+                        if (pending.cancelled || activePending !== pending) {
+                            false
+                        } else {
+                            pending.activeReaders.incrementAndGet()
+                            activeHttpSockets.add(socket)
+                            true
+                        }
                     }
-                    // Count the accepted socket before publishing it so stopPlayback
-                    // cannot observe zero readers in the gap before task submission.
-                    pending.activeReaders.incrementAndGet()
-                    activeHttpSockets.add(socket)
-                    if (pending.cancelled || activePending !== pending) {
-                        pending.activeReaders.decrementAndGet()
-                        activeHttpSockets.remove(socket)
+                    if (!registered) {
                         runCatching { socket.close() }
                         continue
                     }
