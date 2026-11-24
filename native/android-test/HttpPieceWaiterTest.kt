@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -14,27 +15,36 @@ import org.junit.Test
 class HttpPieceWaiterTest {
 
     @Test
-    fun deferredTorrentCleanupWaitsForStartupAndEveryReaderBeforeDeleting() {
+    fun deferredTorrentCleanupRecoversAfterBothBoundedStopWaitsTimeOut() {
         val startupGate = CountDownLatch(1)
         val readersGate = CountDownLatch(1)
-        val startupEntered = CountDownLatch(1)
         val readersEntered = CountDownLatch(1)
         val cleaned = AtomicBoolean(false)
+        val cleanupAttempts = AtomicInteger(0)
+
+        // Model stopPlayback's bounded waits: both expire while the workers are still active.
+        assertFalse(startupGate.await(10, TimeUnit.MILLISECONDS))
+        assertFalse(readersGate.await(10, TimeUnit.MILLISECONDS))
+
         val task = DeferredTorrentCleanupTask(
-            awaitStartup = {
-                startupEntered.countDown()
-                startupGate.await()
-            },
+            awaitStartup = { startupGate.await() },
             awaitReaders = {
                 readersEntered.countDown()
                 readersGate.await()
             },
-            cleanup = { cleaned.set(true) }
+            cleanup = {
+                if (cleanupAttempts.incrementAndGet() == 1) {
+                    false // First native/cache cleanup attempt fails and must be retried.
+                } else {
+                    cleaned.set(true)
+                    true
+                }
+            },
+            retryDelayMs = 10L
         )
         val worker = Thread { task.run() }
         worker.start()
 
-        assertTrue(startupEntered.await(1, TimeUnit.SECONDS))
         assertFalse(cleaned.get())
         startupGate.countDown()
         assertTrue(readersEntered.await(1, TimeUnit.SECONDS))
@@ -44,6 +54,7 @@ class HttpPieceWaiterTest {
 
         assertFalse(worker.isAlive)
         assertTrue(cleaned.get())
+        assertTrue(cleanupAttempts.get() >= 2)
     }
 
 
