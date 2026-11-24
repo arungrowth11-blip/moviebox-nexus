@@ -625,6 +625,14 @@ class StreamLink {
   }
 }
 
+/// Rank torrent fallbacks consistently for every Play action. StreamLink.score
+/// weights reported swarm size above resolution when choosing a P2P source.
+List<StreamLink> rankTorrentPlaybackCandidates(Iterable<StreamLink> streams) {
+  final candidates = streams.where((stream) => stream.isTorrent).toList();
+  candidates.sort((a, b) => b.score.compareTo(a.score));
+  return candidates;
+}
+
 class OttBrand {
   final String name;
   final String shortId;
@@ -3432,6 +3440,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _smartPlay(Meta m) async {
+    final messenger = ScaffoldMessenger.of(context);
     try {
       final streams = await widget.engine.resolveStreams(
         m.type,
@@ -3441,7 +3450,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (!mounted) return;
 
       if (streams.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           const SnackBar(
             content: Text(
               'No stream results. Check addon status and configuration.',
@@ -3467,15 +3476,72 @@ class _HomeScreenState extends State<HomeScreen> {
         }
       }
       if (!mounted) return;
-      final torrentOnly = streams.every((stream) => stream.isTorrent);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            torrentOnly
-                ? 'Sirf magnet/torrent results mile; verified direct HTTP source nahi mila. Movie playback ke liye authorized provider ka direct stream URL chahiye.'
-                : 'Koi direct HTTP source abhi reachable nahi hai. Provider refresh karein ya doosra source chunein.',
+
+      // The home-screen Play Now action must use the same embedded torrent
+      // bridge as the Details screen. Previously it stopped here with a
+      // "direct HTTP source unavailable" message whenever addons returned
+      // magnets only, even though the app had a native torrent player.
+      final torrents = rankTorrentPlaybackCandidates(streams);
+      if (torrents.isNotEmpty) {
+        final reachable = torrents
+            .where((stream) => stream.seeders == null || stream.seeders! > 0)
+            .toList();
+        final selected = reachable.isNotEmpty ? reachable.first : torrents.first;
+        if (selected.seeders == 0) {
+          final tryAnyway = await showDialog<bool>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              backgroundColor: _panel,
+              title: const Text('No seeders reported'),
+              content: const Text(
+                'This provider reports zero seeders. Playback may remain at 00:00 because no peer can provide the first video pieces. Choose another source or try this swarm anyway.',
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Choose another source'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, true),
+                  child: const Text('Try anyway'),
+                ),
+              ],
+            ),
+          );
+          if (!mounted || tryAnyway != true) return;
+        }
+
+        messenger.hideCurrentSnackBar();
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Starting built-in torrent playback…'),
+            duration: Duration(seconds: 8),
           ),
-          duration: const Duration(seconds: 7),
+        );
+        final supplementalTrackers = await widget.engine
+            .fetchSupplementalTrackers();
+        final trackers = <String>{
+          ...supplementalTrackers.take(20),
+          ...selected.trackers.take(4),
+        }.toList(growable: false);
+        final url = await EmbeddedTorrentService.instance.startPlayback(
+          selected.infoHash!,
+          title: m.name,
+          fileIdx: selected.fileIdx,
+          trackers: trackers,
+        );
+        if (!mounted) return;
+        messenger.hideCurrentSnackBar();
+        widget.onPlay(m.name, url, m.id);
+        return;
+      }
+
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Koi verified direct stream ya torrent source nahi mila. Provider refresh karein ya doosra source chunein.',
+          ),
+          duration: Duration(seconds: 7),
         ),
       );
     } catch (error, stackTrace) {
@@ -3483,7 +3549,8 @@ class _HomeScreenState extends State<HomeScreen> {
         'MovieBox Smart Play failed for ${m.id}: $error\\n$stackTrace',
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(
         SnackBar(
           content: Text('Could not start ${m.name}: $error'),
           duration: const Duration(seconds: 8),
@@ -5220,8 +5287,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
 
       // No verified direct URL: use the healthiest available swarm, ranked by
       // seeders first and then quality. P2P startup remains swarm-dependent.
-      final torrents = _streams.where((stream) => stream.isTorrent).toList()
-        ..sort((a, b) => b.score.compareTo(a.score));
+      final torrents = rankTorrentPlaybackCandidates(_streams);
       final reachableCandidates = torrents
           .where((stream) => stream.seeders == null || stream.seeders! > 0)
           .toList();
