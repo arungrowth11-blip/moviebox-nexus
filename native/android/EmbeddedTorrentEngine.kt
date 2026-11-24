@@ -144,6 +144,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var lastPieceIndex = -1
         @Volatile var lastPieceWaitMs = 0L
         @Volatile var lastHttpError = ""
+        @Volatile var prefetchLookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+        @Volatile var prefetchWindowBytes = 0L
+        @Volatile var prefetchConnectedSources = 0
+        @Volatile var prefetchDownloadRateBytesPerSecond = 0L
         @Volatile var cancelled = false
     }
 
@@ -505,7 +509,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "lastPieceIndex" to pending.lastPieceIndex,
         "lastPieceWaitMs" to pending.lastPieceWaitMs,
         "lastHttpError" to pending.lastHttpError,
-        "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0)
+        "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0),
+        "prefetchLookAheadPieces" to pending.prefetchLookAheadPieces,
+        "prefetchWindowBytes" to pending.prefetchWindowBytes,
+        "prefetchConnectedSources" to pending.prefetchConnectedSources,
+        "prefetchDownloadRateBytesPerSecond" to pending.prefetchDownloadRateBytesPerSecond
     )
 
     fun stopPlayback() {
@@ -1091,12 +1099,33 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             if (isRequestCancelled() || pending.requestGeneration.get() != requestGeneration) {
                 return false
             }
+            // Read this torrent's real counters (not add-on seeder claims).
+            // The adaptive window grows only when there are connected sources
+            // and/or measured download throughput to make parallel prefetch useful.
+            val swarmStatus = runCatching {
+                target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
+            }.getOrNull()
+            val connectedSources = (
+                (swarmStatus?.numPeers() ?: 0) + (swarmStatus?.numSeeds() ?: 0)
+            ).coerceAtLeast(0)
+            val downloadRate = swarmStatus?.downloadRate()?.toLong()
+                ?.coerceAtLeast(0L) ?: pending.prefetchDownloadRateBytesPerSecond
+            val lookAheadPieces = HttpRangePolicy.adaptiveLookAheadPieces(
+                pieceLengthBytes = target.pieceLength,
+                connectedSources = connectedSources,
+                downloadRateBytesPerSecond = downloadRate
+            )
+            pending.prefetchLookAheadPieces = lookAheadPieces
+            pending.prefetchConnectedSources = connectedSources
+            pending.prefetchDownloadRateBytesPerSecond = downloadRate
+
             val window = HttpRangePolicy.playbackWindow(
                 currentPiece = currentPiece,
                 firstPiece = target.firstPiece,
                 lastPiece = target.lastPiece,
-                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
+                lookAheadPieces = lookAheadPieces
             )
+            pending.prefetchWindowBytes = window.size.toLong() * target.pieceLength
             if (window.isEmpty()) return false
             val wanted = window.toSet()
 
