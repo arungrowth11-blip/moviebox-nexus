@@ -1305,7 +1305,7 @@ jobs:
           expected_blob = "2edb1cbfe160977d26ae71580094530512b5f41d"
           if len(data) != expected_size:
               raise SystemExit(f"Big Buck Bunny fixture size mismatch: {len(data)} bytes")
-          actual_blob = hashlib.sha1(f"blob {len(data)}\\0".encode() + data).hexdigest()
+          actual_blob = hashlib.sha1(b"blob " + str(len(data)).encode() + bytes([0]) + data).hexdigest()
           if actual_blob != expected_blob:
               raise SystemExit(f"Big Buck Bunny fixture checksum mismatch: {actual_blob}")
           print("Verified Big Buck Bunny CC BY 3.0: (c) 2008 Blender Foundation / www.bigbuckbunny.org")
