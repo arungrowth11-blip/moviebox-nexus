@@ -3486,7 +3486,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final reachable = torrents
             .where((stream) => stream.seeders == null || stream.seeders! > 0)
             .toList();
-        final selected = reachable.isNotEmpty ? reachable.first : torrents.first;
+        final selected = reachable.isNotEmpty
+            ? reachable.first
+            : torrents.first;
         if (selected.seeders == 0) {
           final tryAnyway = await showDialog<bool>(
             context: context,
