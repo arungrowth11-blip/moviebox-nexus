@@ -44,6 +44,7 @@ Future<String> _media3Diagnostic(BetterPlayerController controller) async {
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
+  const displayChannel = MethodChannel('moviebox_nexus/display');
 
   testWidgets(
     'native torrent bridge registers and all primary tabs remain navigable',
@@ -175,7 +176,6 @@ void main() {
         ),
       );
 
-      const displayChannel = MethodChannel('moviebox_nexus/display');
       await _waitUntil(
         tester,
         () async =>
