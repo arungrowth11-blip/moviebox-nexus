@@ -62,9 +62,39 @@ internal object HttpRangePolicy {
     // Keep a larger verified-piece window in flight so libtorrent can
     // schedule useful blocks across multiple connected peers instead of
     // starving high-bandwidth or higher-latency links with a 1 MiB window.
+    // Default to the former 16-piece window until live swarm measurements exist.
     const val PREFETCH_PIECES = 15
     const val PREFETCH_DEADLINE_STEP_MS = 1_000
     const val RETRY_AFTER_SECONDS = 1
+    const val BASE_PREFETCH_WINDOW_BYTES = 16L * 1024L * 1024L
+    const val MAX_PREFETCH_WINDOW_BYTES = 64L * 1024L * 1024L
+    const val MAX_PREFETCH_LOOK_AHEAD_PIECES = 63
+
+    /**
+     * Size the sliding request window from this torrent's measured swarm state.
+     *
+     * Libtorrent still chooses the actual peer/block assignments. This policy
+     * only keeps enough consecutive pieces eligible so several peers can serve
+     * different blocks without building an unbounded mobile cache backlog.
+     */
+    fun adaptiveLookAheadPieces(
+        pieceLengthBytes: Int,
+        connectedSources: Int,
+        downloadRateBytesPerSecond: Long
+    ): Int {
+        require(pieceLengthBytes > 0) { "pieceLengthBytes must be positive" }
+
+        val peerAllowance = connectedSources.coerceIn(0, 32).toLong() * 512L * 1024L
+        val rateAllowance = downloadRateBytesPerSecond
+            .coerceAtLeast(0L)
+            .coerceAtMost(16L * 1024L * 1024L) * 2L
+        val targetBytes = (BASE_PREFETCH_WINDOW_BYTES + peerAllowance + rateAllowance)
+            .coerceAtMost(MAX_PREFETCH_WINDOW_BYTES)
+        val piecesInWindow = (targetBytes + pieceLengthBytes - 1L) / pieceLengthBytes
+        return (piecesInWindow - 1L)
+            .coerceIn(0L, MAX_PREFETCH_LOOK_AHEAD_PIECES.toLong())
+            .toInt()
+    }
 
     fun playbackWindow(
         currentPiece: Int,
