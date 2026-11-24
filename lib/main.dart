@@ -5474,7 +5474,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
       // Trackerlist's daily health-ranked 20 lead; keep a few add-on hints too.
       final trackers = <String>{
         ...supplementalTrackers.take(20),
-        ...stream.trackers.take(4),
+        ...stream.trackers.take(12),
       }.toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
