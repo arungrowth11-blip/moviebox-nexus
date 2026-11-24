@@ -570,10 +570,18 @@ class _PlayerScreenState extends State<PlayerScreen>
     _preparedReported = false;
     _playStartedAt = DateTime.now();
 
+    // The loopback torrent server supports HTTP byte ranges. Make the initial
+    // Media3 read explicitly request bytes from offset zero instead of relying
+    // on a full-body 200 response. Media3 derives and applies a higher-priority
+    // Range header for non-zero DataSpec positions, so later seeks stay ranged.
+    final hasExplicitRangeHeader = widget.headers.keys.any(
+      (key) => key.toLowerCase() == 'range',
+    );
     // This private marker configures only Media3's local torrent read timeout.
     // DataSourceUtils strips it before forwarding HTTP request headers.
     final media3Headers = <String, String>{
       ...widget.headers,
+      if (_isEmbeddedTorrent && !hasExplicitRangeHeader) 'Range': 'bytes=0-',
       if (_isEmbeddedTorrent) 'X-MovieBox-Torrent-Stream': 'true',
     };
     final dataSource = BetterPlayerDataSource.network(

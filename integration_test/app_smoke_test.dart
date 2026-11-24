@@ -632,11 +632,30 @@ void main() {
           'isBuffering=${initialValue.isBuffering}, position=${initialValue.position}, '
           'duration=${initialValue.duration}',
         );
-        await controller.play().timeout(
+        // The integration-test runner can deliver another paused/hidden
+        // lifecycle transition while BetterPlayer/Media3 is preparing its
+        // native surface. Reassert foreground after the controller exists so
+        // the application's lifecycle owner cannot leave a READY player paused.
+        debugPrint(
+          'MovieBox CI lifecycle after torrent Media3 prepare: '
+          '${tester.binding.lifecycleState}',
+        );
+        if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+          await tester.pump();
+        }
+        await controller.videoPlayerController!.play().timeout(
           const Duration(seconds: 10),
           onTimeout: () => throw TimeoutException(
-            'Media3 play command timed out on the torrent stream.',
+            'Media3 native play command timed out on the torrent stream.',
           ),
+        );
+        debugPrint(
+          'MovieBox CI lifecycle after native play: '
+          '${tester.binding.lifecycleState}; '
+          'isPlaying=${controller.videoPlayerController!.value.isPlaying}',
         );
 
         final beforePlayback =
