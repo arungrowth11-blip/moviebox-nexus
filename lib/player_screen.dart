@@ -88,6 +88,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   static const MethodChannel _externalPlayer = MethodChannel(
     'moviebox_nexus/external_player',
   );
+  static const MethodChannel _display = MethodChannel(
+    'moviebox_nexus/display',
+  );
   bool _usingVlc = false;
   bool _loading = true;
   bool _controlsVisible = true;
@@ -108,6 +111,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(_setPlaybackScreenAwake(true));
     _pendingPositionMs = widget.initialMs;
     _startMedia3();
     _startTorrentStatusPolling();
@@ -134,10 +138,25 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  Future<void> _setPlaybackScreenAwake(bool enabled) async {
+    try {
+      await _display.invokeMethod<void>(
+        'setKeepScreenOn',
+        <String, Object>{'enabled': enabled},
+      );
+    } on MissingPluginException {
+      // Keep playback functional on platforms that do not register Android's
+      // display channel (for example, a Flutter desktop test runner).
+    } catch (error) {
+      debugPrint('MovieBox player screen-awake update failed: $error');
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
     if (state == AppLifecycleState.resumed) {
+      unawaited(_setPlaybackScreenAwake(true));
       _setTorrentBackgroundPaused(false);
       if (_usingVlc) return;
       final controller = _media3;
@@ -156,6 +175,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
+      unawaited(_setPlaybackScreenAwake(false));
       _setTorrentBackgroundPaused(true);
       if (_usingVlc) return;
       final controller = _media3;
@@ -1698,6 +1718,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     // Capture the last position synchronously before the disposed guard is set.
     unawaited(_savePosition());
     _disposed = true;
+    unawaited(_setPlaybackScreenAwake(false));
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
     _media3Watchdog?.cancel();
