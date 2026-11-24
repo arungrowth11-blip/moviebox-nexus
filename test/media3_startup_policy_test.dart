@@ -3,10 +3,14 @@ import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 void main() {
   group('Media3StartupPolicy', () {
-    test('uses a bounded recovery window for an in-playback torrent stall', () {
+    test('does not restart a torrent before its native piece wait can expire', () {
       expect(
         Media3StartupPolicy.torrentPlaybackStallTimeout,
-        const Duration(seconds: 35),
+        greaterThan(const Duration(seconds: 180)),
+      );
+      expect(
+        Media3StartupPolicy.torrentPlaybackStallTimeout,
+        lessThan(const Duration(seconds: 260)),
       );
     });
     test(
