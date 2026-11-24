@@ -1313,28 +1313,37 @@ class CatalogEngine {
       'https://ngosang.github.io/trackerslist/trackers_best.txt',
       'https://cdn.jsdelivr.net/gh/ngosang/trackerslist@master/trackers_best.txt',
     ];
-    for (final url in urls) {
-      try {
-        final response = await _client
-            .get(
-              Uri.parse(url),
-              headers: const {
-                'User-Agent': 'MovieBoxNexus/1.2',
-                'Accept': 'text/plain',
-              },
-            )
-            .timeout(const Duration(seconds: 5));
-        if (response.statusCode != 200) continue;
-        final trackers = _parsePublicTrackers(response.body);
-        if (trackers.isEmpty) continue;
+    // Probe mirrors concurrently: a slow first host must not serialize
+    // three separate five-second waits before playback can even start.
+    final results = await Future.wait(
+      urls.map((url) async {
         try {
-          await cacheFile.parent.create(recursive: true);
-          await cacheFile.writeAsString(trackers.join('\n'), flush: true);
-        } catch (_) {}
-        return trackers;
-      } catch (_) {}
-    }
-    return <String>[];
+          final response = await _client
+              .get(
+                Uri.parse(url),
+                headers: const {
+                  'User-Agent': 'MovieBoxNexus/1.2',
+                  'Accept': 'text/plain',
+                },
+              )
+              .timeout(const Duration(seconds: 5));
+          if (response.statusCode != 200) return <String>[];
+          return _parsePublicTrackers(response.body);
+        } catch (_) {
+          return <String>[];
+        }
+      }),
+    );
+    final trackers = results.firstWhere(
+      (candidate) => candidate.isNotEmpty,
+      orElse: () => <String>[],
+    );
+    if (trackers.isEmpty) return <String>[];
+    try {
+      await cacheFile.parent.create(recursive: true);
+      await cacheFile.writeAsString(trackers.join('\n'), flush: true);
+    } catch (_) {}
+    return trackers;
   }
 
   List<String> _parsePublicTrackers(String body) {
@@ -3638,7 +3647,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final supplementalTrackers = await widget.engine
             .fetchSupplementalTrackers();
         final trackers = <String>{
-          ...supplementalTrackers.take(20),
+          ...supplementalTrackers.take(16),
           ...selected.trackers.take(12),
         }.toList(growable: false);
         final url = await EmbeddedTorrentService.instance.startPlayback(
@@ -5476,7 +5485,7 @@ class _DetailsSheetState extends State<DetailsSheet> {
           .fetchSupplementalTrackers();
       // Trackerlist's daily health-ranked 20 lead; keep a few add-on hints too.
       final trackers = <String>{
-        ...supplementalTrackers.take(20),
+        ...supplementalTrackers.take(16),
         ...stream.trackers.take(12),
       }.toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
