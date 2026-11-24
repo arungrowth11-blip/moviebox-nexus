@@ -5498,7 +5498,9 @@ class _DetailsSheetState extends State<DetailsSheet> {
       final primaryHash = canonicalTorrentInfoHash(stream.infoHash!);
       final seenHashes = <String>{primaryHash};
       final additionalSources = _streams
-          .where((candidate) => candidate.isTorrent && candidate.infoHash != null)
+          .where(
+            (candidate) => candidate.isTorrent && candidate.infoHash != null,
+          )
           .map((candidate) {
             final candidateHash = canonicalTorrentInfoHash(candidate.infoHash!);
             if (!seenHashes.add(candidateHash)) return null;
