@@ -1458,7 +1458,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             if (window.isEmpty()) return false
             val scheduler = pending.pieceScheduler
                 ?: CrossSwarmPieceScheduler(target.pieceLength).also { pending.pieceScheduler = it }
-            val wantedPieces = window.toSet()
+            // sourceAssignments is keyed by native torrent piece indices (Long).
+            // Convert the Int playback-window indices before stale-lease cleanup.
+            val wantedPieces: Set<Long> = window.map { it.toLong() }.toSet()
             val nextPriorities = HashMap<String, MutableSet<Int>>()
 
             window.forEachIndexed { offset, primaryPiece ->
