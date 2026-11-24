@@ -276,6 +276,295 @@ internal enum class HttpRequestReadOutcome {
 }
 
 internal object HttpRequestReadPolicy {
+
+/**
+ * Cryptographic description of one selected file inside a torrent.
+ *
+ * v1 hashes are listed only for complete piece spans that lie wholly inside
+ * this file. Boundary pieces are intentionally excluded because a v1 piece
+ * may also contain bytes from an adjacent file.
+ */
+internal data class TorrentFileIdentityProof(
+    val infoHash: String,
+    val fileSize: Long,
+    val pieceLength: Int,
+    val fileOffset: Long,
+    val hasV1: Boolean,
+    val v2PiecesRootHex: String?,
+    val firstInteriorOffset: Long,
+    val interiorPieceHashes: List<String>
+)
+
+internal enum class ContentIdentityKind {
+    REJECTED,
+    V1_INTERIOR_ONLY,
+    V2_FULL_FILE
+}
+
+internal data class ContentIdentityResult(
+    val kind: ContentIdentityKind,
+    val verifiedStart: Long = 0L,
+    val verifiedEndExclusive: Long = 0L,
+    val canonicalChunkBytes: Int = 0,
+    val reason: String
+) {
+    val accepted: Boolean get() = kind != ContentIdentityKind.REJECTED
+}
+
+/**
+ * Strict identity gate. Names, paths, release labels and file size alone are
+ * never accepted as content identity.
+ */
+internal object ContentIdentityVerifier {
+    private const val MIN_V2_PIECE_BYTES = 16 * 1024
+    private const val MAX_V1_INTERIOR_PIECES = 65_536
+
+    fun verify(
+        primary: TorrentFileIdentityProof,
+        candidate: TorrentFileIdentityProof
+    ): ContentIdentityResult {
+        fun reject(reason: String) = ContentIdentityResult(
+            kind = ContentIdentityKind.REJECTED,
+            reason = reason
+        )
+
+        if (primary.infoHash.isBlank() || candidate.infoHash.isBlank()) {
+            return reject("Missing info-hash.")
+        }
+        if (primary.infoHash.equals(candidate.infoHash, ignoreCase = true)) {
+            return reject("Candidate is the same swarm as the primary.")
+        }
+        if (primary.fileSize <= 0L || candidate.fileSize <= 0L ||
+            primary.fileSize != candidate.fileSize
+        ) {
+            return reject("Selected file sizes are invalid or different.")
+        }
+        if (primary.pieceLength <= 0 || candidate.pieceLength <= 0 ||
+            primary.fileOffset < 0L || candidate.fileOffset < 0L
+        ) {
+            return reject("Invalid piece length or file offset.")
+        }
+
+        val primaryRoot = normalizedRoot(primary.v2PiecesRootHex)
+        val candidateRoot = normalizedRoot(candidate.v2PiecesRootHex)
+        if (primary.v2PiecesRootHex != null && primaryRoot == null) {
+            return reject("Primary v2 pieces root is malformed.")
+        }
+        if (candidate.v2PiecesRootHex != null && candidateRoot == null) {
+            return reject("Candidate v2 pieces root is malformed.")
+        }
+
+        // A shared BEP 52 file root proves the complete file bytes. Piece
+        // lengths still need a common scheduling unit so native piece spans
+        // from every handle map to the same canonical byte interval.
+        if (primaryRoot != null && candidateRoot != null) {
+            if (primaryRoot != candidateRoot) {
+                return reject("BEP 52 file Merkle roots differ.")
+            }
+            val larger = maxOf(primary.pieceLength, candidate.pieceLength)
+            val smaller = minOf(primary.pieceLength, candidate.pieceLength)
+            if (!isPowerOfTwo(primary.pieceLength) ||
+                !isPowerOfTwo(candidate.pieceLength) ||
+                smaller < MIN_V2_PIECE_BYTES ||
+                larger % smaller != 0
+            ) {
+                return reject("v2 piece lengths do not have a safe common scheduling unit.")
+            }
+            return ContentIdentityResult(
+                kind = ContentIdentityKind.V2_FULL_FILE,
+                verifiedStart = 0L,
+                verifiedEndExclusive = primary.fileSize,
+                canonicalChunkBytes = larger,
+                reason = "Matching BEP 52 SHA-256 file pieces root and size."
+            )
+        }
+
+        // v1 hashes cover fixed-size spans in the torrent's concatenated byte
+        // stream. The selected files must have the same piece length and phase.
+        if (!primary.hasV1 || !candidate.hasV1) {
+            return reject("No common v2 root and no v1 hash on both sources.")
+        }
+        if (primary.pieceLength != candidate.pieceLength) {
+            return reject("v1 piece lengths differ.")
+        }
+        val pieceLength = primary.pieceLength.toLong()
+        val primaryPhase = Math.floorMod(primary.fileOffset, pieceLength)
+        val candidatePhase = Math.floorMod(candidate.fileOffset, pieceLength)
+        if (primaryPhase != candidatePhase) {
+            return reject("v1 selected-file piece boundaries are phase-shifted.")
+        }
+
+        val firstFull = (pieceLength - primaryPhase) % pieceLength
+        val fullPieceCount = if (primary.fileSize <= firstFull) {
+            0L
+        } else {
+            (primary.fileSize - firstFull) / pieceLength
+        }
+        if (fullPieceCount <= 0L) {
+            return reject("No complete interior v1 piece exists to prove identity.")
+        }
+        if (fullPieceCount > MAX_V1_INTERIOR_PIECES ||
+            primary.interiorPieceHashes.size.toLong() != fullPieceCount ||
+            candidate.interiorPieceHashes.size.toLong() != fullPieceCount
+        ) {
+            return reject("v1 interior piece-hash coverage is incomplete or exceeds the verification bound.")
+        }
+        for (index in 0 until fullPieceCount.toInt()) {
+            val a = primary.interiorPieceHashes[index].lowercase()
+            val b = candidate.interiorPieceHashes[index].lowercase()
+            if (!isSha1(a) || !isSha1(b) || a != b) {
+                return reject("v1 interior piece hash mismatch at relative piece $index.")
+            }
+        }
+
+        val endExclusive = firstFull + fullPieceCount * pieceLength
+        return ContentIdentityResult(
+            kind = ContentIdentityKind.V1_INTERIOR_ONLY,
+            verifiedStart = firstFull,
+            verifiedEndExclusive = endExclusive,
+            canonicalChunkBytes = primary.pieceLength,
+            reason = "All complete aligned v1 interior SHA-1 pieces match; boundary pieces remain primary-only."
+        )
+    }
+
+    private fun normalizedRoot(value: String?): String? {
+        if (value == null) return null
+        val root = value.trim().lowercase()
+        return root.takeIf { it.length == 64 && it.all { character -> character in "0123456789abcdef" } &&
+            it.any { character -> character != '0' } }
+    }
+
+    private fun isSha1(value: String): Boolean =
+        value.length == 40 && value.all { it in "0123456789abcdef" }
+
+    private fun isPowerOfTwo(value: Int): Boolean =
+        value >= MIN_V2_PIECE_BYTES && (value and (value - 1)) == 0
+}
+
+internal data class CrossSwarmCandidateMetrics(
+    val sourceId: String,
+    val healthy: Boolean,
+    val goodputBytesPerSecond: Long,
+    val queuedBytes: Long = 0L,
+    val failurePenalty: Double = 1.0
+)
+
+internal data class CrossSwarmLease(
+    val ownerId: String,
+    val acquiredAtMs: Long,
+    val lastProgressAtMs: Long,
+    val backupId: String? = null
+)
+
+/**
+ * Deterministic macro-scheduler for canonical chunks. It leases at most one
+ * source normally and permits one backup only for a stalled critical chunk.
+ * libtorrent remains responsible for all peer/block scheduling inside a swarm.
+ */
+internal class CrossSwarmPieceScheduler(
+    private val canonicalChunkBytes: Int,
+    private val minimumGoodputBytesPerSecond: Long = 16L * 1024L,
+    private val maxFailurePenalty: Double = 8.0
+) {
+    private val leases = HashMap<Long, CrossSwarmLease>()
+
+    init {
+        require(canonicalChunkBytes > 0)
+        require(minimumGoodputBytesPerSecond > 0L)
+    }
+
+    @Synchronized
+    fun assign(
+        canonicalChunk: Long,
+        nowMs: Long,
+        candidates: List<CrossSwarmCandidateMetrics>,
+        critical: Boolean,
+        stallThresholdMs: Long = 1_200L
+    ): List<String> {
+        require(canonicalChunk >= 0L)
+        require(nowMs >= 0L)
+        require(stallThresholdMs >= 0L)
+        val viable = candidates.filter { it.sourceId.isNotBlank() && it.healthy }
+        if (viable.isEmpty()) {
+            leases.remove(canonicalChunk)
+            return emptyList()
+        }
+
+        val current = leases[canonicalChunk]
+        if (current != null && viable.any { it.sourceId == current.ownerId }) {
+            val stalled = nowMs - current.lastProgressAtMs >= stallThresholdMs
+            if (!critical || !stalled || current.backupId != null) {
+                val backupStillViable = current.backupId?.let { id ->
+                    viable.any { it.sourceId == id }
+                } == true
+                return listOfNotNull(
+                    current.ownerId,
+                    current.backupId.takeIf { backupStillViable }
+                )
+            }
+            val backup = bestCandidate(viable, exclude = setOf(current.ownerId))
+            if (backup != null) {
+                leases[canonicalChunk] = current.copy(backupId = backup.sourceId)
+                return listOf(current.ownerId, backup.sourceId)
+            }
+            return listOf(current.ownerId)
+        }
+
+        val winner = bestCandidate(viable, exclude = emptySet()) ?: return emptyList()
+        leases[canonicalChunk] = CrossSwarmLease(
+            ownerId = winner.sourceId,
+            acquiredAtMs = nowMs,
+            lastProgressAtMs = nowMs
+        )
+        return listOf(winner.sourceId)
+    }
+
+    @Synchronized
+    fun recordProgress(canonicalChunk: Long, sourceId: String, nowMs: Long) {
+        val current = leases[canonicalChunk] ?: return
+        if (sourceId == current.ownerId) {
+            leases[canonicalChunk] = current.copy(lastProgressAtMs = nowMs)
+        } else if (sourceId == current.backupId) {
+            // The backup becomes the winner; the old owner is no longer leased.
+            leases[canonicalChunk] = CrossSwarmLease(
+                ownerId = sourceId,
+                acquiredAtMs = current.acquiredAtMs,
+                lastProgressAtMs = nowMs
+            )
+        }
+    }
+
+    @Synchronized
+    fun complete(canonicalChunk: Long) {
+        leases.remove(canonicalChunk)
+    }
+
+    @Synchronized
+    fun clear() {
+        leases.clear()
+    }
+
+    @Synchronized
+    fun snapshot(): Map<Long, CrossSwarmLease> = leases.toMap()
+
+    private fun bestCandidate(
+        candidates: List<CrossSwarmCandidateMetrics>,
+        exclude: Set<String>
+    ): CrossSwarmCandidateMetrics? = candidates.asSequence()
+        .filter { it.sourceId !in exclude }
+        .minByOrNull { candidate ->
+            val rate = maxOf(
+                candidate.goodputBytesPerSecond,
+                minimumGoodputBytesPerSecond
+            )
+            val queued = candidate.queuedBytes.coerceAtLeast(0L)
+            val etaSeconds = (queued + canonicalChunkBytes.toLong()) / rate.toDouble()
+            val penalty = candidate.failurePenalty
+                .coerceIn(1.0, maxFailurePenalty)
+            etaSeconds * penalty
+        }
+}
+
     fun shouldCancel(outcome: HttpRequestReadOutcome): Boolean =
         outcome == HttpRequestReadOutcome.IO_ERROR
 }
