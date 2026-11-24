@@ -163,9 +163,9 @@ class HttpPieceWaiterTest {
     }
 
     @Test
-    fun playbackPriorityWindowStartsAtSeekPieceAndPrefetchesThreePieces() {
+    fun playbackPriorityWindowStartsAtSeekPieceAndPrefetchesFifteenPieces() {
         assertEquals(
-            listOf(1979, 1980, 1981, 1982),
+            (1979..1994).toList(),
             HttpRangePolicy.playbackWindow(
                 currentPiece = 1979,
                 firstPiece = 1900,
@@ -187,7 +187,7 @@ class HttpPieceWaiterTest {
                 currentPiece = 1899,
                 firstPiece = 1900,
                 lastPiece = 2200,
-                lookAheadPieces = 3
+                lookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
             ).isEmpty()
         )
     }
@@ -195,9 +195,9 @@ class HttpPieceWaiterTest {
     @Test
     fun playbackPriorityDeadlinesAreStaggeredAcrossPrefetchWindow() {
         assertEquals(0, HttpRangePolicy.deadlineForWindowOffset(0))
-        assertEquals(2_500, HttpRangePolicy.deadlineForWindowOffset(1))
-        assertEquals(5_000, HttpRangePolicy.deadlineForWindowOffset(2))
-        assertEquals(7_500, HttpRangePolicy.deadlineForWindowOffset(3))
+        assertEquals(1_000, HttpRangePolicy.deadlineForWindowOffset(1))
+        assertEquals(2_000, HttpRangePolicy.deadlineForWindowOffset(2))
+        assertEquals(15_000, HttpRangePolicy.deadlineForWindowOffset(15))
     }
 
     @Test
