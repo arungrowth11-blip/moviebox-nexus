@@ -496,8 +496,17 @@ void main() {
         );
         if (response.statusCode != HttpStatus.partialContent) {
           final diagnostic = await response.transform(utf8.decoder).join();
+          Map<String, dynamic> nativeStatus = <String, dynamic>{};
+          try {
+            nativeStatus =
+                await channel.invokeMapMethod<String, dynamic>('getStatus') ??
+                <String, dynamic>{};
+          } catch (error) {
+            nativeStatus = <String, dynamic>{'diagnosticError': error.toString()};
+          }
           fail(
-            'Torrent range $start-$end returned HTTP ${response.statusCode}: $diagnostic',
+            'Torrent range $start-$end returned HTTP ${response.statusCode}: '
+            '$diagnostic; nativeStatus=$nativeStatus',
           );
         }
         expect(
