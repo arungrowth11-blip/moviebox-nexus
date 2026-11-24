@@ -1315,9 +1315,9 @@ jobs:
           # CBR keeps the 30-second output above the torrent engine's 8 MiB threshold.
           ffmpeg -hide_banner -loglevel error -y -i "$source_video" \
             -t 30 -map 0:v:0 -map 0:a:0 \
-            -vf "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24" \
+            -vf "scale=320:240:force_original_aspect_ratio=decrease,pad=320:240:(ow-iw)/2:(oh-ih)/2,fps=24" \
             -c:v libx264 -preset ultrafast -tune zerolatency \
-            -profile:v baseline -level 3.1 -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
+            -profile:v baseline -level 3.0 -g 48 -keyint_min 48 -sc_threshold 0 -bf 0 \
             -b:v 2500k -minrate 2500k -maxrate 2500k -bufsize 5000k \
             -x264-params "nal-hrd=cbr:force-cfr=1" -pix_fmt yuv420p \
             -c:a aac -b:a 128k -ar 48000 -ac 2 \
@@ -1333,8 +1333,8 @@ jobs:
           video_height="$(printf '%s\n' "$video_probe" | sed -n 's/^height=//p')"
           video_frames="$(printf '%s\n' "$video_probe" | sed -n 's/^nb_read_frames=//p')"
           test "$video_codec" = "h264"
-          test "$video_width" = "1280"
-          test "$video_height" = "720"
+          test "$video_width" = "320"
+          test "$video_height" = "240"
           test "${video_frames:-0}" -ge 600
           audio_codec="$(ffprobe -v error -select_streams a:0 \
             -show_entries stream=codec_name -of csv=p=0 "$seed_dir/moviebox-ci-video.mp4")"
