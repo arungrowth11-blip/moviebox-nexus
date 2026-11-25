@@ -533,8 +533,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         "pieceLengthBytes" to target.pieceLength,
                         "firstPiece" to target.firstPiece,
                         "lastPiece" to target.lastPiece,
-                        "mediaFileReady" to target.file.isFile && target.file.canRead() &&
-                            target.file.length() == target.fileSize,
+                        "mediaFileReady" to (target.file.isFile && target.file.canRead() &&
+                            target.file.length() == target.fileSize),
                         "backgroundDownloadEnabled" to target.backgroundDownloadEnabled,
                         "backgroundDownloadBudgetBytes" to target.backgroundDownloadBudgetBytes
                     ))
