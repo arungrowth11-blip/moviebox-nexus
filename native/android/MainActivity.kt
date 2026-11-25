@@ -212,6 +212,22 @@ class MainActivity : FlutterActivity() {
                     }
                     runOnUiThread { result.success(snapshot) }
                 }
+                "captureFailure" -> torrentExecutor.execute {
+                    try {
+                        val reason = call.argument<String>("reason") ?: "Unspecified torrent playback failure."
+                        val playerSnapshot = call.argument<Map<String, Any?>>("playerSnapshot") ?: emptyMap()
+                        val report = engine().captureFailureReport(reason, playerSnapshot)
+                        runOnUiThread { result.success(report) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error(
+                                "TORRENT_DIAGNOSTIC_SAVE_FAILED",
+                                error.message ?: "Could not save the private playback diagnostic report.",
+                                null
+                            )
+                        }
+                    }
+                }
                 "pausePlayback" -> torrentExecutor.execute {
                     try {
                         torrentEngine?.pausePlayback()
