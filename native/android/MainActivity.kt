@@ -62,6 +62,13 @@ class MainActivity : FlutterActivity() {
                 )
                 runOnUiThread { result.success(url) }
             } catch (error: Throwable) {
+                runCatching {
+                    engine().captureFailureReport(
+                        "Native startPlayback failed: ${error.javaClass.simpleName}: ${error.message ?: "No error message."}"
+                    )
+                }.onFailure { captureError ->
+                    Log.w("MovieBoxTorrent", "Could not save start failure diagnostics", captureError)
+                }
                 runOnUiThread {
                     result.error("TORRENT_PLAYBACK_FAILED", error.message ?: "Torrent playback failed.", null)
                 }
