@@ -26,9 +26,9 @@ REDACTIONS = (
     ),
 )
 RELEVANT = re.compile(
-    r"(?i)(error|exception|failed|failure|fatal|assert|expected|actual|timeout|timed out|gradle task|test result|#\d+|\bat\s+\S+)"
+    r"(?i)(Media3 CI playback state|nativePosition|isPlaying|isBuffering|videoSize|"
+    r"error|exception|failed|failure|fatal|assert|expected|actual|timeout|timed out|gradle task|test result|#\\d+|\\bat\\s+\\S+)"
 )
-
 
 def sanitize_line(line: str) -> str:
     value = line.rstrip("\r\n")
