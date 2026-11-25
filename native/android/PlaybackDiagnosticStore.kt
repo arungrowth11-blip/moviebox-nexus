@@ -107,7 +107,7 @@ internal object PlaybackDiagnosticRedactor {
             "<redacted-ip>"
         )
         value = value.replace(
-            Regex("""(?:/data/(?:user|user_de)/\\d+/[^\\s\"'<>]+|/data/data/[^\\s\"'<>]+|/storage/emulated/\\d+/[^\\s\"'<>]+)"""),
+            Regex("""(?:/data/(?:user|user_de)/\d+/[^\s"'<>]+|/data/data/[^\s"'<>]+|/storage/emulated/\d+/[^\s"'<>]+)"""),
             "<redacted-path>"
         )
         return value.take(320)

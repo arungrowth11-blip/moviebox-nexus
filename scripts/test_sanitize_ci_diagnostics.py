@@ -16,7 +16,7 @@ class SanitizerTests(unittest.TestCase):
         raw = (
             f"magnet:?xt=urn:btih:{hex_hash} https://provider.example/private "
             f"Authorization: Bearer private-token 10.2.3.4 "
-            f"/data/user_de/0/com.moviebox/files/secret.json"
+            f"/data/user_de/0/com.moviebox/files/secret.json {base32_hash}"
         )
         safe = sanitize_line(raw)
         for secret in (hex_hash, base32_hash, "provider.example", "private-token", "10.2.3.4", "/data/user_de/"):
