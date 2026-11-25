@@ -2055,6 +2055,8 @@ class EmbeddedTorrentService {
     String title = '',
     int? fileIdx,
     List<String> trackers = const <String>[],
+    List<Map<String, Object?>> additionalSources =
+        const <Map<String, Object?>>[],
   }) async {
     final hash = infoHash.trim();
     if (!RegExp(r'^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$').hasMatch(hash)) {
@@ -2062,11 +2064,13 @@ class EmbeddedTorrentService {
     }
     final url = await _channel.invokeMethod<String>(
       'startPlayback',
-      <String, Object>{
+      <String, Object?>{
         'infoHash': hash,
         'title': title.trim().isEmpty ? 'MovieBox Nexus stream' : title.trim(),
         if (fileIdx != null) 'fileIdx': fileIdx,
         if (trackers.isNotEmpty) 'trackers': trackers.take(28).toList(),
+        if (additionalSources.isNotEmpty)
+          'sources': additionalSources.take(3).toList(growable: false),
       },
     );
     final uri = Uri.tryParse(url ?? '');
@@ -5505,11 +5509,34 @@ class _DetailsSheetState extends State<DetailsSheet> {
         ...supplementalTrackers.take(16),
         ...stream.trackers.take(12),
       }.toList(growable: false);
+      final primaryHash = canonicalTorrentInfoHash(stream.infoHash!);
+      final seenHashes = <String>{primaryHash};
+      final additionalSources = _streams
+          .where(
+            (candidate) => candidate.isTorrent && candidate.infoHash != null,
+          )
+          .map((candidate) {
+            final candidateHash = canonicalTorrentInfoHash(candidate.infoHash!);
+            if (!seenHashes.add(candidateHash)) return null;
+            return <String, Object?>{
+              'infoHash': candidate.infoHash,
+              'title': candidate.title.isNotEmpty
+                  ? candidate.title
+                  : candidate.addonName,
+              if (candidate.fileIdx != null) 'fileIdx': candidate.fileIdx,
+              if (candidate.trackers.isNotEmpty)
+                'trackers': candidate.trackers.take(28).toList(growable: false),
+            };
+          })
+          .whereType<Map<String, Object?>>()
+          .take(3)
+          .toList(growable: false);
       final url = await EmbeddedTorrentService.instance.startPlayback(
         stream.infoHash!,
         title: '${widget.meta.name} - $_targetLabel',
         fileIdx: stream.fileIdx,
         trackers: trackers,
+        additionalSources: additionalSources,
       );
       if (!mounted) return;
       messenger.hideCurrentSnackBar();

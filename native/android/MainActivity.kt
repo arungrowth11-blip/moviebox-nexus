@@ -46,6 +46,24 @@ class MainActivity : FlutterActivity() {
         val title = call.argument<String>("title") ?: "MovieBox Nexus stream"
         val fileIdx = call.argument<Number>("fileIdx")?.toInt()?.takeIf { it >= 0 }
         val trackers = call.argument<List<String>>("trackers") ?: emptyList()
+        val rawSources = call.argument<List<*>>("sources") ?: emptyList<Any?>()
+        val sourceHashPattern = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$")
+        val additionalSources = rawSources.mapNotNull { raw ->
+            val item = raw as? Map<*, *> ?: return@mapNotNull null
+            val hash = item["infoHash"] as? String ?: return@mapNotNull null
+            val cleanedHash = hash.trim()
+            if (!sourceHashPattern.matches(cleanedHash)) return@mapNotNull null
+            val sourceTrackers = (item["trackers"] as? List<*>)
+                ?.mapNotNull { it as? String }
+                ?.take(28)
+                ?: emptyList()
+            TorrentSourceCandidate(
+                infoHash = cleanedHash,
+                title = (item["title"] as? String)?.take(160) ?: title,
+                fileIdx = (item["fileIdx"] as? Number)?.toInt()?.takeIf { it >= 0 },
+                trackers = sourceTrackers
+            )
+        }.take(3)
         val normalizedHash = infoHash?.trim().orEmpty()
         val validHash = Regex("^(?:[a-fA-F0-9]{40}|[a-zA-Z2-7]{32})$").matches(normalizedHash)
         if (!validHash) {
@@ -59,7 +77,8 @@ class MainActivity : FlutterActivity() {
                     title,
                     fileIdx,
                     trackers,
-                    testPeerEndpoint
+                    testPeerEndpoint,
+                    additionalSources
                 )
                 runOnUiThread { result.success(url) }
             } catch (error: Throwable) {
