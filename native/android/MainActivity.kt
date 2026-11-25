@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import android.view.WindowManager
 import java.io.ByteArrayOutputStream
 import io.flutter.embedding.android.FlutterActivity
