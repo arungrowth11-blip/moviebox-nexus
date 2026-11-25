@@ -9,6 +9,26 @@ import org.junit.Test
 
 class PlaybackDiagnosticStoreTest {
     @Test
+    fun diagnosticTextRedactsUrlsHashesIpAddressesAndCredentials() {
+        val hexHash = "a".repeat(40)
+        val base32Hash = "B".repeat(32)
+        val raw = "magnet:?xt=urn:btih:$hexHash " +
+            "https://provider.example/private/video.m3u8 " +
+            "udp://tracker.example:80/announce $base32Hash " +
+            "Authorization: Bearer top-secret-token 192.168.1.24"
+
+        val safe = PlaybackDiagnosticRedactor.sanitize(raw)
+
+        assertFalse(safe.contains(hexHash))
+        assertFalse(safe.contains(base32Hash))
+        assertFalse(safe.contains("provider.example"))
+        assertFalse(safe.contains("tracker.example"))
+        assertFalse(safe.contains("top-secret-token"))
+        assertFalse(safe.contains("192.168.1.24"))
+        assertTrue(safe.contains("<redacted"))
+    }
+
+    @Test
     fun expiredReportsAreDeletedAndUnrelatedFilesArePreserved() {
         val root = Files.createTempDirectory("moviebox-diagnostics-expiry").toFile()
         try {
