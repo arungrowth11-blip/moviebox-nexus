@@ -577,6 +577,11 @@ void main() {
         final torrentStatus = await channel.invokeMapMethod<String, dynamic>(
           'getStatus',
         );
+        expect(torrentStatus?['mediaFileReady'], isTrue);
+        expect(
+          (torrentStatus?['mediaFileLengthBytes'] as num?)?.toInt() ?? 0,
+          (torrentStatus?['selectedMediaFileSizeBytes'] as num?)?.toInt(),
+        );
         expect(
           (torrentStatus?['httpRequestCount'] as num?)?.toInt() ?? 0,
           greaterThanOrEqualTo(2),

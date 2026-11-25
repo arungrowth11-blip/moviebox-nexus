@@ -2,6 +2,8 @@ package com.moviebox.nexus
 
 import com.frostwire.jlibtorrent.Priority
 import java.io.File
+import java.io.IOException
+import java.io.RandomAccessFile
 import kotlin.math.min
 
 /**
@@ -122,10 +124,14 @@ internal object HttpRangePolicy {
     fun shouldWaitForFirstPiece(method: String): Boolean =
         method.equals("GET", ignoreCase = true)
 
-    fun beforeHeaders(pieceReady: Boolean, cancelled: Boolean): HttpPieceDecision =
+    fun beforeHeaders(
+        pieceReady: Boolean,
+        cancelled: Boolean,
+        localMediaReadable: Boolean = true
+    ): HttpPieceDecision =
         when {
             cancelled -> HttpPieceDecision.CANCELLED
-            pieceReady -> HttpPieceDecision.READY
+            pieceReady && localMediaReadable -> HttpPieceDecision.READY
             else -> HttpPieceDecision.RETRY
         }
 
@@ -235,6 +241,50 @@ internal object TorrentStartupCleanupPolicy {
 internal object TorrentCachePolicy {
     const val DIRECTORY_NAME = "moviebox-torrents"
 
+    /**
+     * Provision the exact torrent-relative media path before priorities are
+     * enabled. Nested directories and a sparse logical file must exist before
+     * the first verified piece can be advertised to the player.
+     */
+    fun ensureSparseMediaFile(
+        streamDir: File,
+        relativePath: String,
+        expectedSizeBytes: Long
+    ): File {
+        require(expectedSizeBytes > 0L) { "Expected media size must be positive." }
+        if (!streamDir.exists() && !streamDir.mkdirs()) {
+            throw IOException("Unable to create the torrent storage directory.")
+        }
+        if (!streamDir.isDirectory) {
+            throw IOException("Torrent storage path is not a directory.")
+        }
+
+        val canonicalRoot = streamDir.canonicalFile
+        val mediaFile = File(canonicalRoot, relativePath).canonicalFile
+        if (!mediaFile.path.startsWith(canonicalRoot.path + File.separator)) {
+            throw SecurityException("Torrent metadata contains an unsafe media path.")
+        }
+        val parent = mediaFile.parentFile
+            ?: throw IOException("Selected torrent media path has no parent directory.")
+        if (!parent.exists() && !parent.mkdirs()) {
+            throw IOException("Unable to create a nested torrent media directory.")
+        }
+        if (!parent.isDirectory) {
+            throw IOException("Selected torrent media parent is not a directory.")
+        }
+
+        RandomAccessFile(mediaFile, "rw").use { output ->
+            if (output.length() != expectedSizeBytes) output.setLength(expectedSizeBytes)
+            if (output.length() != expectedSizeBytes) {
+                throw IOException("Unable to size the sparse torrent media file.")
+            }
+        }
+        if (!mediaFile.isFile || !mediaFile.canRead()) {
+            throw IOException("Selected torrent media file is not readable.")
+        }
+        return mediaFile
+    }
+
     fun clearRoot(root: File, expectedParent: File): Boolean {
         val canonicalRoot = root.canonicalFile
         val canonicalParent = expectedParent.canonicalFile
@@ -254,18 +304,57 @@ internal object TorrentCachePolicy {
 
 
 /**
- * Torrent media is streamed from explicitly requested pieces only. Leaving the
- * full selected file at NORMAL would let libtorrent download the rest of a
- * movie in the background while the viewer is still watching.
+ * Background priority is granted only when the selected movie fits inside a
+ * 5–10 GiB budget while leaving at least 2 GiB free for Android and other apps.
+ */
+internal object TorrentBackgroundDownloadPolicy {
+    const val RESERVE_BYTES = 2L * 1024L * 1024L * 1024L
+    const val MINIMUM_BUDGET_BYTES = 5L * 1024L * 1024L * 1024L
+    const val MAXIMUM_BUDGET_BYTES = 10L * 1024L * 1024L * 1024L
+
+    fun budgetBytes(availableBytes: Long): Long {
+        val safeBytes = (availableBytes - RESERVE_BYTES).coerceAtLeast(0L)
+        if (safeBytes < MINIMUM_BUDGET_BYTES) return 0L
+        return safeBytes.coerceAtMost(MAXIMUM_BUDGET_BYTES)
+    }
+
+    fun shouldDownloadWholeFile(fileSizeBytes: Long, budgetBytes: Long): Boolean =
+        fileSizeBytes > 0L && budgetBytes >= MINIMUM_BUDGET_BYTES &&
+            fileSizeBytes <= budgetBytes
+}
+
+/**
+ * Only the selected movie is eligible for low-priority background download.
+ * The playhead window is promoted to SEVEN. Other files/secondary swarms stay
+ * ignored unless their pieces are required for the current read.
  */
 internal object TorrentDownloadPriorityPolicy {
     val activePiece: Priority = Priority.SEVEN
     val inactivePiece: Priority = Priority.IGNORE
 
-    fun filePriorities(fileCount: Int): Array<Priority> {
+    fun filePriorities(
+        fileCount: Int,
+        selectedFileIndex: Int? = null,
+        backgroundDownloadEnabled: Boolean = false
+    ): Array<Priority> {
         require(fileCount > 0) { "fileCount must be positive" }
-        return Array(fileCount) { Priority.IGNORE }
+        require(selectedFileIndex == null || selectedFileIndex in 0 until fileCount) {
+            "Selected torrent file index is outside the file list."
+        }
+        return Array(fileCount) { index ->
+            if (backgroundDownloadEnabled && index == selectedFileIndex) {
+                Priority.NORMAL
+            } else {
+                Priority.IGNORE
+            }
+        }
     }
+
+    fun idlePiecePriority(
+        isPrimarySource: Boolean,
+        backgroundDownloadEnabled: Boolean
+    ): Priority =
+        if (isPrimarySource && backgroundDownloadEnabled) Priority.NORMAL else Priority.IGNORE
 }
 
 

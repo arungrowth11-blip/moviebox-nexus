@@ -228,6 +228,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       final lastPieceIndex = number('lastPieceIndex');
       final lastPieceWaitMs = number('lastPieceWaitMs');
       final lastHttpError = (snapshot['lastHttpError'] ?? '').toString();
+      final mediaFileReady = snapshot['mediaFileReady'] == true;
+      final backgroundDownloadEnabled = snapshot['backgroundDownloadEnabled'] == true;
+      final backgroundBudgetBytes = number('backgroundDownloadBudgetBytes');
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
@@ -275,6 +278,11 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (lastRequestBytesSent > 0)
           'Last response bytes: $lastRequestBytesSent',
         if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
+        if (mediaFileReady) 'Local sparse video file: ready',
+        if (metadataReady && backgroundDownloadEnabled)
+          'Background movie download: active (up to ${(backgroundBudgetBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GiB budget)',
+        if (metadataReady && !backgroundDownloadEnabled)
+          'Download mode: playback window only (movie exceeds safe budget or free-space reserve)',
         if (lastPieceIndex >= 0)
           'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
         if (number('selectedPieceLengthBytes') > 0)

@@ -43,17 +43,17 @@ def main() -> int:
         raise SystemExit("Invalid peer port.")
 
     seed_dir.mkdir(parents=True, exist_ok=True)
-    # Keep the video in the exact directory used as the torrent save path.
-    target = seed_dir / video.name
+    # Deliberately exercise a nested torrent path like real release torrents.
+    relative_media_path = Path("Season 01") / "Media" / video.name
+    target = seed_dir / relative_media_path
+    target.parent.mkdir(parents=True, exist_ok=True)
     if video != target:
         target.write_bytes(video.read_bytes())
 
-    # Use a basename relative to the save directory. Absolute paths would
-    # become nested torrent paths and make the seeder's on-disk layout diverge.
     previous_cwd = Path.cwd()
     os.chdir(seed_dir)
     storage = lt.file_storage()
-    lt.add_files(storage, target.name)
+    lt.add_files(storage, relative_media_path.as_posix())
     builder = lt.create_torrent(storage, 256 * 1024)
     builder.set_creator("MovieBox Nexus deterministic CI test")
     lt.set_piece_hashes(builder, str(seed_dir))
