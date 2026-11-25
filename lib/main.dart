@@ -2118,10 +2118,12 @@ Future<void> main() async {
     }),
   );
   unawaited(
-    EmbeddedTorrentService.instance.pruneDiagnosticReports().catchError((Object error) {
-      debugPrint('MovieBox startup diagnostic retention cleanup skipped: $error');
-      return 0;
-    }),
+    EmbeddedTorrentService.instance
+        .pruneDiagnosticReports()
+        .then<void>((_) {})
+        .catchError((Object error) {
+          debugPrint('MovieBox startup diagnostic retention cleanup skipped: $error');
+        }),
   );
   // Native torrent startup is lazy; catalog navigation must not wait for it.
   PaintingBinding.instance.imageCache
