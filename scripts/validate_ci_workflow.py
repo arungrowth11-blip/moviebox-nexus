@@ -99,8 +99,17 @@ def main() -> int:
         ("integration-tests", integration, "MovieBox-Emulator-Diagnostics"),
         ("release-apk-verify", verify, "MovieBox-Release-APK-Verification-Diagnostics"),
     ):
-        if "if: always()" not in block or upload_name not in block:
-            raise SystemExit(f"{name} must upload diagnostics with if: always().")
+        if "if: failure()" not in block or upload_name not in block:
+            raise SystemExit(f"{name} must upload diagnostics only after a failed job.")
+        if "retention-days: 7" not in block:
+            raise SystemExit(f"{name} diagnostics must expire after seven days.")
+
+    for required_file in (
+        "native/android/PlaybackDiagnosticStore.kt",
+        "native/android-test/PlaybackDiagnosticStoreTest.kt",
+    ):
+        if not Path(required_file).is_file():
+            raise SystemExit(f"Missing playback diagnostic source/test: {required_file}")
 
     if "MovieBox-Nexus-OS-APK" not in verify:
         raise SystemExit("release-apk-verify does not consume the release artifact.")
