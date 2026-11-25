@@ -220,6 +220,20 @@ class MainActivity : FlutterActivity() {
                     }
                     runOnUiThread { result.success(snapshot) }
                 }
+                "pruneDiagnostics" -> torrentExecutor.execute {
+                    try {
+                        val deleted = engine().pruneDiagnosticReports()
+                        runOnUiThread { result.success(deleted) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error(
+                                "TORRENT_DIAGNOSTIC_PRUNE_FAILED",
+                                error.message ?: "Could not prune old playback diagnostics.",
+                                null
+                            )
+                        }
+                    }
+                }
                 "captureFailure" -> torrentExecutor.execute {
                     try {
                         val reason = call.argument<String>("reason") ?: "Unspecified torrent playback failure."
