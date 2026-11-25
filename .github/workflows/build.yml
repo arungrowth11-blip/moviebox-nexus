@@ -103,9 +103,11 @@ jobs:
             cp "$backup_dir/native-android/MainActivity.kt" android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
             cp "$backup_dir/native-android/EmbeddedTorrentEngine.kt" android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
             cp "$backup_dir/native-android/HttpPieceWaiter.kt" android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
+            cp "$backup_dir/native-android/PlaybackDiagnosticStore.kt" android/app/src/main/kotlin/com/moviebox/nexus/PlaybackDiagnosticStore.kt
           fi
           mkdir -p android/app/src/test/kotlin/com/moviebox/nexus
           cp native/android-test/HttpPieceWaiterTest.kt android/app/src/test/kotlin/com/moviebox/nexus/HttpPieceWaiterTest.kt
+          cp native/android-test/PlaybackDiagnosticStoreTest.kt android/app/src/test/kotlin/com/moviebox/nexus/PlaybackDiagnosticStoreTest.kt
 
           if [ -s "$backup_dir/tv_banner/tv_banner.png" ]; then
             mkdir -p android/app/src/main/res/drawable
@@ -1056,13 +1058,13 @@ jobs:
           script: bash "$RUNNER_TEMP/moviebox-release-apk-verify.sh"
 
       - name: Upload release APK verification diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: MovieBox-Release-APK-Verification-Diagnostics
           path: ${{ runner.temp }}/moviebox-release-apk-verify-diagnostics/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
 
   integration-tests:
     name: Android seeded-torrent and Media3 integration tests
@@ -1584,10 +1586,10 @@ jobs:
           script: bash "$RUNNER_TEMP/moviebox-emulator-script.sh"
 
       - name: Upload emulator diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: MovieBox-Emulator-Diagnostics
           path: ${{ runner.temp }}/moviebox-emulator-diagnostics/
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 7
