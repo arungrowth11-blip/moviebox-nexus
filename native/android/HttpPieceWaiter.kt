@@ -4,6 +4,9 @@ import com.frostwire.jlibtorrent.Priority
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 /**
@@ -40,6 +43,72 @@ internal class HttpPieceWaiter(
             sleepMs(min(pollIntervalMs, remaining))
         }
     }
+}
+
+internal data class TorrentDiskReadResult(
+    val success: Boolean,
+    val bytesRead: Int,
+    val error: String
+)
+
+/**
+ * Waits for libtorrent's asynchronous READ_PIECE alert before the loopback server
+ * reads the sparse local file. Keys are playback-token + swarm + piece scoped.
+ */
+internal class TorrentDiskReadBarrier {
+    private class PendingRead {
+        val completed = CountDownLatch(1)
+        @Volatile var result: TorrentDiskReadResult? = null
+    }
+
+    private val pending = ConcurrentHashMap<String, PendingRead>()
+    private val ready = ConcurrentHashMap.newKeySet<String>()
+
+    fun await(
+        key: String,
+        timeoutMs: Long,
+        isCancelled: () -> Boolean,
+        startRead: () -> Unit
+    ): TorrentDiskReadResult? {
+        require(key.isNotBlank()) { "Disk-read key must not be blank." }
+        require(timeoutMs > 0L) { "Disk-read timeout must be positive." }
+        if (ready.contains(key)) return TorrentDiskReadResult(true, 1, "")
+
+        val candidate = PendingRead()
+        val existing = pending.putIfAbsent(key, candidate)
+        val selected = existing ?: candidate
+        if (existing == null) {
+            try {
+                startRead()
+            } catch (error: Throwable) {
+                complete(key, false, 0, error.message ?: error.javaClass.simpleName)
+            }
+        }
+
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (true) {
+            if (isCancelled()) return null
+            val remaining = deadline - System.nanoTime()
+            if (remaining <= 0L) return null
+            val slice = min(remaining, TimeUnit.MILLISECONDS.toNanos(200L))
+            if (selected.completed.await(slice, TimeUnit.NANOSECONDS)) {
+                return selected.result
+            }
+        }
+    }
+
+    fun complete(key: String, success: Boolean, bytesRead: Int, error: String = ""): Boolean {
+        val entry = pending.remove(key) ?: return false
+        val result = TorrentDiskReadResult(success && bytesRead > 0, bytesRead, error)
+        entry.result = result
+        if (result.success) ready.add(key)
+        entry.completed.countDown()
+        return true
+    }
+
+    fun isReady(key: String): Boolean = ready.contains(key)
+    fun pendingCount(): Int = pending.size
+    fun readyCount(): Int = ready.size
 }
 
 internal enum class HttpPieceDecision {

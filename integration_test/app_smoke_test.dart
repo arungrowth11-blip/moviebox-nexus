@@ -595,6 +595,15 @@ void main() {
           greaterThanOrEqualTo(firstRange.length + seekRange.length),
         );
         expect(
+          (torrentStatus?['diskReadCompletedPieces'] as num?)?.toInt() ?? 0,
+          greaterThanOrEqualTo(2),
+          reason: 'Each torrent piece must finish libtorrent disk-read before local HTTP bytes are served.',
+        );
+        expect(
+          (torrentStatus?['diskReadFailures'] as num?)?.toInt() ?? 0,
+          0,
+        );
+        expect(
           (torrentStatus?['lastRequestBytesSent'] as num?)?.toInt(),
           seekRange.length,
         );

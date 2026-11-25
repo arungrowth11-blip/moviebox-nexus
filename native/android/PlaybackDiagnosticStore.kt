@@ -18,6 +18,37 @@ internal object PlaybackDiagnosticStore {
     const val MAX_REPORT_BYTES = 256L * 1024L
     private const val FILE_PREFIX = "failure-"
 
+    /**
+     * Bounded, sanitized summary for an uncaught exception or Android process
+     * exit reason. Raw logcat and native tombstone contents are never stored.
+     */
+    fun processFailureReport(
+        category: String,
+        threadName: String,
+        failureType: String,
+        details: String,
+        frames: List<String> = emptyList(),
+        timestampMs: Long = System.currentTimeMillis()
+    ): String {
+        fun quote(raw: String): String {
+            val safe = PlaybackDiagnosticRedactor.sanitize(raw)
+            return "\"" + safe
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "\\r")
+                .replace("\n", "\\n")
+                .replace("\t", "\\t") + "\""
+        }
+        val frameJson = frames.take(12).joinToString(",") { quote(it) }
+        return "{\"schemaVersion\":1," +
+            "\"timestampMs\":" + timestampMs + "," +
+            "\"category\":" + quote(category) + "," +
+            "\"thread\":" + quote(threadName) + "," +
+            "\"failureType\":" + quote(failureType) + "," +
+            "\"details\":" + quote(details) + "," +
+            "\"frames\":[" + frameJson + "]}"
+    }
+
     fun save(
         privateFilesDir: File,
         contents: String,

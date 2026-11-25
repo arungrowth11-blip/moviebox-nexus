@@ -29,6 +29,22 @@ class PlaybackDiagnosticStoreTest {
     }
 
     @Test
+    fun processFailureReportRedactsPrivateMediaAndNetworkDetails() {
+        val report = PlaybackDiagnosticStore.processFailureReport(
+            category = "previous_native_crash",
+            threadName = "main",
+            failureType = "ApplicationExitInfo/REASON_CRASH_NATIVE",
+            details = "fault at /data/data/com.moviebox.nexus/cache/file.mkv for https://provider.example/x magnet query",
+            frames = listOf("NativePlayer.read(/storage/emulated/0/private.mkv)")
+        )
+        assertFalse(report.contains("/data/data/"))
+        assertFalse(report.contains("/storage/emulated/"))
+        assertFalse(report.contains("provider.example"))
+        assertTrue(report.contains("<redacted-path>"))
+        assertTrue(report.contains("<redacted-url>"))
+    }
+
+    @Test
     fun expiredReportsAreDeletedAndUnrelatedFilesArePreserved() {
         val root = Files.createTempDirectory("moviebox-diagnostics-expiry").toFile()
         try {

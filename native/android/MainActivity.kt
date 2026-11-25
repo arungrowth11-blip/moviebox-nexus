@@ -1,8 +1,12 @@
 package com.moviebox.nexus
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.os.Process
 import android.provider.OpenableColumns
 import android.util.Log
 import android.view.WindowManager
@@ -12,8 +16,77 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : FlutterActivity() {
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        capturePreviousProcessExit()
+        installUncaughtExceptionDiagnostics()
+    }
+
+    private fun installUncaughtExceptionDiagnostics() {
+        if (!uncaughtHandlerInstalled.compareAndSet(false, true)) return
+        val privateFilesDir = applicationContext.filesDir
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                val report = PlaybackDiagnosticStore.processFailureReport(
+                    category = "uncaught_java_exception",
+                    threadName = thread.name,
+                    failureType = error.javaClass.name,
+                    details = error.message ?: "No exception message.",
+                    frames = error.stackTrace.take(12).map { it.toString() }
+                )
+                PlaybackDiagnosticStore.save(privateFilesDir, report)
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, error)
+            } else {
+                Process.killProcess(Process.myPid())
+                kotlin.system.exitProcess(10)
+            }
+        }
+    }
+
+    /**
+     * Native crashes, ANRs and low-memory kills bypass the Java uncaught handler.
+     * Record Android's previous-process reason on the next launch without reading
+     * or uploading raw logcat/native tombstone files.
+     */
+    private fun capturePreviousProcessExit() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
+        runCatching {
+            val manager = getSystemService(ActivityManager::class.java) ?: return
+            val latest = manager.getHistoricalProcessExitReasons(packageName, 0, 5)
+                .maxByOrNull { it.timestamp } ?: return
+            val prefs = getSharedPreferences("moviebox-private-diagnostics", 0)
+            val lastSeen = prefs.getLong("last_seen_process_exit_timestamp", 0L)
+            if (latest.timestamp <= lastSeen) return
+            prefs.edit().putLong("last_seen_process_exit_timestamp", latest.timestamp).apply()
+
+            val category = when (latest.reason) {
+                ApplicationExitInfo.REASON_CRASH -> "previous_java_crash"
+                ApplicationExitInfo.REASON_CRASH_NATIVE -> "previous_native_crash"
+                ApplicationExitInfo.REASON_ANR -> "previous_anr"
+                ApplicationExitInfo.REASON_LOW_MEMORY -> "previous_low_memory_exit"
+                ApplicationExitInfo.REASON_SIGNALED -> "previous_process_signal"
+                else -> null
+            } ?: return
+
+            val report = PlaybackDiagnosticStore.processFailureReport(
+                category = category,
+                threadName = "AndroidProcess",
+                failureType = "ApplicationExitInfo/" + latest.reason,
+                details = "status=" + latest.status + "; importance=" + latest.importance +
+                    "; " + (latest.description ?: "No platform description."),
+                timestampMs = latest.timestamp
+            )
+            PlaybackDiagnosticStore.save(filesDir, report)
+        }.onFailure { error ->
+            Log.w("MovieBoxDiagnostics", "Could not save previous process exit summary.", error)
+        }
+    }
     private val playlistFileRequestCode = 7314
     private var pendingPlaylistFileResult: MethodChannel.Result? = null
     private val torrentExecutor = Executors.newSingleThreadExecutor()
@@ -364,5 +437,9 @@ class MainActivity : FlutterActivity() {
             }
         }
         super.onDestroy()
+    }
+
+    companion object {
+        private val uncaughtHandlerInstalled = AtomicBoolean(false)
     }
 }

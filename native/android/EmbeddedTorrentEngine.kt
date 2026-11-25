@@ -3,10 +3,14 @@ package com.moviebox.nexus
 import android.content.Context
 import android.util.Log
 import android.webkit.MimeTypeMap
+import com.frostwire.jlibtorrent.AlertListener
 import com.frostwire.jlibtorrent.Priority
 import com.frostwire.jlibtorrent.SessionManager
 import com.frostwire.jlibtorrent.TorrentFlags
 import com.frostwire.jlibtorrent.TorrentHandle
+import com.frostwire.jlibtorrent.alerts.Alert
+import com.frostwire.jlibtorrent.alerts.AlertType
+import com.frostwire.jlibtorrent.alerts.ReadPieceAlert
 import java.io.BufferedReader
 import java.io.File
 import java.io.IOException
@@ -106,6 +110,33 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private val lock = Any()
     private val diagnosticLock = Any()
     private val diagnosticEvents = java.util.ArrayDeque<Map<String, Any?>>()
+    private val diskReadBarrier = TorrentDiskReadBarrier()
+    private val pendingDiskReadKeys = ConcurrentHashMap<String, String>()
+    private val pendingDiskReadOwners = ConcurrentHashMap<String, PendingStream>()
+    private val diskReadAlertListener = object : AlertListener {
+        override fun types(): IntArray = intArrayOf(AlertType.READ_PIECE.swig())
+
+        override fun alert(alert: Alert<*>) {
+            val readAlert = alert as? ReadPieceAlert ?: return
+            val sourceHash = runCatching {
+                readAlert.handle().infoHash().toHex().lowercase(Locale.US)
+            }.getOrNull() ?: return
+            val sourceKey = sourceHash + ":" + readAlert.piece()
+            pendingDiskReadKeys.entries
+                .filter { it.value == sourceKey }
+                .forEach { entry ->
+                    val error = readAlert.error()
+                    diskReadBarrier.complete(
+                        entry.key,
+                        success = !error.isError(),
+                        bytesRead = readAlert.size(),
+                        error = if (error.isError()) error.message() else ""
+                    )
+                    pendingDiskReadOwners.remove(entry.key)?.pendingDiskReadKeys?.remove(entry.key)
+                    pendingDiskReadKeys.remove(entry.key, sourceKey)
+                }
+        }
+    }
     private val requestPool = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "moviebox-torrent-http").apply { isDaemon = true }
     }
@@ -192,6 +223,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var firstByteAtMs = 0L
         @Volatile var lastPieceIndex = -1
         @Volatile var lastPieceWaitMs = 0L
+        val diskReadRequests = AtomicLong(0L)
+        val diskReadCompletedPieces = AtomicLong(0L)
+        val diskReadFailures = AtomicLong(0L)
+        val diskReadReadyKeys = ConcurrentHashMap.newKeySet<String>()
+        val diskReadFailureKeys = ConcurrentHashMap.newKeySet<String>()
+        val pendingDiskReadKeys = ConcurrentHashMap.newKeySet<String>()
+        @Volatile var lastDiskReadWaitMs = 0L
+        @Volatile var lastDiskReadError = ""
         @Volatile var lastHttpError = ""
         @Volatile var prefetchLookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
         @Volatile var prefetchWindowBytes = 0L
@@ -226,6 +265,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             cleanupCache()
             val manager = SessionManager()
             manager.start()
+            manager.addListener(diskReadAlertListener)
             session = manager
             recordDiagnosticEvent("session_initialized")
         }
@@ -962,6 +1002,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "firstByteAtMs" to pending.firstByteAtMs,
         "lastPieceIndex" to pending.lastPieceIndex,
         "lastPieceWaitMs" to pending.lastPieceWaitMs,
+        "diskReadRequests" to pending.diskReadRequests.get(),
+        "diskReadCompletedPieces" to pending.diskReadCompletedPieces.get(),
+        "diskReadFailures" to pending.diskReadFailures.get(),
+        "diskReadsPending" to pending.pendingDiskReadKeys.size,
+        "lastDiskReadWaitMs" to pending.lastDiskReadWaitMs,
+        "lastDiskReadError" to pending.lastDiskReadError,
         "lastHttpError" to pending.lastHttpError,
         "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0),
         "mediaFileReady" to (pending.target?.let {
@@ -1037,6 +1083,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         startupExecutor.shutdownNow()
         aggregationExecutor.shutdownNow()
         if (old != null) {
+            runCatching { old.removeListener(diskReadAlertListener) }
             val stopSession = {
                 runCatching { old.stop() }
                     .onFailure { error -> Log.w(TAG, "Torrent session shutdown failed: ${error.message}") }
@@ -1111,7 +1158,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private fun waitForHttpReadersToClose(pending: PendingStream?, timeoutMs: Long = 2_000L): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        while ((pending?.activeReaders?.get() ?: 0L) > 0L && System.currentTimeMillis() < deadline) {
+        while (
+            ((pending?.activeReaders?.get() ?: 0L) > 0L ||
+                (pending?.pendingDiskReadKeys?.isNotEmpty() == true)) &&
+            System.currentTimeMillis() < deadline
+        ) {
             try {
                 Thread.sleep(20L)
             } catch (_: InterruptedException) {
@@ -1119,7 +1170,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 return false
             }
         }
-        return (pending?.activeReaders?.get() ?: 0L) == 0L
+        return (pending?.activeReaders?.get() ?: 0L) == 0L &&
+            pending?.pendingDiskReadKeys?.isEmpty() != false
     }
 
     private fun removeTorrentAndCache(
@@ -1217,7 +1269,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     awaitAggregation = { pending?.aggregationFinished?.await() },
                     awaitReaders = {
                         if (pending != null) {
-                            while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
+                            while (
+                                pending.activeReaders.get() > 0L ||
+                                pending.pendingDiskReadKeys.isNotEmpty()
+                            ) Thread.sleep(50L)
                         } else {
                             while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
                         }
@@ -1847,6 +1902,75 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         }
     }
 
+    private fun awaitPieceDiskReadable(
+        pending: PendingStream,
+        slot: VerifiedSwarmSlot,
+        nativePiece: Int,
+        isRequestCancelled: () -> Boolean
+    ): Boolean {
+        val sourceHash = slot.id.lowercase(Locale.US)
+        val key = pending.token + ":" + sourceHash + ":" + nativePiece
+        if (pending.diskReadReadyKeys.contains(key) || diskReadBarrier.isReady(key)) {
+            pending.diskReadReadyKeys.add(key)
+            return true
+        }
+
+        val waitStartedAt = System.nanoTime()
+        val sourceKey = sourceHash + ":" + nativePiece
+        val result = diskReadBarrier.await(
+            key = key,
+            timeoutMs = DISK_READ_TIMEOUT_MS,
+            isCancelled = isRequestCancelled,
+            startRead = {
+                pending.diskReadRequests.incrementAndGet()
+                pending.pendingDiskReadKeys.add(key)
+                pendingDiskReadKeys[key] = sourceKey
+                pendingDiskReadOwners[key] = pending
+                // havePiece() is already true. readPiece() waits for libtorrent's
+                // asynchronous storage read to finish before the local file is opened.
+                slot.target.handle.readPiece(nativePiece)
+            }
+        )
+        pending.lastDiskReadWaitMs =
+            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStartedAt)
+
+        if (result == null) {
+            if (!isRequestCancelled()) {
+                pending.lastDiskReadError =
+                    "Timed out waiting for libtorrent disk-read completion."
+            }
+            return false
+        }
+        if (!result.success) {
+            pending.pendingDiskReadKeys.remove(key)
+            pendingDiskReadOwners.remove(key)
+            pendingDiskReadKeys.remove(key)
+            if (pending.diskReadFailureKeys.add(key)) {
+                pending.diskReadFailures.incrementAndGet()
+            }
+            pending.lastDiskReadError = result.error.ifBlank {
+                "Libtorrent disk read returned no bytes."
+            }.take(240)
+            return false
+        }
+        pending.pendingDiskReadKeys.remove(key)
+        pendingDiskReadOwners.remove(key)
+        pendingDiskReadKeys.remove(key)
+        if (pending.diskReadReadyKeys.add(key)) {
+            pending.diskReadCompletedPieces.incrementAndGet()
+            recordDiagnosticEvent(
+                "torrent_piece_disk_read_ready",
+                mapOf(
+                    "pieceIndex" to nativePiece,
+                    "bytesRead" to result.bytesRead,
+                    "waitMs" to pending.lastDiskReadWaitMs
+                )
+            )
+        }
+        pending.lastDiskReadError = ""
+        return true
+    }
+
     private fun waitForPiece(
         pending: PendingStream,
         target: StreamTarget,
@@ -1886,10 +2010,26 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             for (sourceId in assigned) {
                 val slot = sourceForId(pending, sourceId) ?: continue
                 if (sourceHasRange(slot, filePosition, pieceEndExclusive)) {
+                    val diskReadable = nativePiecesForRange(
+                        slot.target,
+                        filePosition,
+                        pieceEndExclusive
+                    ).all { nativePiece ->
+                        awaitPieceDiskReadable(pending, slot, nativePiece, isRequestCancelled)
+                    }
+                    if (!diskReadable) continue
                     pending.pieceScheduler?.recordProgress(pieceIndex.toLong(), sourceId, now)
                     pending.lastPieceWaitMs = now - waitStartedAt
                     pending.lastHttpError = ""
-                    recordDiagnosticEvent("piece_verified", mapOf("pieceIndex" to pieceIndex, "waitMs" to pending.lastPieceWaitMs, "sourceId" to sourceId))
+                    pending.lastDiskReadError = ""
+                    recordDiagnosticEvent(
+                        "piece_verified_and_disk_read",
+                        mapOf(
+                            "pieceIndex" to pieceIndex,
+                            "waitMs" to pending.lastPieceWaitMs,
+                            "diskReadWaitMs" to pending.lastDiskReadWaitMs
+                        )
+                    )
                     return sourceId
                 }
             }
@@ -1977,6 +2117,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
         private const val STREAM_PIECE_TIMEOUT_MS = HttpRangePolicy.STREAM_PIECE_WAIT_MS
+        private const val DISK_READ_TIMEOUT_MS = 12_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
 
     }

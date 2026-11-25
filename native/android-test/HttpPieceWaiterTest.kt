@@ -14,6 +14,73 @@ import org.junit.Test
 
 class HttpPieceWaiterTest {
     @Test
+    fun diskReadBarrierSharesOneAsyncReadAcrossConcurrentWaiters() {
+        val barrier = TorrentDiskReadBarrier()
+        val requests = AtomicInteger(0)
+        val firstResult = AtomicBoolean(false)
+        val worker = Thread {
+            val result = barrier.await(
+                key = "stream:source:12",
+                timeoutMs = 2_000L,
+                isCancelled = { false },
+                startRead = { requests.incrementAndGet() }
+            )
+            firstResult.set(result?.success == true)
+        }
+        worker.start()
+        while (requests.get() == 0) Thread.sleep(5L)
+        val joined = barrier.await(
+            key = "stream:source:12",
+            timeoutMs = 2_000L,
+            isCancelled = { false },
+            startRead = { requests.incrementAndGet() }
+        )
+        assertEquals(1, requests.get())
+        assertTrue(barrier.complete("stream:source:12", true, 16_384))
+        worker.join(2_000L)
+        assertTrue(firstResult.get())
+        assertTrue(joined?.success == true)
+        assertTrue(barrier.isReady("stream:source:12"))
+        assertEquals(0, barrier.pendingCount())
+    }
+
+    @Test
+    fun diskReadBarrierDoesNotReportReadyForFailedOrZeroByteReads() {
+        val barrier = TorrentDiskReadBarrier()
+        val result = barrier.await(
+            key = "stream:source:4",
+            timeoutMs = 1_000L,
+            isCancelled = { false },
+            startRead = {
+                barrier.complete("stream:source:4", false, 0, "EIO")
+            }
+        )
+        assertFalse(result?.success == true)
+        assertFalse(barrier.isReady("stream:source:4"))
+        assertEquals("EIO", result?.error)
+    }
+
+    @Test
+    fun diskReadBarrierHonorsTimeoutAndCancellationWithoutClaimingReadiness() {
+        val barrier = TorrentDiskReadBarrier()
+        val result = barrier.await(
+            key = "stream:source:99",
+            timeoutMs = 20L,
+            isCancelled = { false },
+            startRead = {}
+        )
+        assertEquals(null, result)
+        assertFalse(barrier.isReady("stream:source:99"))
+        val cancelled = barrier.await(
+            key = "stream:source:100",
+            timeoutMs = 2_000L,
+            isCancelled = { true },
+            startRead = {}
+        )
+        assertEquals(null, cancelled)
+    }
+
+    @Test
     fun torrentCacheIsNotDeletedUntilNativeHandleRemovalIsConfirmed() {
         val deletionCalled = AtomicBoolean(false)
         val cleanup = TorrentCleanupOrder(

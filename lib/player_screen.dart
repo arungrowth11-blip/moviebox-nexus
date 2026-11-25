@@ -68,6 +68,9 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen>
     with WidgetsBindingObserver {
   BetterPlayerController? _media3;
+  // Serialize Media3 controller replacement; never overlap native decoders.
+  Future<void> _media3Transition = Future<void>.value();
+  int _media3Generation = 0;
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
   Timer? _media3Watchdog;
@@ -232,6 +235,12 @@ class _PlayerScreenState extends State<PlayerScreen>
       final backgroundDownloadEnabled =
           snapshot['backgroundDownloadEnabled'] == true;
       final backgroundBudgetBytes = number('backgroundDownloadBudgetBytes');
+      final diskReadRequests = number('diskReadRequests');
+      final diskReadCompletedPieces = number('diskReadCompletedPieces');
+      final diskReadFailures = number('diskReadFailures');
+      final diskReadsPending = number('diskReadsPending');
+      final lastDiskReadWaitMs = number('lastDiskReadWaitMs');
+      final lastDiskReadError = (snapshot['lastDiskReadError'] ?? '').toString();
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
@@ -258,6 +267,12 @@ class _PlayerScreenState extends State<PlayerScreen>
         } else {
           message = 'Discovering peers through DHT and public trackers…';
         }
+      } else if (diskReadsPending > 0 && diskReadCompletedPieces == 0) {
+        message =
+            'Metadata ready • first piece received; waiting for local disk read completion…';
+      } else if (metadataReady && downloaded > 0 && httpBytesSent == 0) {
+        message =
+            'Metadata ready • torrent blocks received; waiting for a complete playable piece…';
       } else if (connectedPeers > 0) {
         message =
             'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
@@ -280,6 +295,13 @@ class _PlayerScreenState extends State<PlayerScreen>
           'Last response bytes: $lastRequestBytesSent',
         if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
         if (mediaFileReady) 'Local sparse video file: ready',
+        if (diskReadRequests > 0)
+          'Disk-read ready pieces: $diskReadCompletedPieces/$diskReadRequests (pending $diskReadsPending)',
+        if (diskReadFailures > 0) 'Disk-read failures: $diskReadFailures',
+        if (lastDiskReadWaitMs > 0)
+          'Last disk-read wait: ${lastDiskReadWaitMs}ms',
+        if (lastDiskReadError.isNotEmpty)
+          'Disk-read error: $lastDiskReadError',
         if (metadataReady && backgroundDownloadEnabled)
           'Background movie download: active (up to ${(backgroundBudgetBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GiB budget)',
         if (metadataReady && !backgroundDownloadEnabled)
@@ -610,6 +632,58 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _startMedia3() {
     if (_disposed || !mounted) return;
+    final generation = ++_media3Generation;
+    final queued = _media3Transition
+        .catchError((Object error) {
+          debugPrint('MovieBox previous Media3 transition failed: $error');
+        })
+        .then((_) => _startMedia3Serialized(generation));
+    _media3Transition = queued;
+    unawaited(queued);
+  }
+
+  Future<void> _disposeMedia3Safely(BetterPlayerController controller) async {
+    final nativeController = controller.videoPlayerController;
+    try {
+      await nativeController?.pause();
+    } catch (error) {
+      debugPrint('MovieBox Media3 pause before release failed: $error');
+    }
+    // BetterPlayerController.dispose() is synchronous/void. Start and await the
+    // underlying video_player Future before letting the wrapper dispose itself.
+    final nativeRelease = nativeController?.dispose();
+    controller.dispose(forceDispose: true);
+    if (nativeRelease != null) {
+      await nativeRelease.timeout(const Duration(seconds: 12));
+    }
+  }
+
+  Future<void> _startMedia3Serialized(int generation) async {
+    if (_disposed || !mounted || generation != _media3Generation) return;
+
+    final previous = _media3;
+    _media3 = null;
+    if (mounted) setState(() {});
+    if (previous != null) {
+      try {
+        await _disposeMedia3Safely(previous);
+      } catch (error) {
+        debugPrint('MovieBox old Media3 controller did not release safely: $error');
+        if (mounted && !_disposed && generation == _media3Generation) {
+          setState(() {
+            _loading = false;
+            _error =
+                'The previous video decoder did not release safely. '
+                'MovieBox stopped the retry rather than starting a second decoder.';
+          });
+          await _captureTorrentFailureDiagnostic(
+            'Media3 replacement stopped because previous controller disposal failed.',
+          );
+        }
+        return;
+      }
+    }
+    if (_disposed || !mounted || generation != _media3Generation) return;
     _preferredHindiAudioTimer?.cancel();
     _preferredHindiAudioApplied = false;
     _media3Watchdog?.cancel();
@@ -686,6 +760,7 @@ class _PlayerScreenState extends State<PlayerScreen>
       backwardSkipTimeInMilliseconds: 10000,
     );
 
+    BetterPlayerController? nextController;
     final configuration = BetterPlayerConfiguration(
       autoPlay: true,
       startAt: Duration(milliseconds: _pendingPositionMs),
@@ -701,7 +776,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       playerVisibilityChangedBehavior: (_) {},
       autoDispose: false,
       controlsConfiguration: controls,
-      eventListener: _onMedia3Event,
+      eventListener: (event) {
+        if (_disposed ||
+            generation != _media3Generation ||
+            nextController == null ||
+            !identical(_media3, nextController)) {
+          return;
+        }
+        _onMedia3Event(event);
+      },
       errorBuilder: (context, message) => _errorPanel(
         message ?? 'Media3 could not load this source.',
         onRetry: _retryPlayback,
@@ -709,11 +792,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
 
     try {
-      _media3?.dispose(forceDispose: true);
-      _media3 = BetterPlayerController(
+      if (_disposed || !mounted || generation != _media3Generation) return;
+      nextController = BetterPlayerController(
         configuration,
         betterPlayerDataSource: dataSource,
       );
+      _media3 = nextController;
       if (mounted) setState(() {});
       // Cold start can require 65s for metadata, then three first-piece
       // waits (45s each) with two one-second retry gaps: 202s worst case.
@@ -736,6 +820,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         }
       });
     } catch (error) {
+      if (_disposed || generation != _media3Generation) return;
       if (_isEmbeddedTorrent) {
         unawaited(_handleMedia3Exception('Media3 setup failed: $error'));
       } else {
@@ -1066,6 +1151,16 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     _vlcInitStarted = true;
+    final transitionGeneration = ++_media3Generation;
+    try {
+      await _media3Transition.timeout(const Duration(seconds: 12));
+    } catch (error) {
+      _offerExternalVlc(
+        'The previous Media3 session did not settle; VLC was not started on top of it. $error',
+      );
+      return;
+    }
+    if (!mounted || _disposed || transitionGeneration != _media3Generation) return;
     final media3Value = _media3?.videoPlayerController?.value;
     if (media3Value != null && media3Value.initialized) {
       _pendingPositionMs = media3Value.position.inMilliseconds;
@@ -1074,12 +1169,14 @@ class _PlayerScreenState extends State<PlayerScreen>
     final oldMedia3 = _media3;
     _media3 = null;
     if (oldMedia3 != null) {
-      // Let BetterPlayer finish dispatching its current event before disposal
-      // mutates its internal listener collections.
-      await Future<void>.delayed(Duration.zero);
-      oldMedia3.dispose(forceDispose: true);
+      try {
+        await _disposeMedia3Safely(oldMedia3);
+      } catch (error) {
+        _offerExternalVlc('Media3 did not release its decoder safely: $error');
+        return;
+      }
     }
-    if (!mounted || _disposed) return;
+    if (!mounted || _disposed || transitionGeneration != _media3Generation) return;
 
     setState(() {
       _usingVlc = true;
@@ -1792,6 +1889,48 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  Future<void> _releasePlayerResources() async {
+    ++_media3Generation;
+    try {
+      await _media3Transition.timeout(const Duration(seconds: 12));
+    } catch (error) {
+      debugPrint('MovieBox Media3 transition did not settle during exit: $error');
+      return;
+    }
+
+    final media3 = _media3;
+    _media3 = null;
+    if (media3 != null) {
+      try {
+        await _disposeMedia3Safely(media3);
+      } catch (error) {
+        debugPrint('MovieBox Media3 disposal during exit failed: $error');
+        return;
+      }
+    }
+
+    final vlc = _vlc;
+    _vlc = null;
+    if (vlc != null) {
+      try {
+        await _releaseVlcSafely(vlc);
+      } catch (error) {
+        debugPrint('MovieBox VLC disposal during exit failed: $error');
+        return;
+      }
+    }
+
+    if (_isEmbeddedTorrent) {
+      try {
+        await _torrentDiagnostics
+            .invokeMethod<void>('stopPlayback')
+            .timeout(const Duration(seconds: 20));
+      } catch (error) {
+        debugPrint('MovieBox torrent cleanup after player release failed: $error');
+      }
+    }
+  }
+
   Future<void> _releaseVlcSafely(VlcPlayerController controller) async {
     try {
       controller.removeListener(_onVlcChanged);
@@ -1830,23 +1969,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentPlaybackStallTimer?.cancel();
     _torrentRecoveryResetTimer?.cancel();
     _preferredHindiAudioTimer?.cancel();
-    _media3?.dispose(forceDispose: true);
-    if (_isEmbeddedTorrent) {
-      // Stop the native range server and release its temporary video file when
-      // the viewer leaves this route (including back navigation after errors).
-      unawaited(
-        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError((
-          Object error,
-        ) {
-          debugPrint('MovieBox torrent cleanup on player exit failed: $error');
-        }),
-      );
-    }
-
-    final vlc = _vlc;
-    if (vlc != null) {
-      unawaited(_releaseVlcSafely(vlc));
-    }
+    // Native decoders release before stopPlayback closes the torrent server.
+    unawaited(_releasePlayerResources());
 
     _focusNode.dispose();
     // The route owner restores system bars and the catalog orientation only
