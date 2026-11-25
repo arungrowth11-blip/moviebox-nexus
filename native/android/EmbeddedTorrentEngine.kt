@@ -190,20 +190,20 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private fun safeDiagnosticText(raw: String): String {
         var value = raw.replace(
-            Regex("""https?://[^\\s"'<>]+""", RegexOption.IGNORE_CASE),
+            Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE),
             "<redacted-url>"
         )
-        value = value.replace(Regex("""\\b[a-fA-F0-9]{40}\\b"""), "<redacted-infohash>")
+        value = value.replace(Regex("""\b[a-fA-F0-9]{40}\b"""), "<redacted-infohash>")
         value = value.replace(
-            Regex("""(?i)\\b(token|authorization|api[_-]?key|password|secret)\\s*[:=]\\s*[^,\\s;&]+"""),
-            "$1=<redacted>"
+            Regex("""(?i)\b(token|authorization|api[_-]?key|password|secret)\s*[:=]\s*[^,\s;&]+"""),
+            "\$1=<redacted>"
         )
         value = value.replace(
-            Regex("""\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b"""),
+            Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b"""),
             "<redacted-ip>"
         )
         value = value.replace(
-            Regex("""(?:/data/user/\\d+/[^\\s]+|/storage/emulated/\\d+/[^\\s]+)"""),
+            Regex("""(?:/data/user/\d+/[^\s]+|/storage/emulated/\d+/[^\s]+)"""),
             "<redacted-path>"
         )
         return value.take(320)
