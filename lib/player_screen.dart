@@ -319,7 +319,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentPlaybackStallTimer?.cancel();
-    unawaited(_switchToVlc(reason));
+    unawaited(() async {
+      await _captureTorrentFailureDiagnostic('Media3 terminal failure: $reason');
+      if (!mounted || _disposed) return;
+      await _switchToVlc(reason);
+    }());
   }
 
   void _offerExternalVlc(String reason) {
@@ -930,6 +934,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     if (_isEmbeddedTorrent && !nativeSnapshotAvailable) {
       watchdog.cancel();
+      await _captureTorrentFailureDiagnostic(
+        'Media3 startup stalled and native torrent diagnostics could not be read.',
+      );
+      if (!mounted || _disposed || !identical(_media3, controller)) return;
       setState(() {
         _loading = false;
         _error =
