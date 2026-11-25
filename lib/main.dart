@@ -2122,7 +2122,9 @@ Future<void> main() async {
         .pruneDiagnosticReports()
         .then<void>((_) {})
         .catchError((Object error) {
-          debugPrint('MovieBox startup diagnostic retention cleanup skipped: $error');
+          debugPrint(
+            'MovieBox startup diagnostic retention cleanup skipped: $error',
+          );
         }),
   );
   // Native torrent startup is lazy; catalog navigation must not wait for it.

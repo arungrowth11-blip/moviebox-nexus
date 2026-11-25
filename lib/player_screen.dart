@@ -320,7 +320,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _media3PlaybackStartWatchdog?.cancel();
     _torrentPlaybackStallTimer?.cancel();
     unawaited(() async {
-      await _captureTorrentFailureDiagnostic('Media3 terminal failure: $reason');
+      await _captureTorrentFailureDiagnostic(
+        'Media3 terminal failure: $reason',
+      );
       if (!mounted || _disposed) return;
       await _switchToVlc(reason);
     }());
@@ -378,9 +380,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentFailureDiagnosticCaptured = true;
 
     final value = _media3?.videoPlayerController?.value;
+    final duration = value?.duration;
     final playerSnapshot = <String, Object>{
       if (value != null) 'positionMs': value.position.inMilliseconds,
-      if (value != null) 'durationMs': value.duration.inMilliseconds,
+      if (duration != null) 'durationMs': duration.inMilliseconds,
       if (value != null) 'isPlaying': value.isPlaying,
       if (value != null) 'isBuffering': value.isBuffering,
       'isInitialized': value?.initialized ?? false,
@@ -388,13 +391,10 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     try {
       final report = await _torrentDiagnostics
-          .invokeMapMethod<String, dynamic>(
-            'captureFailure',
-            <String, Object>{
-              'reason': reason,
-              'playerSnapshot': playerSnapshot,
-            },
-          )
+          .invokeMapMethod<String, dynamic>('captureFailure', <String, Object>{
+            'reason': reason,
+            'playerSnapshot': playerSnapshot,
+          })
           .timeout(const Duration(seconds: 8));
       if (report?['saved'] == true) {
         debugPrint(
@@ -964,7 +964,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (decision == Media3StartupDecision.wait) return;
     watchdog.cancel();
     if (decision == Media3StartupDecision.noTorrentBytes) {
-      final diagnosticStatus = (snapshot['lastHttpStatus'] as num?)?.toInt() ?? 0;
+      final diagnosticStatus =
+          (snapshot['lastHttpStatus'] as num?)?.toInt() ?? 0;
       await _captureTorrentFailureDiagnostic(
         'Media3 startup produced no torrent video bytes; HTTP status=$diagnosticStatus.',
       );

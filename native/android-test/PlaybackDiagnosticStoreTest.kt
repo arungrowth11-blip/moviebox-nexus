@@ -89,4 +89,54 @@ class PlaybackDiagnosticStoreTest {
             root.deleteRecursively()
         }
     }
+    @Test
+    fun diagnosticTextRedactsAllCommonAndroidPrivatePathForms() {
+        val raw = listOf(
+            "/data/user/0/com.moviebox.nexus/files/private.json",
+            "/data/user_de/0/com.moviebox.nexus/files/private.json",
+            "/data/data/com.moviebox.nexus/files/private.json",
+            "/storage/emulated/0/Android/data/com.moviebox.nexus/files/private.json"
+        ).joinToString(" ")
+
+        val safe = PlaybackDiagnosticRedactor.sanitize(raw)
+
+        assertFalse(safe.contains("/data/user/"))
+        assertFalse(safe.contains("/data/user_de/"))
+        assertFalse(safe.contains("/data/data/"))
+        assertFalse(safe.contains("/storage/emulated/"))
+        assertEquals(4, Regex("<redacted-path>").findAll(safe).count())
+    }
+
+    @Test
+    fun reportAtExactByteLimitIsAccepted() {
+        val root = Files.createTempDirectory("moviebox-diagnostics-exact-limit").toFile()
+        try {
+            val contents = "x".repeat(PlaybackDiagnosticStore.MAX_REPORT_BYTES.toInt())
+            val saved = PlaybackDiagnosticStore.save(root, contents, 2_000_000_000_000L)
+
+            assertTrue(saved.isFile)
+            assertEquals(PlaybackDiagnosticStore.MAX_REPORT_BYTES, saved.length())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun oversizedReportIsRejectedBeforeCreatingDiagnosticFiles() {
+        val root = Files.createTempDirectory("moviebox-diagnostics-oversized").toFile()
+        try {
+            val contents = "x".repeat(PlaybackDiagnosticStore.MAX_REPORT_BYTES.toInt() + 1)
+            var rejected = false
+            try {
+                PlaybackDiagnosticStore.save(root, contents, 2_000_000_000_000L)
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+
+            assertTrue("Oversized report must be rejected.", rejected)
+            assertFalse(File(root, PlaybackDiagnosticStore.DIRECTORY_NAME).exists())
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }
