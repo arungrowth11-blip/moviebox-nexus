@@ -39,15 +39,13 @@ def sanitize_line(line: str) -> str:
 
 def sanitize_log(source: Path, destination: Path) -> None:
     selected: deque[str] = deque(maxlen=MAX_SELECTED_LINES)
-    fallback: deque[str] = deque(maxlen=40)
     with source.open("r", encoding="utf-8", errors="replace") as stream:
         for raw in stream:
             cleaned = sanitize_line(raw)
-            fallback.append(cleaned)
             if RELEVANT.search(cleaned):
                 selected.append(cleaned)
 
-    lines = list(selected) if selected else list(fallback)
+    lines = list(selected) or ["No recognized failure-pattern lines matched; raw output suppressed."]
     header = "[sanitized failure excerpt; URLs, hashes, credentials, IPs and private paths redacted]\n"
     output_lines = [header]
     used = len(header.encode("utf-8"))
