@@ -229,7 +229,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       final lastPieceWaitMs = number('lastPieceWaitMs');
       final lastHttpError = (snapshot['lastHttpError'] ?? '').toString();
       final mediaFileReady = snapshot['mediaFileReady'] == true;
-      final backgroundDownloadEnabled = snapshot['backgroundDownloadEnabled'] == true;
+      final backgroundDownloadEnabled =
+          snapshot['backgroundDownloadEnabled'] == true;
       final backgroundBudgetBytes = number('backgroundDownloadBudgetBytes');
 
       String formatRate(int bytesPerSecond) {
