@@ -79,6 +79,7 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _torrentRecoveryInProgress = false;
   bool _torrentPlaybackProgressObserved = false;
   int _torrentRecoveryAttempts = 0;
+  bool _torrentFailureDiagnosticCaptured = false;
   Duration _lastTorrentObservedPosition = Duration.zero;
   DateTime _lastTorrentProgressAt = DateTime.now();
   String _torrentStatusMessage = '';
@@ -368,6 +369,45 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  Future<void> _captureTorrentFailureDiagnostic(String reason) async {
+    if (!_isEmbeddedTorrent || _torrentFailureDiagnosticCaptured) return;
+    _torrentFailureDiagnosticCaptured = true;
+
+    final value = _media3?.videoPlayerController?.value;
+    final playerSnapshot = <String, Object>{
+      if (value != null) 'positionMs': value.position.inMilliseconds,
+      if (value != null) 'durationMs': value.duration.inMilliseconds,
+      if (value != null) 'isPlaying': value.isPlaying,
+      if (value != null) 'isBuffering': value.isBuffering,
+      'isInitialized': value?.initialized ?? false,
+    };
+
+    try {
+      final report = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>(
+            'captureFailure',
+            <String, Object>{
+              'reason': reason,
+              'playerSnapshot': playerSnapshot,
+            },
+          )
+          .timeout(const Duration(seconds: 8));
+      if (report?['saved'] == true) {
+        debugPrint(
+          'MovieBox private playback diagnostics saved: '
+          '${report?['reportId']} '
+          '(retained=${report?['retainedReports']}).',
+        );
+      } else {
+        _torrentFailureDiagnosticCaptured = false;
+        debugPrint('MovieBox playback diagnostic save returned no report.');
+      }
+    } catch (error) {
+      _torrentFailureDiagnosticCaptured = false;
+      debugPrint('MovieBox could not save playback diagnostics: $error');
+    }
+  }
+
   Future<void> _handleMedia3Exception(String reason) async {
     if (!_isEmbeddedTorrent) {
       _handleMedia3Problem(reason);
@@ -383,6 +423,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       debugPrint('MovieBox torrent failure diagnostics unavailable: $error');
     }
 
+    if (!mounted || _disposed) return;
+    await _captureTorrentFailureDiagnostic('Media3 exception: $reason');
     if (!mounted || _disposed) return;
     final bytesSent = (snapshot?['httpBytesSent'] as num?)?.toInt() ?? 0;
     final lastHttpStatus = (snapshot?['lastHttpStatus'] as num?)?.toInt() ?? 0;
@@ -492,6 +534,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _retryPlayback() {
     if (_isEmbeddedTorrent) {
+      _torrentFailureDiagnosticCaptured = false;
       final position =
           _media3?.videoPlayerController?.value.position.inMilliseconds;
       if (position != null && position > 0) _pendingPositionMs = position;
@@ -913,6 +956,11 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (decision == Media3StartupDecision.wait) return;
     watchdog.cancel();
     if (decision == Media3StartupDecision.noTorrentBytes) {
+      final diagnosticStatus = (snapshot['lastHttpStatus'] as num?)?.toInt() ?? 0;
+      await _captureTorrentFailureDiagnostic(
+        'Media3 startup produced no torrent video bytes; HTTP status=$diagnosticStatus.',
+      );
+      if (!mounted || _disposed || !identical(_media3, controller)) return;
       int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
       final status = number('lastHttpStatus');
       if (status == 503 || status == 504) {
