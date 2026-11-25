@@ -1150,6 +1150,7 @@ jobs:
           cp native/android/MainActivity.kt android/app/src/main/kotlin/com/moviebox/nexus/MainActivity.kt
           cp native/android/EmbeddedTorrentEngine.kt android/app/src/main/kotlin/com/moviebox/nexus/EmbeddedTorrentEngine.kt
           cp native/android/HttpPieceWaiter.kt android/app/src/main/kotlin/com/moviebox/nexus/HttpPieceWaiter.kt
+          cp native/android/PlaybackDiagnosticStore.kt android/app/src/main/kotlin/com/moviebox/nexus/PlaybackDiagnosticStore.kt
 
           python3 - <<'PY'
           from pathlib import Path
