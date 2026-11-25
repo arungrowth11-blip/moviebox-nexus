@@ -107,13 +107,34 @@ def main() -> int:
     for required_file in (
         "native/android/PlaybackDiagnosticStore.kt",
         "native/android-test/PlaybackDiagnosticStoreTest.kt",
+        "scripts/sanitize_ci_diagnostics.py",
+        "scripts/test_sanitize_ci_diagnostics.py",
     ):
         if not Path(required_file).is_file():
             raise SystemExit(f"Missing playback diagnostic source/test: {required_file}")
 
     if "MovieBox-Nexus-OS-APK" not in verify:
         raise SystemExit("release-apk-verify does not consume the release artifact.")
-    print("CI topology verified: parallel release/integration, gated APK verify, mandatory artifact, dual diagnostics.")
+    if 'python3 scripts/sanitize_ci_diagnostics.py "$raw_log" "$sanitized_log"' not in integration:
+        raise SystemExit("Integration failures must pass through the CI diagnostic sanitizer.")
+    if 'rm -f "$raw_log"' not in integration:
+        raise SystemExit("Raw integration logs must be deleted before artifact upload.")
+    if "flutter-integration-sanitized.log" not in integration:
+        raise SystemExit("Sanitized integration failure excerpt is not retained.")
+    if 'find "$diagnostics_dir" -maxdepth 1 -type f' not in verify:
+        raise SystemExit("Release diagnostics must enforce a public artifact file allowlist.")
+    forbidden_artifact_patterns = (
+        'adb logcat -d -v threadtime > "$diagnostics_dir/',
+        'adb shell dumpsys activity activities > "$diagnostics_dir/',
+        'adb shell dumpsys window windows > "$diagnostics_dir/',
+        'cp dist/MovieBox-Nexus-OS.apk "$diagnostics_dir/"',
+        'cp "$RUNNER_TEMP/moviebox-local-seed.log" "$diagnostics_dir/"',
+        'cp "$RUNNER_TEMP/moviebox-emulator-script.sh" "$diagnostics_dir/"',
+        'tee "$diagnostics_dir/flutter-integration.log"',
+    )
+    if any(pattern in integration + verify for pattern in forbidden_artifact_patterns):
+        raise SystemExit("Raw emulator logs, system dumps, scripts, or APK bytes must not enter public failure artifacts.")
+    print("CI topology verified: isolated release/integration, gated APK verify, failure-only bounded diagnostics.")
     return 0
 
 

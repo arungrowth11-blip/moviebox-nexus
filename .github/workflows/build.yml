@@ -22,7 +22,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate CI job isolation and diagnostics
-        run: python3 scripts/validate_ci_workflow.py
+        run: |
+          python3 scripts/validate_ci_workflow.py
+          python3 scripts/test_sanitize_ci_diagnostics.py
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -891,13 +893,13 @@ jobs:
             status=$?
             set +e
             printf 'exit_code=%s\n' "$status" > "$diagnostics_dir/run-summary.txt"
-            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
-            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
-            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
-            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
-            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
-            cp dist/MovieBox-Nexus-OS.apk "$diagnostics_dir/" 2>/dev/null || true
-            sha256sum dist/MovieBox-Nexus-OS.apk > "$diagnostics_dir/apk-sha256.txt" 2>&1 || true
+            printf 'device_state=%s\n' "$(adb get-state 2>/dev/null || echo unavailable)" >> "$diagnostics_dir/run-summary.txt"
+            printf 'app_process=%s\n' "$(adb shell pidof com.moviebox.nexus 2>/dev/null | tr -d '\r' || echo not-running)" >> "$diagnostics_dir/run-summary.txt"
+            sha256sum dist/MovieBox-Nexus-OS.apk > "$diagnostics_dir/apk-sha256.txt" 2>/dev/null || true
+            # Public failure artifacts are an allowlist: no APK bytes, raw logcat,
+            # dumpsys output, package dumps, or unfiltered command transcripts.
+            find "$diagnostics_dir" -maxdepth 1 -type f \
+              ! -name 'preflight.txt' ! -name 'run-summary.txt' ! -name 'apk-sha256.txt' -delete
             return 0
           }
           trap collect_release_diagnostics EXIT
@@ -1003,7 +1005,7 @@ jobs:
           fi
 
           adb logcat -d --pid="$app_pid" -v brief > "$diagnostics_dir/app-logcat.txt" 2>&1 || true
-          if grep -E 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback' "$diagnostics_dir/app-logcat.txt"; then
+          if grep -Eq 'FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|No implementation found for method startPlayback' "$diagnostics_dir/app-logcat.txt"; then
             echo "::error::Release APK emitted a fatal native/plugin startup error."
             exit 1
           fi
@@ -1524,15 +1526,9 @@ jobs:
             set +e
             printf 'exit_code=%s\n' "$exit_code" > "$diagnostics_dir/run-summary.txt"
             printf 'commit=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)" >> "$diagnostics_dir/run-summary.txt"
-            adb devices -l > "$diagnostics_dir/adb-devices.txt" 2>&1 || true
-            adb logcat -d -v threadtime > "$diagnostics_dir/logcat-threadtime.txt" 2>&1 || true
-            adb shell dumpsys activity activities > "$diagnostics_dir/activity.txt" 2>&1 || true
-            adb shell dumpsys window windows > "$diagnostics_dir/window.txt" 2>&1 || true
-            adb shell dumpsys package com.moviebox.nexus > "$diagnostics_dir/package.txt" 2>&1 || true
-            cp "$RUNNER_TEMP/moviebox-local-seed.log" "$diagnostics_dir/" 2>/dev/null || true
-            cp "$RUNNER_TEMP/moviebox-range-server.log" "$diagnostics_dir/" 2>/dev/null || true
-            cp "$RUNNER_TEMP/moviebox-local-seed.json" "$diagnostics_dir/" 2>/dev/null || true
-            cp "$RUNNER_TEMP/moviebox-emulator-script.sh" "$diagnostics_dir/" 2>/dev/null || true
+            printf 'emulator_state=%s\n' "$(adb get-state 2>/dev/null || echo unavailable)" >> "$diagnostics_dir/run-summary.txt"
+            # Do not copy raw logcat, dumpsys, seeder logs, generated fixtures,
+            # or the runner script into publicly readable GitHub artifacts.
             return 0
           }
           trap collect_moviebox_diagnostics EXIT
@@ -1544,20 +1540,24 @@ jobs:
           # Run the complete Flutter integration suite as one Bash process.
           # The emulator-runner action splits its "script" input into individual
           # lines, so control-flow blocks must live in a separate script file.
+          raw_log="$diagnostics_dir/flutter-integration.raw.log"
+          sanitized_log="$diagnostics_dir/flutter-integration-sanitized.log"
           set +e
-          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart 2>&1 | tee "$diagnostics_dir/flutter-integration.log"
-          integration_status=${PIPESTATUS[0]}
+          flutter -d emulator-5554 test --no-pub --dart-define="MOVIEBOX_TEST_INFO_HASH=$MOVIEBOX_TEST_INFO_HASH" --dart-define="MOVIEBOX_TEST_PEER=$MOVIEBOX_TEST_PEER" --dart-define="MOVIEBOX_TEST_FIRST_HEX=$MOVIEBOX_TEST_FIRST_HEX" --dart-define="MOVIEBOX_TEST_SEEK_HEX=$MOVIEBOX_TEST_SEEK_HEX" --dart-define="MOVIEBOX_TEST_MP4_URL=$MOVIEBOX_TEST_MP4_URL" integration_test/app_smoke_test.dart > "$raw_log" 2>&1
+          integration_status=$?
           set -e
           if [ "$integration_status" -ne 0 ]; then
-            echo "::error::Android integration tests failed; collecting emulator and torrent diagnostics."
-            adb logcat -d -v time > "$diagnostics_dir/logcat-on-integration-failure.txt" || true
-            grep -E 'ExoPlayer|MediaCodec|CCodec|Codec2|Media3|BetterPlayer|libvlc|libVLC|libtorrent|Torrent|FATAL EXCEPTION|UnsatisfiedLinkError|MissingPluginException|moviebox' "$diagnostics_dir/logcat-on-integration-failure.txt" | tail -n 300 || true
-            echo "----- deterministic torrent seeder log -----"
-            cat "$RUNNER_TEMP/moviebox-local-seed.log" || true
-            echo "----- direct MP4 range server log -----"
-            cat "$RUNNER_TEMP/moviebox-range-server.log" || true
+            if python3 scripts/sanitize_ci_diagnostics.py "$raw_log" "$sanitized_log"; then
+              rm -f "$raw_log"
+              echo "::error::Android integration tests failed; showing a bounded, redacted failure excerpt."
+              cat "$sanitized_log"
+            else
+              rm -f "$raw_log"
+              echo "::error::Android integration tests failed and no safe diagnostic excerpt could be produced."
+            fi
             exit "$integration_status"
           fi
+          rm -f "$raw_log"
 
           echo "Android seeded torrent, byte-range seek and Media3 integration tests completed."
 
