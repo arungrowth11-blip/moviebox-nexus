@@ -1,6 +1,7 @@
 package com.moviebox.nexus
 
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
 
@@ -17,7 +18,11 @@ internal object PlaybackDiagnosticStore {
     const val MAX_REPORT_BYTES = 256L * 1024L
     private const val FILE_PREFIX = "failure-"
 
-    fun save(privateFilesDir: File, contents: String, nowMs: Long = System.currentTimeMillis()): File {
+    fun save(
+        privateFilesDir: File,
+        contents: String,
+        nowMs: Long = System.currentTimeMillis()
+    ): File {
         val bytes = contents.toByteArray(Charsets.UTF_8)
         require(bytes.size.toLong() <= MAX_REPORT_BYTES) {
             "Playback diagnostic report exceeds the bounded size limit."
@@ -29,20 +34,41 @@ internal object PlaybackDiagnosticStore {
         }
         prune(directory, nowMs)
 
-        val report = File(directory, "$FILE_PREFIX$nowMs-${UUID.randomUUID()}.json")
-        report.writeBytes(bytes)
-        report.setLastModified(nowMs)
-        prune(directory, nowMs)
-        return report
+        val id = UUID.randomUUID().toString()
+        val temporary = File(directory, ".pending-$id.tmp")
+        val report = File(directory, "$FILE_PREFIX$nowMs-$id.json")
+        try {
+            FileOutputStream(temporary).use { stream ->
+                stream.write(bytes)
+                stream.fd.sync()
+            }
+            if (!temporary.renameTo(report)) {
+                throw IOException("Could not finalize the private playback diagnostic report.")
+            }
+            report.setLastModified(nowMs)
+            prune(directory, nowMs)
+            return report
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
     }
 
     /** Deletes expired reports and then keeps only the newest [MAX_REPORTS]. */
     fun prune(directory: File, nowMs: Long = System.currentTimeMillis()): Int {
-        val reports = directory.listFiles { file ->
-            file.isFile && file.name.startsWith(FILE_PREFIX) && file.extension == "json"
-        }?.sortedByDescending { it.lastModified() } ?: return 0
-
+        val allFiles = directory.listFiles() ?: return 0
         var deleted = 0
+        allFiles.filter { file ->
+            file.isFile && file.name.startsWith(".pending-") && file.name.endsWith(".tmp")
+        }.forEach { temporary ->
+            if (nowMs - temporary.lastModified() > 60L * 60L * 1000L && temporary.delete()) {
+                deleted++
+            }
+        }
+
+        val reports = allFiles.filter { file ->
+            file.isFile && file.name.startsWith(FILE_PREFIX) && file.extension == "json"
+        }.sortedByDescending { it.lastModified() }
+
         val fresh = reports.filter { report ->
             val age = (nowMs - report.lastModified()).coerceAtLeast(0L)
             if (age > MAX_AGE_MS) {
@@ -56,5 +82,34 @@ internal object PlaybackDiagnosticStore {
             if (report.delete()) deleted++
         }
         return deleted
+    }
+}
+
+/** Conservative redaction for diagnostic text copied from native/player errors. */
+internal object PlaybackDiagnosticRedactor {
+    fun sanitize(raw: String): String {
+        var value = raw.replace(
+            Regex("""(?i)magnet:\?[^\s"'<>]+"""),
+            "<redacted-magnet>"
+        )
+        value = value.replace(
+            Regex("""(?i)(?:https?|udp)://[^\s"'<>]+"""),
+            "<redacted-url>"
+        )
+        value = value.replace(Regex("""\b[a-fA-F0-9]{40}\b"""), "<redacted-infohash>")
+        value = value.replace(Regex("""\b[A-Z2-7]{32}\b"""), "<redacted-infohash>")
+        value = value.replace(
+            Regex("""(?i)\b(token|authorization|api[_-]?key|password|secret)\s*[:=]\s*(?:Bearer\s+)?[^,\s;&]+"""),
+            "$1=<redacted>"
+        )
+        value = value.replace(
+            Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b"""),
+            "<redacted-ip>"
+        )
+        value = value.replace(
+            Regex("""(?:/data/user/\d+/[^\s]+|/storage/emulated/\d+/[^\s]+)"""),
+            "<redacted-path>"
+        )
+        return value.take(320)
     }
 }
