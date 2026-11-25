@@ -29,17 +29,26 @@ class HttpPieceWaiterTest {
         }
         worker.start()
         while (requests.get() == 0) Thread.sleep(5L)
-        val joined = barrier.await(
-            key = "stream:source:12",
-            timeoutMs = 2_000L,
-            isCancelled = { false },
-            startRead = { requests.incrementAndGet() }
-        )
+
+        val secondResult = AtomicBoolean(false)
+        val secondWorker = Thread {
+            val joined = barrier.await(
+                key = "stream:source:12",
+                timeoutMs = 2_000L,
+                isCancelled = { false },
+                startRead = { requests.incrementAndGet() }
+            )
+            secondResult.set(joined?.success == true)
+        }
+        secondWorker.start()
+        // Both waiters are blocked on the same in-flight native read.
+        Thread.sleep(20L)
         assertEquals(1, requests.get())
         assertTrue(barrier.complete("stream:source:12", true, 16_384))
         worker.join(2_000L)
+        secondWorker.join(2_000L)
         assertTrue(firstResult.get())
-        assertTrue(joined?.success == true)
+        assertTrue(secondResult.get())
         assertTrue(barrier.isReady("stream:source:12"))
         assertEquals(0, barrier.pendingCount())
     }
