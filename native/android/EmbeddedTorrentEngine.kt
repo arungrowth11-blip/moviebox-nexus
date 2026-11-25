@@ -215,6 +215,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
      * Persist a compact failure-only bundle in app-private storage.
      * The public repository never receives a raw logcat dump or source identity.
      */
+    fun pruneDiagnosticReports(): Int {
+        val directory = File(context.filesDir, PlaybackDiagnosticStore.DIRECTORY_NAME)
+        return PlaybackDiagnosticStore.prune(directory)
+    }
+
     fun captureFailureReport(
         reason: String,
         playerSnapshot: Map<String, Any?> = emptyMap()
@@ -348,6 +353,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         )
         startHttpServer(pending)
         activePending = pending
+        synchronized(diagnosticLock) { diagnosticEvents.clear() }
+        lastDiagnosticStatusSignature = ""
         recordDiagnosticEvent(
             "playback_requested",
             mapOf("fileIndex" to (fileIdx ?: -1), "trackerHintCount" to suppliedTrackers.size)
