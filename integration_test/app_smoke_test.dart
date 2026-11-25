@@ -404,17 +404,47 @@ void main() {
         // Media3 may issue additional range GETs after playback starts to refill its buffer.
         expect(getRequests, 3);
 
-        await controller.play().timeout(const Duration(seconds: 10));
-        final beforePlayback =
-            await controller.videoPlayerController!.position ?? Duration.zero;
+        // The 12-second first-byte delay can outlive an Android lifecycle
+        // transition in the emulator test host. Restore the foreground state
+        // after prepare, not only before the player is constructed.
+        if (tester.binding.lifecycleState != AppLifecycleState.resumed) {
+          tester.binding.handleAppLifecycleStateChanged(
+            AppLifecycleState.resumed,
+          );
+          await tester.pump();
+        }
+
+        final nativePlayer = controller.videoPlayerController;
+        expect(nativePlayer, isNotNull);
+        final nativeController = nativePlayer!;
+        debugPrint(
+          'MovieBox CI 503 retry prepared: lifecycle=${tester.binding.lifecycleState}, '
+          'isPlaying=${nativeController.value.isPlaying}, '
+          'isBuffering=${nativeController.value.isBuffering}, '
+          'position=${nativeController.value.position}',
+        );
+        // PlayerScreen deliberately bypasses BetterPlayerController.play(),
+        // whose private lifecycle gate can become stale. Exercise the same
+        // native VideoPlayerController path used by the application.
+        await nativeController.play().timeout(const Duration(seconds: 10));
+        await _waitUntil(
+          tester,
+          () async =>
+              nativeController.value.isPlaying &&
+              !nativeController.value.isBuffering,
+          'Media3 native controller must enter playing state after the valid 206.',
+          timeout: const Duration(seconds: 10),
+          diagnostic: () => _media3Diagnostic(controller),
+        );
+        final beforePlayback = await nativeController.position ?? Duration.zero;
         await _waitUntil(
           tester,
           () async {
-            final position = await controller.videoPlayerController?.position;
+            final position = await nativeController.position;
             return position != null &&
                 position > beforePlayback + const Duration(milliseconds: 700);
           },
-          'Media3 clock must advance after two Retry-After: 1 responses and a valid 206.',
+          'Media3 native playback clock must advance after two Retry-After: 1 responses and a valid 206.',
           timeout: const Duration(seconds: 25),
           diagnostic: () => _media3Diagnostic(controller),
         );
