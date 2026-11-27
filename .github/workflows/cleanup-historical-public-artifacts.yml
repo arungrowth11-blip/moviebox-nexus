@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   cleanup:
-    if: github.event_name == 'push' && github.event.head_commit.message == 'cleanup-public-actions-artifacts: 2026-11-27'
+    if: ${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'cleanup-public-actions-artifacts') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
