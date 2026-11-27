@@ -35,6 +35,11 @@ void main() {
         'https://github.com/owner/private-diagnostics',
         'owner',
         '../private-diagnostics',
+        'owner/..',
+        'owner/.',
+        '-owner/private-diagnostics',
+        'owner/-private-diagnostics',
+        'owner//private-diagnostics',
         'owner/private-diagnostics/path',
       ]) {
         expect(
