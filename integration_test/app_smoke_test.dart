@@ -589,8 +589,7 @@ void main() {
           reason:
               'Each torrent piece must finish libtorrent disk-read before local HTTP bytes are served.',
         );
-        expect((torrentStatus?['diskReadFailures'] as num?)?.toInt() ?? 0, 0,
-        );
+        expect((torrentStatus?['diskReadFailures'] as num?)?.toInt() ?? 0, 0);
         expect(
           (torrentStatus?['lastRequestBytesSent'] as num?)?.toInt(),
           seekRange.length,

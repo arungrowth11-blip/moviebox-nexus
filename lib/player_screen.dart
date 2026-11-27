@@ -1698,7 +1698,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
       debugPrint('MovieBox previous private failure report uploaded.');
     } catch (error) {
-      debugPrint('MovieBox previous private failure report upload skipped: $error');
+      debugPrint(
+        'MovieBox previous private failure report upload skipped: $error',
+      );
     }
   }
 
@@ -1718,9 +1720,13 @@ class _PlayerScreenState extends State<PlayerScreen>
         reportId: reportId,
         reportJson: reportJson,
       );
-      debugPrint('MovieBox failure report uploaded to the private diagnostics repository.');
+      debugPrint(
+        'MovieBox failure report uploaded to the private diagnostics repository.',
+      );
     } catch (error) {
-      debugPrint('MovieBox automatic private diagnostics upload failed: $error');
+      debugPrint(
+        'MovieBox automatic private diagnostics upload failed: $error',
+      );
     }
   }
 
@@ -1843,7 +1849,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('Sanitized diagnostic uploaded to the private GitHub repository.'),
+          content: const Text(
+            'Sanitized diagnostic uploaded to the private GitHub repository.',
+          ),
           action: SnackBarAction(
             label: 'Open',
             onPressed: () => launchUrl(
