@@ -22,7 +22,9 @@ class GitHubDiagnosticsUploader {
            const String.fromEnvironment('MOVIEBOX_GITHUB_APP_CLIENT_ID'),
        _repository =
            (repository ??
-                   const String.fromEnvironment('MOVIEBOX_DIAGNOSTICS_REPOSITORY'))
+                   const String.fromEnvironment(
+                     'MOVIEBOX_DIAGNOSTICS_REPOSITORY',
+                   ))
                .trim();
 
   static const String _deviceCodeUrl = 'https://github.com/login/device/code';
@@ -32,7 +34,8 @@ class GitHubDiagnosticsUploader {
   static const String _accessTokenKey = 'moviebox.github.access_token';
   static const String _refreshTokenKey = 'moviebox.github.refresh_token';
   static const String _accessExpiryKey = 'moviebox.github.access_expiry_ms';
-  static const String _uploadedReportIdsKey = 'moviebox.github.uploaded_report_ids';
+  static const String _uploadedReportIdsKey =
+      'moviebox.github.uploaded_report_ids';
 
   final http.Client _client;
   final FlutterSecureStorage _storage;
@@ -71,10 +74,7 @@ class GitHubDiagnosticsUploader {
         .post(
           Uri.parse(_deviceCodeUrl),
           headers: const {'Accept': 'application/json'},
-          body: {
-            'client_id': _clientId,
-            'scope': 'offline_access',
-          },
+          body: {'client_id': _clientId, 'scope': 'offline_access'},
         )
         .timeout(const Duration(seconds: 20));
     final payload = _decodeResponse(response);
@@ -97,7 +97,9 @@ class GitHubDiagnosticsUploader {
         verificationUri.scheme != 'https' ||
         verificationUri.host != 'github.com' ||
         verificationUri.path != '/login/device') {
-      throw StateError('GitHub returned an invalid device authorization response.');
+      throw StateError(
+        'GitHub returned an invalid device authorization response.',
+      );
     }
 
     final opened = await launchUrl(
@@ -105,7 +107,9 @@ class GitHubDiagnosticsUploader {
       mode: LaunchMode.externalApplication,
     );
     if (!opened) {
-      throw StateError('Could not open github.com/login/device in the browser.');
+      throw StateError(
+        'Could not open github.com/login/device in the browser.',
+      );
     }
 
     return GitHubDeviceFlowChallenge(
@@ -156,7 +160,9 @@ class GitHubDiagnosticsUploader {
         throw StateError('GitHub authorization was denied.');
       }
       if (error == 'expired_token' || error == 'token_expired') {
-        throw StateError('GitHub device code expired; start authorization again.');
+        throw StateError(
+          'GitHub device code expired; start authorization again.',
+        );
       }
       throw StateError('GitHub device authorization failed.');
     }
@@ -169,14 +175,15 @@ class GitHubDiagnosticsUploader {
     required String reportJson,
   }) async {
     _requireConfiguration();
-    if (!RegExp(r'^failure-\d+-[0-9a-fA-F-]{36}\.json$')
-        .hasMatch(reportId)) {
+    if (!RegExp(r'^failure-\d+-[0-9a-fA-F-]{36}\.json$').hasMatch(reportId)) {
       throw StateError('Invalid local diagnostic report identifier.');
     }
 
     final encoded = utf8.encode(reportJson);
     if (encoded.isEmpty || encoded.length > _maxReportBytes) {
-      throw StateError('Diagnostic report is empty or exceeds the safe size limit.');
+      throw StateError(
+        'Diagnostic report is empty or exceeds the safe size limit.',
+      );
     }
     _validateSanitizedReport(reportJson);
 
@@ -204,7 +211,9 @@ class GitHubDiagnosticsUploader {
         .timeout(const Duration(seconds: 30));
 
     if (response.statusCode == 401) {
-      throw StateError('GitHub authorization expired or was revoked; reconnect the app.');
+      throw StateError(
+        'GitHub authorization expired or was revoked; reconnect the app.',
+      );
     }
     if (response.statusCode == 403 || response.statusCode == 404) {
       throw StateError(
@@ -310,7 +319,9 @@ class GitHubDiagnosticsUploader {
     final payload = _decodeResponse(response);
     if (response.statusCode != 200 || payload['access_token'] is! String) {
       await disconnect();
-      throw StateError('GitHub refresh token expired; authorize the app again.');
+      throw StateError(
+        'GitHub refresh token expired; authorize the app again.',
+      );
     }
 
     await _storeTokenResponse(payload, retainRefreshToken: refreshToken);
