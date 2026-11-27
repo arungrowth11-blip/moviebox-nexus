@@ -855,7 +855,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         return;
       }
       _media3SetupComplete = true;
-      if (nextController.videoPlayerController?.value.isInitialized == true ||
+      if (nextController.videoPlayerController?.value.initialized == true ||
           _media3InitializedPending) {
         _completeMedia3Initialization(nextController);
       }
