@@ -1,4 +1,5 @@
 name: One-time historical public artifact cleanup
+# One-time owner-authorized deletion of the explicitly enumerated legacy artifact IDs.
 
 on:
   push:
