@@ -114,6 +114,42 @@ internal object PlaybackDiagnosticStore {
         }
         return deleted
     }
+
+    /**
+     * Read one previously sanitized report from the app-private diagnostics
+     * directory. Only generated report IDs are accepted; traversal and
+     * arbitrary file reads are rejected.
+     */
+    fun readReport(privateFilesDir: File, reportName: String): String {
+        require(Regex("""^failure-\d+-[0-9a-fA-F-]{36}\.json$""").matches(reportName)) {
+            "Invalid private playback diagnostic report identifier."
+        }
+        val directory = File(privateFilesDir, DIRECTORY_NAME).canonicalFile
+        val report = File(directory, reportName).canonicalFile
+        require(report.parentFile == directory) {
+            "Playback diagnostic report path escaped its private directory."
+        }
+        if (!report.isFile || report.length() > MAX_REPORT_BYTES) {
+            throw IOException("Private playback diagnostic report is unavailable or oversized.")
+        }
+        return report.readText(Charsets.UTF_8)
+    }
+
+    /** Return the newest retained report without exposing the directory path. */
+    fun readLatestReport(privateFilesDir: File): Map<String, String>? {
+        val directory = File(privateFilesDir, DIRECTORY_NAME).canonicalFile
+        val latest = directory.listFiles { file ->
+            file.isFile &&
+                file.name.startsWith(FILE_PREFIX) &&
+                file.extension == "json" &&
+                file.length() <= MAX_REPORT_BYTES
+        }?.maxByOrNull { it.lastModified() } ?: return null
+
+        return mapOf(
+            "reportId" to latest.name,
+            "contents" to readReport(privateFilesDir, latest.name)
+        )
+    }
 }
 
 /** Conservative redaction for diagnostic text copied from native/player errors. */
@@ -128,17 +164,21 @@ internal object PlaybackDiagnosticRedactor {
             "<redacted-url>"
         )
         value = value.replace(Regex("""\b[a-fA-F0-9]{40}\b"""), "<redacted-infohash>")
-        value = value.replace(Regex("""\b[A-Z2-7]{32}\b"""), "<redacted-infohash>")
+        value = value.replace(Regex("""(?i)\b[A-Z2-7]{32}\b"""), "<redacted-infohash>")
         value = value.replace(
             Regex("""(?i)\b(token|authorization|api[_-]?key|password|secret)\s*[:=]\s*(?:Bearer\s+)?[^,\s;&]+"""),
             "$1=<redacted>"
+        )
+        value = value.replace(
+            Regex("""(?i)(?<![0-9a-f:])(?:(?:[0-9a-f]{1,4}:){1,7}|:)(?::[0-9a-f]{1,4}){1,7}(?![0-9a-f:])|(?<![0-9a-f:])::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}(?![0-9a-f:])"""),
+            "<redacted-ip>"
         )
         value = value.replace(
             Regex("""\b(?:\d{1,3}\.){3}\d{1,3}\b"""),
             "<redacted-ip>"
         )
         value = value.replace(
-            Regex("""(?:/data/(?:user|user_de)/\d+/[^\s"'<>]+|/data/data/[^\s"'<>]+|/storage/emulated/\d+/[^\s"'<>]+)"""),
+            Regex("""(?:/data/(?:user|user_de)/\d+/[^\s"'<>]+|/data/data/[^\s"'<>]+|/data/media/\d+/[^\s"'<>]+|/storage/emulated/\d+/[^\s"'<>]+|/storage/self/primary/[^\s"'<>]+|/storage/[A-Fa-f0-9-]{4,}/[^\s"'<>]+|/mnt/sdcard/[^\s"'<>]+|/sdcard/[^\s"'<>]+)"""),
             "<redacted-path>"
         )
         return value.take(320)

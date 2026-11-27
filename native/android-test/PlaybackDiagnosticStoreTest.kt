@@ -12,15 +12,19 @@ class PlaybackDiagnosticStoreTest {
     fun diagnosticTextRedactsUrlsHashesIpAddressesAndCredentials() {
         val hexHash = "a".repeat(40)
         val base32Hash = "B".repeat(32)
+        val lowerBase32Hash = "c".repeat(32)
+        val ipv6 = "2001:db8::1"
         val raw = "magnet:?xt=urn:btih:$hexHash " +
             "https://provider.example/private/video.m3u8 " +
-            "udp://tracker.example:80/announce $base32Hash " +
-            "Authorization: Bearer top-secret-token 192.168.1.24"
+            "udp://tracker.example:80/announce $base32Hash $lowerBase32Hash " +
+            "Authorization: Bearer top-secret-token 192.168.1.24 $ipv6"
 
         val safe = PlaybackDiagnosticRedactor.sanitize(raw)
 
         assertFalse(safe.contains(hexHash))
         assertFalse(safe.contains(base32Hash))
+        assertFalse(safe.contains(lowerBase32Hash))
+        assertFalse(safe.contains(ipv6))
         assertFalse(safe.contains("provider.example"))
         assertFalse(safe.contains("tracker.example"))
         assertFalse(safe.contains("top-secret-token"))
@@ -111,7 +115,12 @@ class PlaybackDiagnosticStoreTest {
             "/data/user/0/com.moviebox.nexus/files/private.json",
             "/data/user_de/0/com.moviebox.nexus/files/private.json",
             "/data/data/com.moviebox.nexus/files/private.json",
-            "/storage/emulated/0/Android/data/com.moviebox.nexus/files/private.json"
+            "/storage/emulated/0/Android/data/com.moviebox.nexus/files/private.json",
+            "/sdcard/Movies/private.mkv",
+            "/mnt/sdcard/Android/data/com.moviebox/cache",
+            "/storage/self/primary/Download/private.zip",
+            "/storage/ABCD-1234/private.mkv",
+            "/data/media/0/DCIM/private.jpg"
         ).joinToString(" ")
 
         val safe = PlaybackDiagnosticRedactor.sanitize(raw)
@@ -120,7 +129,36 @@ class PlaybackDiagnosticStoreTest {
         assertFalse(safe.contains("/data/user_de/"))
         assertFalse(safe.contains("/data/data/"))
         assertFalse(safe.contains("/storage/emulated/"))
-        assertEquals(4, Regex("<redacted-path>").findAll(safe).count())
+        assertFalse(safe.contains("/sdcard/"))
+        assertFalse(safe.contains("/mnt/sdcard/"))
+        assertFalse(safe.contains("/storage/self/primary/"))
+        assertFalse(safe.contains("/storage/ABCD-1234/"))
+        assertFalse(safe.contains("/data/media/0/"))
+        assertEquals(9, Regex("<redacted-path>").findAll(safe).count())
+    }
+
+    @Test
+    fun privateReportReaderAcceptsOnlyGeneratedIdsAndReturnsLatestReport() {
+        val root = Files.createTempDirectory("moviebox-diagnostics-read").toFile()
+        try {
+            val contents = """{"schemaVersion":1,"failureReason":"decoder stalled"}"""
+            val saved = PlaybackDiagnosticStore.save(root, contents, 2_000_000_000_000L)
+
+            assertEquals(contents, PlaybackDiagnosticStore.readReport(root, saved.name))
+            val latest = PlaybackDiagnosticStore.readLatestReport(root)
+            assertEquals(saved.name, latest?.get("reportId"))
+            assertEquals(contents, latest?.get("contents"))
+
+            var rejected = false
+            try {
+                PlaybackDiagnosticStore.readReport(root, "../outside.json")
+            } catch (_: IllegalArgumentException) {
+                rejected = true
+            }
+            assertTrue("A report reader must reject path traversal.", rejected)
+        } finally {
+            root.deleteRecursively()
+        }
     }
 
     @Test

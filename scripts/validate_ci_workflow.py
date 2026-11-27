@@ -47,6 +47,48 @@ def main() -> int:
     if "Download already-published release APK" in integration:
         raise SystemExit("Release APK download is still coupled to integration-tests.")
 
+    # Pull-request workflows normally check out GitHub's synthetic merge ref.
+    # Verify each job instead checks and records the exact source head SHA.
+    for name, block in (
+        ("android-release", release),
+        ("release-apk-verify", verify),
+        ("integration-tests", integration),
+    ):
+        if block.count("Verify checked-out source commit") != 1:
+            raise SystemExit(f"{name} must verify its exact source-head checkout.")
+        checkout = block.split("      - name: Checkout repository", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        for token in (
+            "repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+            "persist-credentials: false",
+        ):
+            if token not in checkout:
+                raise SystemExit(f"{name} checkout is missing exact-head control: {token}")
+        if "EXPECTED_SOURCE_SHA" not in block or "git rev-parse HEAD" not in block:
+            raise SystemExit(f"{name} does not compare the worktree commit to the event source SHA.")
+
+    player_source = Path("lib/player_screen.dart").read_text(encoding="utf-8")
+    dispose_start = player_source.find("Future<void> _disposeMedia3Safely")
+    dispose_end = player_source.find(
+        "Future<void> _startMedia3Serialized", dispose_start
+    )
+    if dispose_start < 0 or dispose_end <= dispose_start:
+        raise SystemExit("Could not inspect the Media3 single-owner disposal method.")
+    dispose_method = player_source[dispose_start:dispose_end]
+    if "controller.dispose(forceDispose: true)" not in dispose_method:
+        raise SystemExit("BetterPlayer wrapper must own and release the native controller.")
+    if "nativeController?.dispose()" in dispose_method or "nativeRelease" in dispose_method:
+        raise SystemExit("Native VideoPlayerController must not be double-disposed.")
+
+    if "MOVIEBOX_GITHUB_APP_CLIENT_ID" not in release or "MOVIEBOX_DIAGNOSTICS_REPOSITORY" not in release:
+        raise SystemExit("Release APK must accept the private diagnostic GitHub App configuration.")
+    if "--dart-define" not in release:
+        raise SystemExit("Private diagnostics GitHub App values are not compiled into the release APK.")
+    if "flutter_secure_storage: ^10.3.4" not in Path("pubspec.yaml").read_text(encoding="utf-8"):
+        raise SystemExit("Private diagnostics OAuth tokens must use Android encrypted storage.")
+
     expected_signing_sha256 = "6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
     required_signing = (
         "ANDROID_KEYSTORE_BASE64",
@@ -109,6 +151,9 @@ def main() -> int:
         "native/android-test/PlaybackDiagnosticStoreTest.kt",
         "scripts/sanitize_ci_diagnostics.py",
         "scripts/test_sanitize_ci_diagnostics.py",
+        "lib/src/diagnostics/github_diagnostics_uploader.dart",
+        "test/github_diagnostics_uploader_test.dart",
+        "docs/private-playback-diagnostics-upload.md",
     ):
         if not Path(required_file).is_file():
             raise SystemExit(f"Missing playback diagnostic source/test: {required_file}")

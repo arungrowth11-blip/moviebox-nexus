@@ -326,6 +326,36 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "readFailureReport" -> torrentExecutor.execute {
+                    try {
+                        val reportId = call.argument<String>("reportId")
+                            ?: throw IllegalArgumentException("A diagnostic report identifier is required.")
+                        val contents = PlaybackDiagnosticStore.readReport(filesDir, reportId)
+                        runOnUiThread { result.success(contents) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error(
+                                "TORRENT_DIAGNOSTIC_READ_FAILED",
+                                error.message ?: "Could not read the private playback diagnostic report.",
+                                null
+                            )
+                        }
+                    }
+                }
+                "readLatestFailureReport" -> torrentExecutor.execute {
+                    try {
+                        val report = PlaybackDiagnosticStore.readLatestReport(filesDir)
+                        runOnUiThread { result.success(report) }
+                    } catch (error: Throwable) {
+                        runOnUiThread {
+                            result.error(
+                                "TORRENT_DIAGNOSTIC_READ_FAILED",
+                                error.message ?: "Could not read the latest private playback report.",
+                                null
+                            )
+                        }
+                    }
+                }
                 "captureFailure" -> torrentExecutor.execute {
                     try {
                         val reason = call.argument<String>("reason") ?: "Unspecified torrent playback failure."

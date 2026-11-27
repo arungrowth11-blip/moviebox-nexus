@@ -18,16 +18,17 @@ REDACTIONS = (
         r"\1<redacted>",
     ),
     (re.compile(r"""\b[a-fA-F0-9]{40}\b"""), "<redacted-infohash>"),
-    (re.compile(r"""\b[A-Z2-7]{32}\b"""), "<redacted-infohash>"),
+    (re.compile(r"""(?i)\b[A-Z2-7]{32}\b"""), "<redacted-infohash>"),
+    (re.compile(r"""(?i)(?<![0-9a-f:])(?:(?:[0-9a-f]{1,4}:){1,7}|:)(?::[0-9a-f]{1,4}){1,7}(?![0-9a-f:])|(?<![0-9a-f:])::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}(?![0-9a-f:])"""), "<redacted-ip>"),
     (re.compile(r"""\b(?:\d{1,3}\.){3}\d{1,3}\b"""), "<redacted-ip>"),
     (
-        re.compile(r"""(?:/data/(?:user|user_de)/\d+/[^\s"'<>]*|/data/data/[^\s"'<>]*|/storage/emulated/\d+/[^\s"'<>]*|/home/[^\s"'<>]*)"""),
+        re.compile(r"""(?:/data/(?:user|user_de)/\d+/[^\s"'<>]*|/data/data/[^\s"'<>]*|/data/media/\d+/[^\s"'<>]*|/storage/emulated/\d+/[^\s"'<>]*|/storage/self/primary/[^\s"'<>]*|/storage/[A-Fa-f0-9-]{4,}/[^\s"'<>]*|/mnt/sdcard/[^\s"'<>]*|/sdcard/[^\s"'<>]*|/home/[^\s"'<>]*)"""),
         "<redacted-path>",
     ),
 )
 RELEVANT = re.compile(
     r"(?i)(Media3 CI playback state|nativePosition|isPlaying|isBuffering|videoSize|"
-    r"error|exception|failed|failure|fatal|assert|expected|actual|timeout|timed out|gradle task|test result|#\\d+|\\bat\\s+\\S+)"
+    r"error|exception|failed|failure|fatal|assert|expected|actual|timeout|timed out|gradle task|test result|#\d+|\bat\s+\S+)"
 )
 
 def sanitize_line(line: str) -> str:

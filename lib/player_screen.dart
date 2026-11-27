@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:moviebox_nexus/src/diagnostics/github_diagnostics_uploader.dart';
 import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 const Color _movieBoxRed = Color(0xFFE50914);
@@ -83,6 +85,10 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _torrentPlaybackProgressObserved = false;
   int _torrentRecoveryAttempts = 0;
   bool _torrentFailureDiagnosticCaptured = false;
+  String? _lastDiagnosticReportId;
+  bool _diagnosticUploadInProgress = false;
+  final GitHubDiagnosticsUploader _diagnosticUploader =
+      GitHubDiagnosticsUploader();
   Duration _lastTorrentObservedPosition = Duration.zero;
   DateTime _lastTorrentProgressAt = DateTime.now();
   String _torrentStatusMessage = '';
@@ -116,6 +122,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     WidgetsBinding.instance.addObserver(this);
     unawaited(_setPlaybackScreenAwake(true));
     _pendingPositionMs = widget.initialMs;
+    unawaited(_uploadLatestDiagnosticIfConnected());
     _startMedia3();
     _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -240,7 +247,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       final diskReadFailures = number('diskReadFailures');
       final diskReadsPending = number('diskReadsPending');
       final lastDiskReadWaitMs = number('lastDiskReadWaitMs');
-      final lastDiskReadError = (snapshot['lastDiskReadError'] ?? '').toString();
+      final lastDiskReadError = (snapshot['lastDiskReadError'] ?? '')
+          .toString();
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
@@ -300,8 +308,7 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (diskReadFailures > 0) 'Disk-read failures: $diskReadFailures',
         if (lastDiskReadWaitMs > 0)
           'Last disk-read wait: ${lastDiskReadWaitMs}ms',
-        if (lastDiskReadError.isNotEmpty)
-          'Disk-read error: $lastDiskReadError',
+        if (lastDiskReadError.isNotEmpty) 'Disk-read error: $lastDiskReadError',
         if (metadataReady && backgroundDownloadEnabled)
           'Background movie download: active (up to ${(backgroundBudgetBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GiB budget)',
         if (metadataReady && !backgroundDownloadEnabled)
@@ -428,6 +435,12 @@ class _PlayerScreenState extends State<PlayerScreen>
           })
           .timeout(const Duration(seconds: 8));
       if (report?['saved'] == true) {
+        final reportId = report?['reportId']?.toString();
+        if (reportId != null && reportId.isNotEmpty) {
+          _lastDiagnosticReportId = reportId;
+          if (mounted) setState(() {});
+          unawaited(_uploadDiagnosticIfAlreadyConnected(reportId));
+        }
         debugPrint(
           'MovieBox private playback diagnostics saved: '
           '${report?['reportId']} '
@@ -649,13 +662,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     } catch (error) {
       debugPrint('MovieBox Media3 pause before release failed: $error');
     }
-    // BetterPlayerController.dispose() is synchronous/void. Start and await the
-    // underlying video_player Future before letting the wrapper dispose itself.
-    final nativeRelease = nativeController?.dispose();
+
+    // BetterPlayerController owns its VideoPlayerController. Its
+    // dispose(forceDispose: true) releases that native controller internally.
+    // Disposing nativeController separately here causes a double-dispose race
+    // and "A VideoPlayerController was used after being disposed" on exit.
     controller.dispose(forceDispose: true);
-    if (nativeRelease != null) {
-      await nativeRelease.timeout(const Duration(seconds: 12));
-    }
   }
 
   Future<void> _startMedia3Serialized(int generation) async {
@@ -668,7 +680,9 @@ class _PlayerScreenState extends State<PlayerScreen>
       try {
         await _disposeMedia3Safely(previous);
       } catch (error) {
-        debugPrint('MovieBox old Media3 controller did not release safely: $error');
+        debugPrint(
+          'MovieBox old Media3 controller did not release safely: $error',
+        );
         if (mounted && !_disposed && generation == _media3Generation) {
           setState(() {
             _loading = false;
@@ -1160,7 +1174,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       );
       return;
     }
-    if (!mounted || _disposed || transitionGeneration != _media3Generation) return;
+    if (!mounted || _disposed || transitionGeneration != _media3Generation)
+      return;
     final media3Value = _media3?.videoPlayerController?.value;
     if (media3Value != null && media3Value.initialized) {
       _pendingPositionMs = media3Value.position.inMilliseconds;
@@ -1176,7 +1191,8 @@ class _PlayerScreenState extends State<PlayerScreen>
         return;
       }
     }
-    if (!mounted || _disposed || transitionGeneration != _media3Generation) return;
+    if (!mounted || _disposed || transitionGeneration != _media3Generation)
+      return;
 
     setState(() {
       _usingVlc = true;
@@ -1663,6 +1679,190 @@ class _PlayerScreenState extends State<PlayerScreen>
     return '$minutes:$seconds';
   }
 
+  Future<void> _uploadLatestDiagnosticIfConnected() async {
+    if (!_diagnosticUploader.isConfigured ||
+        !await _diagnosticUploader.hasStoredAuthorization) {
+      return;
+    }
+    try {
+      final latest = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('readLatestFailureReport')
+          .timeout(const Duration(seconds: 8));
+      final reportId = latest?['reportId']?.toString();
+      final reportJson = latest?['contents']?.toString();
+      if (reportId == null || reportJson == null || reportJson.isEmpty) return;
+      _lastDiagnosticReportId = reportId;
+      await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      debugPrint('MovieBox previous private failure report uploaded.');
+    } catch (error) {
+      debugPrint('MovieBox previous private failure report upload skipped: $error');
+    }
+  }
+
+  Future<void> _uploadDiagnosticIfAlreadyConnected(String reportId) async {
+    if (!_diagnosticUploader.isConfigured ||
+        !await _diagnosticUploader.hasStoredAuthorization) {
+      return;
+    }
+    try {
+      final reportJson = await _torrentDiagnostics
+          .invokeMethod<String>('readFailureReport', <String, Object>{
+            'reportId': reportId,
+          })
+          .timeout(const Duration(seconds: 8));
+      if (reportJson == null || reportJson.isEmpty) return;
+      await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      debugPrint('MovieBox failure report uploaded to the private diagnostics repository.');
+    } catch (error) {
+      debugPrint('MovieBox automatic private diagnostics upload failed: $error');
+    }
+  }
+
+  Future<bool> _authorizePrivateDiagnostics() async {
+    final challenge = await _diagnosticUploader.beginAuthorization();
+    if (!mounted) return false;
+
+    var waiting = false;
+    String? authorizationError;
+    final authorized = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Connect private GitHub diagnostics'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'GitHub has opened in your browser. Sign in and enter this one-time code:',
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                challenge.userCode,
+                style: const TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                challenge.verificationUri.toString(),
+                style: const TextStyle(fontSize: 12),
+              ),
+              if (authorizationError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  authorizationError!,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: waiting
+                  ? null
+                  : () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: waiting
+                  ? null
+                  : () async {
+                      setDialogState(() => waiting = true);
+                      try {
+                        await _diagnosticUploader.completeAuthorization(
+                          challenge,
+                        );
+                        if (dialogContext.mounted) {
+                          Navigator.of(dialogContext).pop(true);
+                        }
+                      } catch (error) {
+                        if (dialogContext.mounted) {
+                          setDialogState(() {
+                            waiting = false;
+                            authorizationError = error.toString();
+                          });
+                        }
+                      }
+                    },
+              child: waiting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('I authorized GitHub'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return authorized == true;
+  }
+
+  Future<void> _uploadPrivateDiagnostic() async {
+    final reportId = _lastDiagnosticReportId;
+    if (reportId == null || _diagnosticUploadInProgress) return;
+    if (!_diagnosticUploader.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Private GitHub diagnostics are not configured in this APK.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _diagnosticUploadInProgress = true);
+    try {
+      if (!await _diagnosticUploader.hasStoredAuthorization) {
+        final authorized = await _authorizePrivateDiagnostics();
+        if (!authorized) return;
+      }
+      final reportJson = await _torrentDiagnostics
+          .invokeMethod<String>('readFailureReport', <String, Object>{
+            'reportId': reportId,
+          })
+          .timeout(const Duration(seconds: 8));
+      if (reportJson == null || reportJson.isEmpty) {
+        throw StateError('The private failure report is no longer available.');
+      }
+      final uploadedUrl = await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Sanitized diagnostic uploaded to the private GitHub repository.'),
+          action: SnackBarAction(
+            label: 'Open',
+            onPressed: () => launchUrl(
+              Uri.parse(uploadedUrl),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Private diagnostic upload failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _diagnosticUploadInProgress = false);
+    }
+  }
+
   Widget _errorPanel(
     String message, {
     VoidCallback? onRetry,
@@ -1705,6 +1905,26 @@ class _PlayerScreenState extends State<PlayerScreen>
               label: const Text('Retry in MovieBox'),
               style: FilledButton.styleFrom(backgroundColor: _movieBoxRed),
             ),
+            if (_isEmbeddedTorrent && _lastDiagnosticReportId != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _diagnosticUploadInProgress
+                    ? null
+                    : () => unawaited(_uploadPrivateDiagnostic()),
+                icon: _diagnosticUploadInProgress
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_upload_outlined),
+                label: Text(
+                  _diagnosticUploadInProgress
+                      ? 'Uploading private diagnostics…'
+                      : 'Upload sanitized diagnostics to GitHub',
+                ),
+              ),
+            ],
             if (onOpenInVlc != null) ...[
               const SizedBox(height: 10),
               OutlinedButton.icon(
@@ -1894,7 +2114,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     try {
       await _media3Transition.timeout(const Duration(seconds: 12));
     } catch (error) {
-      debugPrint('MovieBox Media3 transition did not settle during exit: $error');
+      debugPrint(
+        'MovieBox Media3 transition did not settle during exit: $error',
+      );
       return;
     }
 
@@ -1926,7 +2148,9 @@ class _PlayerScreenState extends State<PlayerScreen>
             .invokeMethod<void>('stopPlayback')
             .timeout(const Duration(seconds: 20));
       } catch (error) {
-        debugPrint('MovieBox torrent cleanup after player release failed: $error');
+        debugPrint(
+          'MovieBox torrent cleanup after player release failed: $error',
+        );
       }
     }
   }
