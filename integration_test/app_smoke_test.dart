@@ -368,6 +368,10 @@ void main() {
             home: PlayerScreen(
               title: 'MovieBox Media3 bounded 503 retry QA',
               url: retryUrl,
+              // This test verifies HTTP retry and full Media3 preparation only.
+              // Keep the controller mounted through awaited setup, without
+              // launching an unrelated playback-start task during teardown.
+              autoPlay: false,
               headers: const <String, String>{
                 'Range': 'bytes=0-',
                 'X-MovieBox-Torrent-Stream': 'true',
