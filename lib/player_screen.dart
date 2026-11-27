@@ -47,6 +47,7 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback? onNext;
   final Map<String, String> headers;
   final bool isLive;
+  final bool autoPlay;
   final ValueChanged<Duration>? onPrepared;
   final ValueChanged<BetterPlayerController>? onMedia3ControllerReady;
 
@@ -59,6 +60,7 @@ class PlayerScreen extends StatefulWidget {
     this.onNext,
     this.headers = const <String, String>{},
     this.isLive = false,
+    this.autoPlay = true,
     this.onPrepared,
     this.onMedia3ControllerReady,
   });
@@ -113,6 +115,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   int _lastSavedMs = 0;
   DateTime _playStartedAt = DateTime.now();
   bool _preparedReported = false;
+  bool _media3SetupComplete = false;
+  bool _media3InitializedPending = false;
+  bool _media3UsesAdaptiveTracks = false;
   bool _preferredHindiAudioApplied = false;
   final FocusNode _focusNode = FocusNode(debugLabel: 'MovieBoxPlayer');
 
@@ -712,6 +717,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _canOpenExternalVlc = false;
     _nextCalled = false;
     _preparedReported = false;
+    _media3SetupComplete = false;
+    _media3InitializedPending = false;
+    _media3UsesAdaptiveTracks = false;
     _playStartedAt = DateTime.now();
 
     // The loopback torrent server supports HTTP byte ranges. Make the initial
@@ -728,14 +736,19 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_isEmbeddedTorrent && !hasExplicitRangeHeader) 'Range': 'bytes=0-',
       if (_isEmbeddedTorrent) 'X-MovieBox-Torrent-Stream': 'true',
     };
+    final formatHint = _formatHint();
+    _media3UsesAdaptiveTracks =
+        formatHint == BetterPlayerVideoFormat.hls ||
+        formatHint == BetterPlayerVideoFormat.dash ||
+        formatHint == BetterPlayerVideoFormat.ss;
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
       headers: media3Headers.isEmpty ? null : media3Headers,
       liveStream: _isLive,
-      useAsmsTracks: true,
-      useAsmsAudioTracks: true,
-      useAsmsSubtitles: true,
-      videoFormat: _formatHint(),
+      useAsmsTracks: _media3UsesAdaptiveTracks,
+      useAsmsAudioTracks: _media3UsesAdaptiveTracks,
+      useAsmsSubtitles: _media3UsesAdaptiveTracks,
+      videoFormat: formatHint,
       bufferingConfiguration: const BetterPlayerBufferingConfiguration(
         minBufferMs: 15000,
         maxBufferMs: 50000,
@@ -776,7 +789,8 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     BetterPlayerController? nextController;
     final configuration = BetterPlayerConfiguration(
-      autoPlay: true,
+      // Start only after setupDataSource has completed its initial track setup.
+      autoPlay: false,
       startAt: Duration(milliseconds: _pendingPositionMs),
       aspectRatio: 16 / 9,
       fit: BoxFit.contain,
@@ -807,10 +821,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
     try {
       if (_disposed || !mounted || generation != _media3Generation) return;
-      nextController = BetterPlayerController(
-        configuration,
-        betterPlayerDataSource: dataSource,
-      );
+      nextController = BetterPlayerController(configuration);
       _media3 = nextController;
       if (mounted) setState(() {});
       // Cold start can require 65s for metadata, then three first-piece
@@ -833,6 +844,21 @@ class _PlayerScreenState extends State<PlayerScreen>
           }
         }
       });
+
+      // Wait until BetterPlayer has finished its asynchronous native track
+      // setup. Its initialized event can be emitted before this Future settles.
+      await nextController.setupDataSource(dataSource);
+      if (_disposed ||
+          !mounted ||
+          generation != _media3Generation ||
+          !identical(_media3, nextController)) {
+        return;
+      }
+      _media3SetupComplete = true;
+      if (nextController.videoPlayerController?.value.isInitialized == true ||
+          _media3InitializedPending) {
+        _completeMedia3Initialization(nextController);
+      }
     } catch (error) {
       if (_disposed || generation != _media3Generation) return;
       if (_isEmbeddedTorrent) {
@@ -843,38 +869,55 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  void _completeMedia3Initialization(BetterPlayerController controller) {
+    if (!mounted ||
+        _disposed ||
+        !_media3SetupComplete ||
+        !identical(_media3, controller) ||
+        _preparedReported) {
+      return;
+    }
+    _media3InitializedPending = false;
+    _media3Watchdog?.cancel();
+    widget.onMedia3ControllerReady?.call(controller);
+
+    if (widget.autoPlay) {
+      _startMedia3PlaybackStartWatchdog(controller);
+      _startTorrentPlaybackStallWatchdog(controller);
+      // Media3 starts only after BetterPlayer setupDataSource has completed.
+      unawaited(
+        _playMedia3Native(
+          controller,
+          reason: 'Media3 setup complete',
+        ).catchError((Object error) {
+          debugPrint('MovieBox Media3 initial native play failed: $error');
+        }),
+      );
+    }
+
+    _preferredHindiAudioApplied = false;
+    if (_media3UsesAdaptiveTracks) {
+      _schedulePreferredHindiAudio(controller);
+    }
+    _reportPrepared();
+    setState(() {
+      _loading = false;
+      _error = null;
+      _engineLabel = 'Media3 / ExoPlayer';
+    });
+  }
+
   void _onMedia3Event(BetterPlayerEvent event) {
     if (!mounted || _disposed) return;
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.initialized:
-        _media3Watchdog?.cancel();
+        // Do not expose the controller or start playback until setupDataSource
+        // has completed its asynchronous initial track configuration.
+        _media3InitializedPending = true;
         final initializedController = _media3;
-        if (initializedController != null) {
-          widget.onMedia3ControllerReady?.call(initializedController);
-          _startMedia3PlaybackStartWatchdog(initializedController);
-          _startTorrentPlaybackStallWatchdog(initializedController);
-          // MovieBox owns lifecycle state (handleLifecycle=false), so invoke
-          // the native controller directly instead of BetterPlayer's gated
-          // play() wrapper. This also recovers after a retried HTTP 503 load.
-          unawaited(
-            _playMedia3Native(
-              initializedController,
-              reason: 'Media3 initialized',
-            ).catchError((Object error) {
-              debugPrint('MovieBox Media3 initial native play failed: $error');
-            }),
-          );
+        if (initializedController != null && _media3SetupComplete) {
+          _completeMedia3Initialization(initializedController);
         }
-        _reportPrepared();
-        _preferredHindiAudioApplied = false;
-        if (initializedController != null) {
-          _schedulePreferredHindiAudio(initializedController);
-        }
-        setState(() {
-          _loading = false;
-          _error = null;
-          _engineLabel = 'Media3 / ExoPlayer';
-        });
         break;
       case BetterPlayerEventType.exception:
         final details =
