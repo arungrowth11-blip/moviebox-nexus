@@ -3,7 +3,9 @@ import 'dart:async';
 import 'package:better_player_plus/better_player_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:moviebox_nexus/src/diagnostics/github_diagnostics_uploader.dart';
 import 'package:moviebox_nexus/src/player/media3_startup_policy.dart';
 
 const Color _movieBoxRed = Color(0xFFE50914);
@@ -45,6 +47,7 @@ class PlayerScreen extends StatefulWidget {
   final VoidCallback? onNext;
   final Map<String, String> headers;
   final bool isLive;
+  final bool autoPlay;
   final ValueChanged<Duration>? onPrepared;
   final ValueChanged<BetterPlayerController>? onMedia3ControllerReady;
 
@@ -57,6 +60,7 @@ class PlayerScreen extends StatefulWidget {
     this.onNext,
     this.headers = const <String, String>{},
     this.isLive = false,
+    this.autoPlay = true,
     this.onPrepared,
     this.onMedia3ControllerReady,
   });
@@ -68,6 +72,9 @@ class PlayerScreen extends StatefulWidget {
 class _PlayerScreenState extends State<PlayerScreen>
     with WidgetsBindingObserver {
   BetterPlayerController? _media3;
+  // Serialize Media3 controller replacement; never overlap native decoders.
+  Future<void> _media3Transition = Future<void>.value();
+  int _media3Generation = 0;
   VlcPlayerController? _vlc;
   Timer? _saveTimer;
   Timer? _media3Watchdog;
@@ -79,6 +86,11 @@ class _PlayerScreenState extends State<PlayerScreen>
   bool _torrentRecoveryInProgress = false;
   bool _torrentPlaybackProgressObserved = false;
   int _torrentRecoveryAttempts = 0;
+  bool _torrentFailureDiagnosticCaptured = false;
+  String? _lastDiagnosticReportId;
+  bool _diagnosticUploadInProgress = false;
+  final GitHubDiagnosticsUploader _diagnosticUploader =
+      GitHubDiagnosticsUploader();
   Duration _lastTorrentObservedPosition = Duration.zero;
   DateTime _lastTorrentProgressAt = DateTime.now();
   String _torrentStatusMessage = '';
@@ -103,6 +115,9 @@ class _PlayerScreenState extends State<PlayerScreen>
   int _lastSavedMs = 0;
   DateTime _playStartedAt = DateTime.now();
   bool _preparedReported = false;
+  bool _media3SetupComplete = false;
+  bool _media3InitializedPending = false;
+  bool _media3UsesAdaptiveTracks = false;
   bool _preferredHindiAudioApplied = false;
   final FocusNode _focusNode = FocusNode(debugLabel: 'MovieBoxPlayer');
 
@@ -112,6 +127,7 @@ class _PlayerScreenState extends State<PlayerScreen>
     WidgetsBinding.instance.addObserver(this);
     unawaited(_setPlaybackScreenAwake(true));
     _pendingPositionMs = widget.initialMs;
+    unawaited(_uploadLatestDiagnosticIfConnected());
     _startMedia3();
     _startTorrentStatusPolling();
     _saveTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -227,6 +243,17 @@ class _PlayerScreenState extends State<PlayerScreen>
       final lastPieceIndex = number('lastPieceIndex');
       final lastPieceWaitMs = number('lastPieceWaitMs');
       final lastHttpError = (snapshot['lastHttpError'] ?? '').toString();
+      final mediaFileReady = snapshot['mediaFileReady'] == true;
+      final backgroundDownloadEnabled =
+          snapshot['backgroundDownloadEnabled'] == true;
+      final backgroundBudgetBytes = number('backgroundDownloadBudgetBytes');
+      final diskReadRequests = number('diskReadRequests');
+      final diskReadCompletedPieces = number('diskReadCompletedPieces');
+      final diskReadFailures = number('diskReadFailures');
+      final diskReadsPending = number('diskReadsPending');
+      final lastDiskReadWaitMs = number('lastDiskReadWaitMs');
+      final lastDiskReadError = (snapshot['lastDiskReadError'] ?? '')
+          .toString();
 
       String formatRate(int bytesPerSecond) {
         if (bytesPerSecond >= 1024 * 1024) {
@@ -253,6 +280,12 @@ class _PlayerScreenState extends State<PlayerScreen>
         } else {
           message = 'Discovering peers through DHT and public trackers…';
         }
+      } else if (diskReadsPending > 0 && diskReadCompletedPieces == 0) {
+        message =
+            'Metadata ready • first piece received; waiting for local disk read completion…';
+      } else if (metadataReady && downloaded > 0 && httpBytesSent == 0) {
+        message =
+            'Metadata ready • torrent blocks received; waiting for a complete playable piece…';
       } else if (connectedPeers > 0) {
         message =
             'Metadata ready • $connectedPeers connected peers • ${formatRate(rate)}';
@@ -274,6 +307,17 @@ class _PlayerScreenState extends State<PlayerScreen>
         if (lastRequestBytesSent > 0)
           'Last response bytes: $lastRequestBytesSent',
         if (firstByteAtMs > 0) 'First byte timestamp: $firstByteAtMs',
+        if (mediaFileReady) 'Local sparse video file: ready',
+        if (diskReadRequests > 0)
+          'Disk-read ready pieces: $diskReadCompletedPieces/$diskReadRequests (pending $diskReadsPending)',
+        if (diskReadFailures > 0) 'Disk-read failures: $diskReadFailures',
+        if (lastDiskReadWaitMs > 0)
+          'Last disk-read wait: ${lastDiskReadWaitMs}ms',
+        if (lastDiskReadError.isNotEmpty) 'Disk-read error: $lastDiskReadError',
+        if (metadataReady && backgroundDownloadEnabled)
+          'Background movie download: active (up to ${(backgroundBudgetBytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GiB budget)',
+        if (metadataReady && !backgroundDownloadEnabled)
+          'Download mode: playback window only (movie exceeds safe budget or free-space reserve)',
         if (lastPieceIndex >= 0)
           'Last requested piece: $lastPieceIndex (${lastPieceWaitMs}ms wait)',
         if (number('selectedPieceLengthBytes') > 0)
@@ -318,7 +362,13 @@ class _PlayerScreenState extends State<PlayerScreen>
     _media3Watchdog?.cancel();
     _media3PlaybackStartWatchdog?.cancel();
     _torrentPlaybackStallTimer?.cancel();
-    unawaited(_switchToVlc(reason));
+    unawaited(() async {
+      await _captureTorrentFailureDiagnostic(
+        'Media3 terminal failure: $reason',
+      );
+      if (!mounted || _disposed) return;
+      await _switchToVlc(reason);
+    }());
   }
 
   void _offerExternalVlc(String reason) {
@@ -368,6 +418,49 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  Future<void> _captureTorrentFailureDiagnostic(String reason) async {
+    if (!_isEmbeddedTorrent || _torrentFailureDiagnosticCaptured) return;
+    _torrentFailureDiagnosticCaptured = true;
+
+    final value = _media3?.videoPlayerController?.value;
+    final duration = value?.duration;
+    final playerSnapshot = <String, Object>{
+      if (value != null) 'positionMs': value.position.inMilliseconds,
+      if (duration != null) 'durationMs': duration.inMilliseconds,
+      if (value != null) 'isPlaying': value.isPlaying,
+      if (value != null) 'isBuffering': value.isBuffering,
+      'isInitialized': value?.initialized ?? false,
+    };
+
+    try {
+      final report = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('captureFailure', <String, Object>{
+            'reason': reason,
+            'playerSnapshot': playerSnapshot,
+          })
+          .timeout(const Duration(seconds: 8));
+      if (report?['saved'] == true) {
+        final reportId = report?['reportId']?.toString();
+        if (reportId != null && reportId.isNotEmpty) {
+          _lastDiagnosticReportId = reportId;
+          if (mounted) setState(() {});
+          unawaited(_uploadDiagnosticIfAlreadyConnected(reportId));
+        }
+        debugPrint(
+          'MovieBox private playback diagnostics saved: '
+          '${report?['reportId']} '
+          '(retained=${report?['retainedReports']}).',
+        );
+      } else {
+        _torrentFailureDiagnosticCaptured = false;
+        debugPrint('MovieBox playback diagnostic save returned no report.');
+      }
+    } catch (error) {
+      _torrentFailureDiagnosticCaptured = false;
+      debugPrint('MovieBox could not save playback diagnostics: $error');
+    }
+  }
+
   Future<void> _handleMedia3Exception(String reason) async {
     if (!_isEmbeddedTorrent) {
       _handleMedia3Problem(reason);
@@ -383,6 +476,8 @@ class _PlayerScreenState extends State<PlayerScreen>
       debugPrint('MovieBox torrent failure diagnostics unavailable: $error');
     }
 
+    if (!mounted || _disposed) return;
+    await _captureTorrentFailureDiagnostic('Media3 exception: $reason');
     if (!mounted || _disposed) return;
     final bytesSent = (snapshot?['httpBytesSent'] as num?)?.toInt() ?? 0;
     final lastHttpStatus = (snapshot?['lastHttpStatus'] as num?)?.toInt() ?? 0;
@@ -492,6 +587,7 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _retryPlayback() {
     if (_isEmbeddedTorrent) {
+      _torrentFailureDiagnosticCaptured = false;
       final position =
           _media3?.videoPlayerController?.value.position.inMilliseconds;
       if (position != null && position > 0) _pendingPositionMs = position;
@@ -554,6 +650,59 @@ class _PlayerScreenState extends State<PlayerScreen>
 
   void _startMedia3() {
     if (_disposed || !mounted) return;
+    final generation = ++_media3Generation;
+    final queued = _media3Transition
+        .catchError((Object error) {
+          debugPrint('MovieBox previous Media3 transition failed: $error');
+        })
+        .then((_) => _startMedia3Serialized(generation));
+    _media3Transition = queued;
+    unawaited(queued);
+  }
+
+  Future<void> _disposeMedia3Safely(BetterPlayerController controller) async {
+    final nativeController = controller.videoPlayerController;
+    try {
+      await nativeController?.pause();
+    } catch (error) {
+      debugPrint('MovieBox Media3 pause before release failed: $error');
+    }
+
+    // BetterPlayerController owns its VideoPlayerController. Its
+    // dispose(forceDispose: true) releases that native controller internally.
+    // Disposing nativeController separately here causes a double-dispose race
+    // and "A VideoPlayerController was used after being disposed" on exit.
+    controller.dispose(forceDispose: true);
+  }
+
+  Future<void> _startMedia3Serialized(int generation) async {
+    if (_disposed || !mounted || generation != _media3Generation) return;
+
+    final previous = _media3;
+    _media3 = null;
+    if (mounted) setState(() {});
+    if (previous != null) {
+      try {
+        await _disposeMedia3Safely(previous);
+      } catch (error) {
+        debugPrint(
+          'MovieBox old Media3 controller did not release safely: $error',
+        );
+        if (mounted && !_disposed && generation == _media3Generation) {
+          setState(() {
+            _loading = false;
+            _error =
+                'The previous video decoder did not release safely. '
+                'MovieBox stopped the retry rather than starting a second decoder.';
+          });
+          await _captureTorrentFailureDiagnostic(
+            'Media3 replacement stopped because previous controller disposal failed.',
+          );
+        }
+        return;
+      }
+    }
+    if (_disposed || !mounted || generation != _media3Generation) return;
     _preferredHindiAudioTimer?.cancel();
     _preferredHindiAudioApplied = false;
     _media3Watchdog?.cancel();
@@ -568,6 +717,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     _canOpenExternalVlc = false;
     _nextCalled = false;
     _preparedReported = false;
+    _media3SetupComplete = false;
+    _media3InitializedPending = false;
+    _media3UsesAdaptiveTracks = false;
     _playStartedAt = DateTime.now();
 
     // The loopback torrent server supports HTTP byte ranges. Make the initial
@@ -584,14 +736,19 @@ class _PlayerScreenState extends State<PlayerScreen>
       if (_isEmbeddedTorrent && !hasExplicitRangeHeader) 'Range': 'bytes=0-',
       if (_isEmbeddedTorrent) 'X-MovieBox-Torrent-Stream': 'true',
     };
+    final formatHint = _formatHint();
+    _media3UsesAdaptiveTracks =
+        formatHint == BetterPlayerVideoFormat.hls ||
+        formatHint == BetterPlayerVideoFormat.dash ||
+        formatHint == BetterPlayerVideoFormat.ss;
     final dataSource = BetterPlayerDataSource.network(
       widget.url,
       headers: media3Headers.isEmpty ? null : media3Headers,
       liveStream: _isLive,
-      useAsmsTracks: true,
-      useAsmsAudioTracks: true,
-      useAsmsSubtitles: true,
-      videoFormat: _formatHint(),
+      useAsmsTracks: _media3UsesAdaptiveTracks,
+      useAsmsAudioTracks: _media3UsesAdaptiveTracks,
+      useAsmsSubtitles: _media3UsesAdaptiveTracks,
+      videoFormat: formatHint,
       bufferingConfiguration: const BetterPlayerBufferingConfiguration(
         minBufferMs: 15000,
         maxBufferMs: 50000,
@@ -630,8 +787,10 @@ class _PlayerScreenState extends State<PlayerScreen>
       backwardSkipTimeInMilliseconds: 10000,
     );
 
+    BetterPlayerController? nextController;
     final configuration = BetterPlayerConfiguration(
-      autoPlay: true,
+      // Start only after setupDataSource has completed its initial track setup.
+      autoPlay: false,
       startAt: Duration(milliseconds: _pendingPositionMs),
       aspectRatio: 16 / 9,
       fit: BoxFit.contain,
@@ -645,7 +804,15 @@ class _PlayerScreenState extends State<PlayerScreen>
       playerVisibilityChangedBehavior: (_) {},
       autoDispose: false,
       controlsConfiguration: controls,
-      eventListener: _onMedia3Event,
+      eventListener: (event) {
+        if (_disposed ||
+            generation != _media3Generation ||
+            nextController == null ||
+            !identical(_media3, nextController)) {
+          return;
+        }
+        _onMedia3Event(event);
+      },
       errorBuilder: (context, message) => _errorPanel(
         message ?? 'Media3 could not load this source.',
         onRetry: _retryPlayback,
@@ -653,11 +820,9 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
 
     try {
-      _media3?.dispose(forceDispose: true);
-      _media3 = BetterPlayerController(
-        configuration,
-        betterPlayerDataSource: dataSource,
-      );
+      if (_disposed || !mounted || generation != _media3Generation) return;
+      nextController = BetterPlayerController(configuration);
+      _media3 = nextController;
       if (mounted) setState(() {});
       // Cold start can require 65s for metadata, then three first-piece
       // waits (45s each) with two one-second retry gaps: 202s worst case.
@@ -679,7 +844,23 @@ class _PlayerScreenState extends State<PlayerScreen>
           }
         }
       });
+
+      // Wait until BetterPlayer has finished its asynchronous native track
+      // setup. Its initialized event can be emitted before this Future settles.
+      await nextController.setupDataSource(dataSource);
+      if (_disposed ||
+          !mounted ||
+          generation != _media3Generation ||
+          !identical(_media3, nextController)) {
+        return;
+      }
+      _media3SetupComplete = true;
+      if (nextController.videoPlayerController?.value.initialized == true ||
+          _media3InitializedPending) {
+        _completeMedia3Initialization(nextController);
+      }
     } catch (error) {
+      if (_disposed || generation != _media3Generation) return;
       if (_isEmbeddedTorrent) {
         unawaited(_handleMedia3Exception('Media3 setup failed: $error'));
       } else {
@@ -688,38 +869,55 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
   }
 
+  void _completeMedia3Initialization(BetterPlayerController controller) {
+    if (!mounted ||
+        _disposed ||
+        !_media3SetupComplete ||
+        !identical(_media3, controller) ||
+        _preparedReported) {
+      return;
+    }
+    _media3InitializedPending = false;
+    _media3Watchdog?.cancel();
+    widget.onMedia3ControllerReady?.call(controller);
+
+    if (widget.autoPlay) {
+      _startMedia3PlaybackStartWatchdog(controller);
+      _startTorrentPlaybackStallWatchdog(controller);
+      // Media3 starts only after BetterPlayer setupDataSource has completed.
+      unawaited(
+        _playMedia3Native(
+          controller,
+          reason: 'Media3 setup complete',
+        ).catchError((Object error) {
+          debugPrint('MovieBox Media3 initial native play failed: $error');
+        }),
+      );
+    }
+
+    _preferredHindiAudioApplied = false;
+    if (_media3UsesAdaptiveTracks) {
+      _schedulePreferredHindiAudio(controller);
+    }
+    _reportPrepared();
+    setState(() {
+      _loading = false;
+      _error = null;
+      _engineLabel = 'Media3 / ExoPlayer';
+    });
+  }
+
   void _onMedia3Event(BetterPlayerEvent event) {
     if (!mounted || _disposed) return;
     switch (event.betterPlayerEventType) {
       case BetterPlayerEventType.initialized:
-        _media3Watchdog?.cancel();
+        // Do not expose the controller or start playback until setupDataSource
+        // has completed its asynchronous initial track configuration.
+        _media3InitializedPending = true;
         final initializedController = _media3;
-        if (initializedController != null) {
-          widget.onMedia3ControllerReady?.call(initializedController);
-          _startMedia3PlaybackStartWatchdog(initializedController);
-          _startTorrentPlaybackStallWatchdog(initializedController);
-          // MovieBox owns lifecycle state (handleLifecycle=false), so invoke
-          // the native controller directly instead of BetterPlayer's gated
-          // play() wrapper. This also recovers after a retried HTTP 503 load.
-          unawaited(
-            _playMedia3Native(
-              initializedController,
-              reason: 'Media3 initialized',
-            ).catchError((Object error) {
-              debugPrint('MovieBox Media3 initial native play failed: $error');
-            }),
-          );
+        if (initializedController != null && _media3SetupComplete) {
+          _completeMedia3Initialization(initializedController);
         }
-        _reportPrepared();
-        _preferredHindiAudioApplied = false;
-        if (initializedController != null) {
-          _schedulePreferredHindiAudio(initializedController);
-        }
-        setState(() {
-          _loading = false;
-          _error = null;
-          _engineLabel = 'Media3 / ExoPlayer';
-        });
         break;
       case BetterPlayerEventType.exception:
         final details =
@@ -895,6 +1093,10 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
     if (_isEmbeddedTorrent && !nativeSnapshotAvailable) {
       watchdog.cancel();
+      await _captureTorrentFailureDiagnostic(
+        'Media3 startup stalled and native torrent diagnostics could not be read.',
+      );
+      if (!mounted || _disposed || !identical(_media3, controller)) return;
       setState(() {
         _loading = false;
         _error =
@@ -921,6 +1123,12 @@ class _PlayerScreenState extends State<PlayerScreen>
     if (decision == Media3StartupDecision.wait) return;
     watchdog.cancel();
     if (decision == Media3StartupDecision.noTorrentBytes) {
+      final diagnosticStatus =
+          (snapshot['lastHttpStatus'] as num?)?.toInt() ?? 0;
+      await _captureTorrentFailureDiagnostic(
+        'Media3 startup produced no torrent video bytes; HTTP status=$diagnosticStatus.',
+      );
+      if (!mounted || _disposed || !identical(_media3, controller)) return;
       int number(String key) => (snapshot[key] as num?)?.toInt() ?? 0;
       final status = number('lastHttpStatus');
       if (status == 503 || status == 504) {
@@ -1000,6 +1208,17 @@ class _PlayerScreenState extends State<PlayerScreen>
     }
 
     _vlcInitStarted = true;
+    final transitionGeneration = ++_media3Generation;
+    try {
+      await _media3Transition.timeout(const Duration(seconds: 12));
+    } catch (error) {
+      _offerExternalVlc(
+        'The previous Media3 session did not settle; VLC was not started on top of it. $error',
+      );
+      return;
+    }
+    if (!mounted || _disposed || transitionGeneration != _media3Generation)
+      return;
     final media3Value = _media3?.videoPlayerController?.value;
     if (media3Value != null && media3Value.initialized) {
       _pendingPositionMs = media3Value.position.inMilliseconds;
@@ -1008,12 +1227,15 @@ class _PlayerScreenState extends State<PlayerScreen>
     final oldMedia3 = _media3;
     _media3 = null;
     if (oldMedia3 != null) {
-      // Let BetterPlayer finish dispatching its current event before disposal
-      // mutates its internal listener collections.
-      await Future<void>.delayed(Duration.zero);
-      oldMedia3.dispose(forceDispose: true);
+      try {
+        await _disposeMedia3Safely(oldMedia3);
+      } catch (error) {
+        _offerExternalVlc('Media3 did not release its decoder safely: $error');
+        return;
+      }
     }
-    if (!mounted || _disposed) return;
+    if (!mounted || _disposed || transitionGeneration != _media3Generation)
+      return;
 
     setState(() {
       _usingVlc = true;
@@ -1500,6 +1722,198 @@ class _PlayerScreenState extends State<PlayerScreen>
     return '$minutes:$seconds';
   }
 
+  Future<void> _uploadLatestDiagnosticIfConnected() async {
+    if (!_diagnosticUploader.isConfigured ||
+        !await _diagnosticUploader.hasStoredAuthorization) {
+      return;
+    }
+    try {
+      final latest = await _torrentDiagnostics
+          .invokeMapMethod<String, dynamic>('readLatestFailureReport')
+          .timeout(const Duration(seconds: 8));
+      final reportId = latest?['reportId']?.toString();
+      final reportJson = latest?['contents']?.toString();
+      if (reportId == null || reportJson == null || reportJson.isEmpty) return;
+      _lastDiagnosticReportId = reportId;
+      await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      debugPrint('MovieBox previous private failure report uploaded.');
+    } catch (error) {
+      debugPrint(
+        'MovieBox previous private failure report upload skipped: $error',
+      );
+    }
+  }
+
+  Future<void> _uploadDiagnosticIfAlreadyConnected(String reportId) async {
+    if (!_diagnosticUploader.isConfigured ||
+        !await _diagnosticUploader.hasStoredAuthorization) {
+      return;
+    }
+    try {
+      final reportJson = await _torrentDiagnostics
+          .invokeMethod<String>('readFailureReport', <String, Object>{
+            'reportId': reportId,
+          })
+          .timeout(const Duration(seconds: 8));
+      if (reportJson == null || reportJson.isEmpty) return;
+      await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      debugPrint(
+        'MovieBox failure report uploaded to the private diagnostics repository.',
+      );
+    } catch (error) {
+      debugPrint(
+        'MovieBox automatic private diagnostics upload failed: $error',
+      );
+    }
+  }
+
+  Future<bool> _authorizePrivateDiagnostics() async {
+    final challenge = await _diagnosticUploader.beginAuthorization();
+    if (!mounted) return false;
+
+    var waiting = false;
+    String? authorizationError;
+    final authorized = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: const Text('Connect private GitHub diagnostics'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'GitHub has opened in your browser. Sign in and enter this one-time code:',
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                challenge.userCode,
+                style: const TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                challenge.verificationUri.toString(),
+                style: const TextStyle(fontSize: 12),
+              ),
+              if (authorizationError != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  authorizationError!,
+                  style: const TextStyle(color: Colors.redAccent),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: waiting
+                  ? null
+                  : () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: waiting
+                  ? null
+                  : () async {
+                      setDialogState(() => waiting = true);
+                      try {
+                        await _diagnosticUploader.completeAuthorization(
+                          challenge,
+                        );
+                        if (dialogContext.mounted) {
+                          Navigator.of(dialogContext).pop(true);
+                        }
+                      } catch (error) {
+                        if (dialogContext.mounted) {
+                          setDialogState(() {
+                            waiting = false;
+                            authorizationError = error.toString();
+                          });
+                        }
+                      }
+                    },
+              child: waiting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('I authorized GitHub'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return authorized == true;
+  }
+
+  Future<void> _uploadPrivateDiagnostic() async {
+    final reportId = _lastDiagnosticReportId;
+    if (reportId == null || _diagnosticUploadInProgress) return;
+    if (!_diagnosticUploader.isConfigured) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Private GitHub diagnostics are not configured in this APK.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _diagnosticUploadInProgress = true);
+    try {
+      if (!await _diagnosticUploader.hasStoredAuthorization) {
+        final authorized = await _authorizePrivateDiagnostics();
+        if (!authorized) return;
+      }
+      final reportJson = await _torrentDiagnostics
+          .invokeMethod<String>('readFailureReport', <String, Object>{
+            'reportId': reportId,
+          })
+          .timeout(const Duration(seconds: 8));
+      if (reportJson == null || reportJson.isEmpty) {
+        throw StateError('The private failure report is no longer available.');
+      }
+      final uploadedUrl = await _diagnosticUploader.uploadReport(
+        reportId: reportId,
+        reportJson: reportJson,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text(
+            'Sanitized diagnostic uploaded to the private GitHub repository.',
+          ),
+          action: SnackBarAction(
+            label: 'Open',
+            onPressed: () => launchUrl(
+              Uri.parse(uploadedUrl),
+              mode: LaunchMode.externalApplication,
+            ),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Private diagnostic upload failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _diagnosticUploadInProgress = false);
+    }
+  }
+
   Widget _errorPanel(
     String message, {
     VoidCallback? onRetry,
@@ -1542,6 +1956,26 @@ class _PlayerScreenState extends State<PlayerScreen>
               label: const Text('Retry in MovieBox'),
               style: FilledButton.styleFrom(backgroundColor: _movieBoxRed),
             ),
+            if (_isEmbeddedTorrent && _lastDiagnosticReportId != null) ...[
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _diagnosticUploadInProgress
+                    ? null
+                    : () => unawaited(_uploadPrivateDiagnostic()),
+                icon: _diagnosticUploadInProgress
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.cloud_upload_outlined),
+                label: Text(
+                  _diagnosticUploadInProgress
+                      ? 'Uploading private diagnostics…'
+                      : 'Upload sanitized diagnostics to GitHub',
+                ),
+              ),
+            ],
             if (onOpenInVlc != null) ...[
               const SizedBox(height: 10),
               OutlinedButton.icon(
@@ -1726,6 +2160,52 @@ class _PlayerScreenState extends State<PlayerScreen>
     );
   }
 
+  Future<void> _releasePlayerResources() async {
+    ++_media3Generation;
+    try {
+      await _media3Transition.timeout(const Duration(seconds: 12));
+    } catch (error) {
+      debugPrint(
+        'MovieBox Media3 transition did not settle during exit: $error',
+      );
+      return;
+    }
+
+    final media3 = _media3;
+    _media3 = null;
+    if (media3 != null) {
+      try {
+        await _disposeMedia3Safely(media3);
+      } catch (error) {
+        debugPrint('MovieBox Media3 disposal during exit failed: $error');
+        return;
+      }
+    }
+
+    final vlc = _vlc;
+    _vlc = null;
+    if (vlc != null) {
+      try {
+        await _releaseVlcSafely(vlc);
+      } catch (error) {
+        debugPrint('MovieBox VLC disposal during exit failed: $error');
+        return;
+      }
+    }
+
+    if (_isEmbeddedTorrent) {
+      try {
+        await _torrentDiagnostics
+            .invokeMethod<void>('stopPlayback')
+            .timeout(const Duration(seconds: 20));
+      } catch (error) {
+        debugPrint(
+          'MovieBox torrent cleanup after player release failed: $error',
+        );
+      }
+    }
+  }
+
   Future<void> _releaseVlcSafely(VlcPlayerController controller) async {
     try {
       controller.removeListener(_onVlcChanged);
@@ -1764,23 +2244,8 @@ class _PlayerScreenState extends State<PlayerScreen>
     _torrentPlaybackStallTimer?.cancel();
     _torrentRecoveryResetTimer?.cancel();
     _preferredHindiAudioTimer?.cancel();
-    _media3?.dispose(forceDispose: true);
-    if (_isEmbeddedTorrent) {
-      // Stop the native range server and release its temporary video file when
-      // the viewer leaves this route (including back navigation after errors).
-      unawaited(
-        _torrentDiagnostics.invokeMethod<void>('stopPlayback').catchError((
-          Object error,
-        ) {
-          debugPrint('MovieBox torrent cleanup on player exit failed: $error');
-        }),
-      );
-    }
-
-    final vlc = _vlc;
-    if (vlc != null) {
-      unawaited(_releaseVlcSafely(vlc));
-    }
+    // Native decoders release before stopPlayback closes the torrent server.
+    unawaited(_releasePlayerResources());
 
     _focusNode.dispose();
     // The route owner restores system bars and the catalog orientation only

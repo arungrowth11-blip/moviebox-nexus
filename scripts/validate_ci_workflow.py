@@ -47,6 +47,48 @@ def main() -> int:
     if "Download already-published release APK" in integration:
         raise SystemExit("Release APK download is still coupled to integration-tests.")
 
+    # Pull-request workflows normally check out GitHub's synthetic merge ref.
+    # Verify each job instead checks and records the exact source head SHA.
+    for name, block in (
+        ("android-release", release),
+        ("release-apk-verify", verify),
+        ("integration-tests", integration),
+    ):
+        if block.count("Verify checked-out source commit") != 1:
+            raise SystemExit(f"{name} must verify its exact source-head checkout.")
+        checkout = block.split("      - name: Checkout repository", 1)[1].split(
+            "      - name:", 1
+        )[0]
+        for token in (
+            "repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}",
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
+            "persist-credentials: false",
+        ):
+            if token not in checkout:
+                raise SystemExit(f"{name} checkout is missing exact-head control: {token}")
+        if "EXPECTED_SOURCE_SHA" not in block or "git rev-parse HEAD" not in block:
+            raise SystemExit(f"{name} does not compare the worktree commit to the event source SHA.")
+
+    player_source = Path("lib/player_screen.dart").read_text(encoding="utf-8")
+    dispose_start = player_source.find("Future<void> _disposeMedia3Safely")
+    dispose_end = player_source.find(
+        "Future<void> _startMedia3Serialized", dispose_start
+    )
+    if dispose_start < 0 or dispose_end <= dispose_start:
+        raise SystemExit("Could not inspect the Media3 single-owner disposal method.")
+    dispose_method = player_source[dispose_start:dispose_end]
+    if "controller.dispose(forceDispose: true)" not in dispose_method:
+        raise SystemExit("BetterPlayer wrapper must own and release the native controller.")
+    if "nativeController?.dispose()" in dispose_method or "nativeRelease" in dispose_method:
+        raise SystemExit("Native VideoPlayerController must not be double-disposed.")
+
+    if "MOVIEBOX_GITHUB_APP_CLIENT_ID" not in release or "MOVIEBOX_DIAGNOSTICS_REPOSITORY" not in release:
+        raise SystemExit("Release APK must accept the private diagnostic GitHub App configuration.")
+    if "--dart-define" not in release:
+        raise SystemExit("Private diagnostics GitHub App values are not compiled into the release APK.")
+    if "flutter_secure_storage: ^10.3.4" not in Path("pubspec.yaml").read_text(encoding="utf-8"):
+        raise SystemExit("Private diagnostics OAuth tokens must use Android encrypted storage.")
+
     expected_signing_sha256 = "6588a39dd9b56035c9ba957e243da9e156437e57aafea9a1acf92877544c9d2f"
     required_signing = (
         "ANDROID_KEYSTORE_BASE64",
@@ -99,12 +141,45 @@ def main() -> int:
         ("integration-tests", integration, "MovieBox-Emulator-Diagnostics"),
         ("release-apk-verify", verify, "MovieBox-Release-APK-Verification-Diagnostics"),
     ):
-        if "if: always()" not in block or upload_name not in block:
-            raise SystemExit(f"{name} must upload diagnostics with if: always().")
+        if "if: failure()" not in block or upload_name not in block:
+            raise SystemExit(f"{name} must upload diagnostics only after a failed job.")
+        if "retention-days: 7" not in block:
+            raise SystemExit(f"{name} diagnostics must expire after seven days.")
+
+    for required_file in (
+        "native/android/PlaybackDiagnosticStore.kt",
+        "native/android-test/PlaybackDiagnosticStoreTest.kt",
+        "scripts/sanitize_ci_diagnostics.py",
+        "scripts/test_sanitize_ci_diagnostics.py",
+        "lib/src/diagnostics/github_diagnostics_uploader.dart",
+        "test/github_diagnostics_uploader_test.dart",
+        "docs/private-playback-diagnostics-upload.md",
+    ):
+        if not Path(required_file).is_file():
+            raise SystemExit(f"Missing playback diagnostic source/test: {required_file}")
 
     if "MovieBox-Nexus-OS-APK" not in verify:
         raise SystemExit("release-apk-verify does not consume the release artifact.")
-    print("CI topology verified: parallel release/integration, gated APK verify, mandatory artifact, dual diagnostics.")
+    if 'python3 scripts/sanitize_ci_diagnostics.py "$raw_log" "$sanitized_log"' not in integration:
+        raise SystemExit("Integration failures must pass through the CI diagnostic sanitizer.")
+    if 'rm -f "$raw_log"' not in integration:
+        raise SystemExit("Raw integration logs must be deleted before artifact upload.")
+    if "flutter-integration-sanitized.log" not in integration:
+        raise SystemExit("Sanitized integration failure excerpt is not retained.")
+    if 'find "$diagnostics_dir" -maxdepth 1 -type f' not in verify:
+        raise SystemExit("Release diagnostics must enforce a public artifact file allowlist.")
+    forbidden_artifact_patterns = (
+        'adb logcat -d -v threadtime > "$diagnostics_dir/',
+        'adb shell dumpsys activity activities > "$diagnostics_dir/',
+        'adb shell dumpsys window windows > "$diagnostics_dir/',
+        'cp dist/MovieBox-Nexus-OS.apk "$diagnostics_dir/"',
+        'cp "$RUNNER_TEMP/moviebox-local-seed.log" "$diagnostics_dir/"',
+        'cp "$RUNNER_TEMP/moviebox-emulator-script.sh" "$diagnostics_dir/"',
+        'tee "$diagnostics_dir/flutter-integration.log"',
+    )
+    if any(pattern in integration + verify for pattern in forbidden_artifact_patterns):
+        raise SystemExit("Raw emulator logs, system dumps, scripts, or APK bytes must not enter public failure artifacts.")
+    print("CI topology verified: isolated release/integration, gated APK verify, failure-only bounded diagnostics.")
     return 0
 
 

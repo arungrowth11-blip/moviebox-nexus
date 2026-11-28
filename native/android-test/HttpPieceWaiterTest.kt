@@ -14,6 +14,82 @@ import org.junit.Test
 
 class HttpPieceWaiterTest {
     @Test
+    fun diskReadBarrierSharesOneAsyncReadAcrossConcurrentWaiters() {
+        val barrier = TorrentDiskReadBarrier()
+        val requests = AtomicInteger(0)
+        val firstResult = AtomicBoolean(false)
+        val worker = Thread {
+            val result = barrier.await(
+                key = "stream:source:12",
+                timeoutMs = 2_000L,
+                isCancelled = { false },
+                startRead = { requests.incrementAndGet() }
+            )
+            firstResult.set(result?.success == true)
+        }
+        worker.start()
+        while (requests.get() == 0) Thread.sleep(5L)
+
+        val secondResult = AtomicBoolean(false)
+        val secondWorker = Thread {
+            val joined = barrier.await(
+                key = "stream:source:12",
+                timeoutMs = 2_000L,
+                isCancelled = { false },
+                startRead = { requests.incrementAndGet() }
+            )
+            secondResult.set(joined?.success == true)
+        }
+        secondWorker.start()
+        // Both waiters are blocked on the same in-flight native read.
+        Thread.sleep(20L)
+        assertEquals(1, requests.get())
+        assertTrue(barrier.complete("stream:source:12", true, 16_384))
+        worker.join(2_000L)
+        secondWorker.join(2_000L)
+        assertTrue(firstResult.get())
+        assertTrue(secondResult.get())
+        assertTrue(barrier.isReady("stream:source:12"))
+        assertEquals(0, barrier.pendingCount())
+    }
+
+    @Test
+    fun diskReadBarrierDoesNotReportReadyForFailedOrZeroByteReads() {
+        val barrier = TorrentDiskReadBarrier()
+        val result = barrier.await(
+            key = "stream:source:4",
+            timeoutMs = 1_000L,
+            isCancelled = { false },
+            startRead = {
+                barrier.complete("stream:source:4", false, 0, "EIO")
+            }
+        )
+        assertFalse(result?.success == true)
+        assertFalse(barrier.isReady("stream:source:4"))
+        assertEquals("EIO", result?.error)
+    }
+
+    @Test
+    fun diskReadBarrierHonorsTimeoutAndCancellationWithoutClaimingReadiness() {
+        val barrier = TorrentDiskReadBarrier()
+        val result = barrier.await(
+            key = "stream:source:99",
+            timeoutMs = 20L,
+            isCancelled = { false },
+            startRead = {}
+        )
+        assertEquals(null, result)
+        assertFalse(barrier.isReady("stream:source:99"))
+        val cancelled = barrier.await(
+            key = "stream:source:100",
+            timeoutMs = 2_000L,
+            isCancelled = { true },
+            startRead = {}
+        )
+        assertEquals(null, cancelled)
+    }
+
+    @Test
     fun torrentCacheIsNotDeletedUntilNativeHandleRemovalIsConfirmed() {
         val deletionCalled = AtomicBoolean(false)
         val cleanup = TorrentCleanupOrder(
@@ -99,12 +175,78 @@ class HttpPieceWaiterTest {
     }
 
     @Test
-    fun torrentDownloadPolicyKeepsUnrequestedFilesAndPiecesIgnored() {
-        val filePriorities = TorrentDownloadPriorityPolicy.filePriorities(4)
-        assertEquals(4, filePriorities.size)
-        assertTrue(filePriorities.all { it == Priority.IGNORE })
+    fun torrentDownloadPolicyKeepsOtherFilesIgnoredAndSelectedMovieAtNormalPriority() {
+        val playbackOnly = TorrentDownloadPriorityPolicy.filePriorities(4)
+        assertEquals(4, playbackOnly.size)
+        assertTrue(playbackOnly.all { it == Priority.IGNORE })
+
+        val background = TorrentDownloadPriorityPolicy.filePriorities(
+            fileCount = 4,
+            selectedFileIndex = 2,
+            backgroundDownloadEnabled = true
+        )
+        assertEquals(
+            listOf(Priority.IGNORE, Priority.IGNORE, Priority.NORMAL, Priority.IGNORE),
+            background.toList()
+        )
         assertEquals(Priority.SEVEN, TorrentDownloadPriorityPolicy.activePiece)
-        assertEquals(Priority.IGNORE, TorrentDownloadPriorityPolicy.inactivePiece)
+        assertEquals(Priority.IGNORE, TorrentDownloadPriorityPolicy.idlePiecePriority(false, true))
+        assertEquals(Priority.NORMAL, TorrentDownloadPriorityPolicy.idlePiecePriority(true, true))
+        assertEquals(Priority.IGNORE, TorrentDownloadPriorityPolicy.idlePiecePriority(true, false))
+    }
+
+    @Test
+    fun backgroundDownloadBudgetUsesFiveToTenGiBAndLeavesTwoGiBReserve() {
+        val gib = 1024L * 1024L * 1024L
+        assertEquals(0L, TorrentBackgroundDownloadPolicy.budgetBytes(6L * gib))
+        assertEquals(5L * gib, TorrentBackgroundDownloadPolicy.budgetBytes(7L * gib))
+        assertEquals(8L * gib, TorrentBackgroundDownloadPolicy.budgetBytes(10L * gib))
+        assertEquals(10L * gib, TorrentBackgroundDownloadPolicy.budgetBytes(12L * gib))
+        assertTrue(TorrentBackgroundDownloadPolicy.shouldDownloadWholeFile(4L * gib, 5L * gib))
+        assertFalse(TorrentBackgroundDownloadPolicy.shouldDownloadWholeFile(6L * gib, 5L * gib))
+        assertFalse(TorrentBackgroundDownloadPolicy.shouldDownloadWholeFile(4L * gib, 0L))
+    }
+
+    @Test
+    fun sparseMediaFileCreatesNestedPathAtExpectedLogicalLength() {
+        val parent = Files.createTempDirectory("moviebox-sparse-media").toFile()
+        try {
+            val root = File(parent, TorrentCachePolicy.DIRECTORY_NAME)
+            val media = TorrentCachePolicy.ensureSparseMediaFile(
+                streamDir = root,
+                relativePath = "Season 01/Media/MovieBox-CI.mp4",
+                expectedSizeBytes = 32L * 1024L * 1024L
+            )
+            assertTrue(media.isFile)
+            assertTrue(media.canRead())
+            assertEquals(32L * 1024L * 1024L, media.length())
+            assertTrue(media.parentFile!!.isDirectory)
+            assertTrue(media.canonicalPath.startsWith(root.canonicalPath + File.separator))
+        } finally {
+            parent.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun sparseMediaFileRejectsTorrentPathTraversal() {
+        val parent = Files.createTempDirectory("moviebox-sparse-boundary").toFile()
+        try {
+            val root = File(parent, TorrentCachePolicy.DIRECTORY_NAME).apply { mkdirs() }
+            var rejected = false
+            try {
+                TorrentCachePolicy.ensureSparseMediaFile(
+                    streamDir = root,
+                    relativePath = "../outside.mp4",
+                    expectedSizeBytes = 1024L
+                )
+            } catch (_: SecurityException) {
+                rejected = true
+            }
+            assertTrue(rejected)
+            assertFalse(File(parent, "outside.mp4").exists())
+        } finally {
+            parent.deleteRecursively()
+        }
     }
 
     @Test
@@ -324,6 +466,22 @@ class HttpPieceWaiterTest {
         val decision = HttpRangePolicy.beforeHeaders(pieceReady = false, cancelled = false)
         assertEquals(HttpPieceDecision.RETRY, decision)
         assertEquals(503, HttpRangePolicy.statusCode(decision))
+        assertEquals(
+            HttpPieceDecision.RETRY,
+            HttpRangePolicy.beforeHeaders(
+                pieceReady = true,
+                cancelled = false,
+                localMediaReadable = false
+            )
+        )
+        assertEquals(
+            HttpPieceDecision.READY,
+            HttpRangePolicy.beforeHeaders(
+                pieceReady = true,
+                cancelled = false,
+                localMediaReadable = true
+            )
+        )
         assertEquals("Retry-After: 1\r\n", HttpRangePolicy.retryAfterHeader())
         assertEquals(1, HttpRangePolicy.RETRY_AFTER_SECONDS)
     }

@@ -2085,6 +2085,10 @@ class EmbeddedTorrentService {
     return uri.toString();
   }
 
+  Future<int> pruneDiagnosticReports() async {
+    return await _channel.invokeMethod<int>('pruneDiagnostics') ?? 0;
+  }
+
   Future<Map<String, dynamic>> getStatus() async {
     final snapshot = await _channel.invokeMapMethod<String, dynamic>(
       'getStatus',
@@ -2116,6 +2120,16 @@ Future<void> main() async {
     EmbeddedTorrentService.instance.cleanupCache().catchError((Object error) {
       debugPrint('MovieBox startup torrent cache cleanup skipped: $error');
     }),
+  );
+  unawaited(
+    EmbeddedTorrentService.instance
+        .pruneDiagnosticReports()
+        .then<void>((_) {})
+        .catchError((Object error) {
+          debugPrint(
+            'MovieBox startup diagnostic retention cleanup skipped: $error',
+          );
+        }),
   );
   // Native torrent startup is lazy; catalog navigation must not wait for it.
   PaintingBinding.instance.imageCache

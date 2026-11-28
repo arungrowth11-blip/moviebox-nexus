@@ -3,12 +3,17 @@ package com.moviebox.nexus
 import android.content.Context
 import android.util.Log
 import android.webkit.MimeTypeMap
+import com.frostwire.jlibtorrent.AlertListener
 import com.frostwire.jlibtorrent.Priority
 import com.frostwire.jlibtorrent.SessionManager
 import com.frostwire.jlibtorrent.TorrentFlags
 import com.frostwire.jlibtorrent.TorrentHandle
+import com.frostwire.jlibtorrent.alerts.Alert
+import com.frostwire.jlibtorrent.alerts.AlertType
+import com.frostwire.jlibtorrent.alerts.ReadPieceAlert
 import java.io.BufferedReader
 import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.RandomAccessFile
 import java.net.InetAddress
@@ -27,13 +32,17 @@ import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * One in-process libtorrent session and a localhost HTTP byte-range endpoint.
  *
- * Selected media files download sequentially. HTTP ranges are served only after
- * libtorrent reports each backing piece as complete, so the player never reads
- * the sparse/preallocated zero-filled areas of an incomplete file.
+ * The selected movie is stored as one app-private sparse file. When its size fits
+ * the safe device-space budget it downloads at NORMAL priority while the current
+ * playhead window is promoted; otherwise only the playback window is requested.
+ * HTTP 206 is committed only after both a verified piece and a real local-file
+ * preflight read succeed, so missing nested paths cannot masquerade as playback.
  */
 internal data class TorrentSourceCandidate(
     val infoHash: String,
@@ -99,6 +108,35 @@ internal class TorrentCleanupOrder(
 
 internal class EmbeddedTorrentEngine(private val context: Context) {
     private val lock = Any()
+    private val diagnosticLock = Any()
+    private val diagnosticEvents = java.util.ArrayDeque<Map<String, Any?>>()
+    private val diskReadBarrier = TorrentDiskReadBarrier()
+    private val pendingDiskReadKeys = ConcurrentHashMap<String, String>()
+    private val pendingDiskReadOwners = ConcurrentHashMap<String, PendingStream>()
+    private val diskReadAlertListener = object : AlertListener {
+        override fun types(): IntArray = intArrayOf(AlertType.READ_PIECE.swig())
+
+        override fun alert(alert: Alert<*>) {
+            val readAlert = alert as? ReadPieceAlert ?: return
+            val sourceHash = runCatching {
+                readAlert.handle().infoHash().toHex().lowercase(Locale.US)
+            }.getOrNull() ?: return
+            val sourceKey = sourceHash + ":" + readAlert.piece()
+            pendingDiskReadKeys.entries
+                .filter { it.value == sourceKey }
+                .forEach { entry ->
+                    val error = readAlert.error()
+                    diskReadBarrier.complete(
+                        entry.key,
+                        success = !error.isError(),
+                        bytesRead = readAlert.size(),
+                        error = if (error.isError()) error.message() else ""
+                    )
+                    pendingDiskReadOwners.remove(entry.key)?.pendingDiskReadKeys?.remove(entry.key)
+                    pendingDiskReadKeys.remove(entry.key, sourceKey)
+                }
+        }
+    }
     private val requestPool = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "moviebox-torrent-http").apply { isDaemon = true }
     }
@@ -107,7 +145,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
     private val cleanupExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "moviebox-torrent-cleanup").apply { isDaemon = true }
     }
-    private val torrentCacheRoot = File(context.cacheDir, TorrentCachePolicy.DIRECTORY_NAME)
+    // Active media must not live in Android's evictable cache directory.
+    // noBackupFilesDir is app-private and explicitly cleaned on stop/next launch.
+    private val torrentCacheRoot = File(context.noBackupFilesDir, TorrentCachePolicy.DIRECTORY_NAME)
+    private var lastDiagnosticStatusSignature = ""
 
     @Volatile private var session: SessionManager? = null
     @Volatile private var activeHandle: TorrentHandle? = null
@@ -131,7 +172,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         val firstPiece: Int,
         val lastPiece: Int,
         val token: String,
-        val fileIndex: Int
+        val fileIndex: Int,
+        val backgroundDownloadEnabled: Boolean,
+        val backgroundDownloadBudgetBytes: Long
     )
 
     private data class VerifiedSwarmSlot(
@@ -180,6 +223,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         @Volatile var firstByteAtMs = 0L
         @Volatile var lastPieceIndex = -1
         @Volatile var lastPieceWaitMs = 0L
+        val diskReadRequests = AtomicLong(0L)
+        val diskReadCompletedPieces = AtomicLong(0L)
+        val diskReadFailures = AtomicLong(0L)
+        val diskReadReadyKeys = ConcurrentHashMap.newKeySet<String>()
+        val diskReadFailureKeys = ConcurrentHashMap.newKeySet<String>()
+        val pendingDiskReadKeys = ConcurrentHashMap.newKeySet<String>()
+        @Volatile var lastDiskReadWaitMs = 0L
+        @Volatile var lastDiskReadError = ""
         @Volatile var lastHttpError = ""
         @Volatile var prefetchLookAheadPieces = HttpRangePolicy.PREFETCH_PIECES
         @Volatile var prefetchWindowBytes = 0L
@@ -191,20 +242,19 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     fun cleanupCache() {
         synchronized(lock) {
-            // Never remove the currently active stream while an Activity/Flutter
-            // engine is being recreated. An abandoned previous-process stream has
-            // no in-memory PendingStream and is safe to sweep here.
-            // A stopped stream may still have readers closing on the deferred
-            // cleanup worker. Never sweep its directory during Activity/engine recreation.
-            val currentClean = if (activePending == null && deferredCleanupHashes.isEmpty()) {
-                TorrentCachePolicy.clearRoot(torrentCacheRoot, context.cacheDir)
-            } else {
-                true
+            // Do not sweep any storage root while active readers, native handles or
+            // deferred cleanup workers still own files beneath it.
+            if (activePending != null || deferredCleanupHashes.isNotEmpty()) return
+            val roots = listOf(
+                torrentCacheRoot to context.noBackupFilesDir,
+                File(context.cacheDir, TorrentCachePolicy.DIRECTORY_NAME) to context.cacheDir,
+                File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME) to context.filesDir
+            )
+            val results = roots.map { (root, parent) ->
+                TorrentCachePolicy.clearRoot(root, parent)
             }
-            val legacyRoot = File(context.filesDir, TorrentCachePolicy.DIRECTORY_NAME)
-            val legacyClean = TorrentCachePolicy.clearRoot(legacyRoot, context.filesDir)
-            if (!currentClean || !legacyClean) {
-                Log.w(TAG, "One or more stale torrent cache directories could not be fully removed.")
+            if (results.any { !it }) {
+                Log.w(TAG, "One or more stale torrent storage directories could not be fully removed.")
             }
         }
     }
@@ -215,8 +265,99 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             cleanupCache()
             val manager = SessionManager()
             manager.start()
+            manager.addListener(diskReadAlertListener)
             session = manager
+            recordDiagnosticEvent("session_initialized")
         }
+    }
+
+    private fun safeDiagnosticText(raw: String): String =
+        PlaybackDiagnosticRedactor.sanitize(raw)
+
+    private fun recordDiagnosticEvent(
+        eventName: String,
+        fields: Map<String, Any?> = emptyMap()
+    ) {
+        val event = linkedMapOf<String, Any?>(
+            "timestampMs" to System.currentTimeMillis(),
+            "event" to eventName.take(64)
+        )
+        fields.forEach { (key, value) ->
+            when (value) {
+                is Number, is Boolean -> event[key.take(64)] = value
+                is String -> event[key.take(64)] = safeDiagnosticText(value)
+            }
+        }
+        synchronized(diagnosticLock) {
+            while (diagnosticEvents.size >= 160) diagnosticEvents.removeFirst()
+            diagnosticEvents.addLast(event)
+        }
+    }
+
+    /**
+     * Persist a compact failure-only bundle in app-private storage.
+     * The public repository never receives a raw logcat dump or source identity.
+     */
+    fun pruneDiagnosticReports(): Int {
+        val directory = File(context.filesDir, PlaybackDiagnosticStore.DIRECTORY_NAME)
+        return PlaybackDiagnosticStore.prune(directory)
+    }
+
+    fun captureFailureReport(
+        reason: String,
+        playerSnapshot: Map<String, Any?> = emptyMap()
+    ): Map<String, Any> {
+        val status = statusSnapshot()
+        val root = JSONObject()
+        root.put("schemaVersion", 1)
+        root.put("capturedAtMs", System.currentTimeMillis())
+        root.put("failureReason", safeDiagnosticText(reason))
+
+        val native = JSONObject()
+        val nativeKeys = listOf(
+            "active", "metadataReady", "connectedPeers", "connectedSeeds",
+            "knownPeers", "knownSeeds", "downloadRate", "downloadedBytes",
+            "httpRequestCount", "httpBytesSent", "lastHttpStatus",
+            "lastHttpRangeStart", "lastHttpRangeEnd", "lastRequestBytesSent",
+            "firstByteAtMs", "lastPieceIndex", "lastPieceWaitMs", "lastHttpError",
+            "selectedPieceLengthBytes", "prefetchLookAheadPieces",
+            "prefetchWindowBytes", "prefetchConnectedSources",
+            "prefetchDownloadRateBytesPerSecond", "lastError"
+        )
+        nativeKeys.forEach { key ->
+            when (val value = status[key]) {
+                is String -> native.put(key, safeDiagnosticText(value))
+                is Number, is Boolean -> native.put(key, value)
+            }
+        }
+        root.put("nativeSnapshot", native)
+
+        val player = JSONObject()
+        val safePlayerKeys = setOf(
+            "positionMs", "durationMs", "isPlaying", "isBuffering", "isInitialized"
+        )
+        playerSnapshot.forEach { (key, value) ->
+            if (key !in safePlayerKeys) return@forEach
+            if (value is Number || value is Boolean) player.put(key, value)
+        }
+        root.put("playerSnapshot", player)
+
+        val events = JSONArray()
+        synchronized(diagnosticLock) {
+            diagnosticEvents.forEach { event -> events.put(JSONObject(event)) }
+        }
+        root.put("events", events)
+
+        val saved = PlaybackDiagnosticStore.save(context.filesDir, root.toString(2))
+        recordDiagnosticEvent("failure_report_saved")
+        val retained = File(context.filesDir, PlaybackDiagnosticStore.DIRECTORY_NAME)
+            .listFiles { file -> file.isFile && file.name.endsWith(".json") }
+            ?.size ?: 0
+        return mapOf(
+            "saved" to true,
+            "reportId" to saved.name,
+            "retainedReports" to retained
+        )
     }
 
     /**
@@ -289,6 +430,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         playbackPaused = false
 
         val manager = session ?: throw IllegalStateException("Torrent session did not initialize.")
+        if (!torrentCacheRoot.exists() && !torrentCacheRoot.mkdirs()) {
+            throw IllegalStateException("Unable to create app-private torrent storage.")
+        }
         val saveDir = File(torrentCacheRoot, hashHex)
         if (saveDir.exists() && !TorrentCachePolicy.deleteStreamDirectory(saveDir, torrentCacheRoot)) {
             throw IllegalStateException("Unable to clear stale temporary torrent data.")
@@ -307,6 +451,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         pending.sourceStorageDirs.add(saveDir)
         startHttpServer(pending)
         activePending = pending
+        synchronized(diagnosticLock) { diagnosticEvents.clear() }
+        lastDiagnosticStatusSignature = ""
+        recordDiagnosticEvent("playback_requested", mapOf("fileIndex" to (fileIdx ?: -1), "trackerHintCount" to suppliedTrackers.size))
         val port = serverSocket?.localPort
             ?: throw IllegalStateException("Unable to start the local torrent stream server.")
 
@@ -358,6 +505,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // the viewer's requested piece via piecePriority/deadlines below.
                 val flags = TorrentFlags.AUTO_MANAGED
                 manager.download(magnet, saveDir, flags)
+                recordDiagnosticEvent("magnet_submitted", mapOf("trackerCount" to trackers.size))
 
                 val deadline = System.currentTimeMillis() + METADATA_TIMEOUT_MS
                 var torrentHandle: TorrentHandle? = null
@@ -420,6 +568,16 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         isPrimary = true
                     )
                     pending.pieceScheduler = CrossSwarmPieceScheduler(target.pieceLength)
+                    recordDiagnosticEvent("metadata_and_video_target_ready", mapOf(
+                        "fileSizeBytes" to target.fileSize,
+                        "pieceLengthBytes" to target.pieceLength,
+                        "firstPiece" to target.firstPiece,
+                        "lastPiece" to target.lastPiece,
+                        "mediaFileReady" to (target.file.isFile && target.file.canRead() &&
+                            target.file.length() == target.fileSize),
+                        "backgroundDownloadEnabled" to target.backgroundDownloadEnabled,
+                        "backgroundDownloadBudgetBytes" to target.backgroundDownloadBudgetBytes
+                    ))
                 }
                 if (pending.target != null && safeAdditionalSources.isNotEmpty()) {
                     startAdditionalSourceDiscovery(pending, manager)
@@ -429,6 +587,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 if (activePending === pending && error !is InterruptedException) {
                     val failure = "${error.javaClass.simpleName}: ${error.message ?: "No error message."}".take(512)
                     pending.error = failure
+                    recordDiagnosticEvent("torrent_startup_failed", mapOf("error" to failure))
                     Log.e(TAG, "Torrent startup failed for $hashHex: $failure", error)
                 }
             } finally {
@@ -616,7 +775,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             ?: throw IllegalStateException("Candidate swarm did not register a torrent handle.")
         val info = candidateInfo
             ?: throw IllegalStateException("Candidate swarm did not provide valid metadata.")
-        val target = prepareStreamTarget(handle, info, saveDir, source.fileIdx, pending.token)
+        val target = prepareStreamTarget(
+            handle,
+            info,
+            saveDir,
+            source.fileIdx,
+            pending.token,
+            allowBackgroundDownload = false
+        )
         val identity = ContentIdentityVerifier.verify(primaryProof, buildIdentityProof(info, target))
         if (!identity.accepted) {
             val removed = removeCandidateHandleAndCache(manager, pending, hash, saveDir)
@@ -685,7 +851,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         torrentInfo: com.frostwire.jlibtorrent.TorrentInfo,
         saveDir: File,
         fileIdx: Int?,
-        token: String
+        token: String,
+        allowBackgroundDownload: Boolean = true
     ): StreamTarget {
         val storage = torrentInfo.files()
         val videoExtensions = setOf(
@@ -712,20 +879,36 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 ?: throw IllegalStateException("This torrent contains no supported video file.")
         }
 
-        // Start with every file ignored. The player activates only the current
-        // byte-range piece and a small look-ahead window as it reads.
+        val backgroundBudgetBytes = if (allowBackgroundDownload) {
+            TorrentBackgroundDownloadPolicy.budgetBytes(saveDir.usableSpace)
+        } else {
+            0L
+        }
+        val backgroundDownloadEnabled = allowBackgroundDownload &&
+            TorrentBackgroundDownloadPolicy.shouldDownloadWholeFile(
+                fileSizeBytes = selected.third,
+                budgetBytes = backgroundBudgetBytes
+            )
+
+        // Create nested torrent parents and the sparse logical media file before
+        // the first verified piece can be exposed to the player.
+        val mediaFile = TorrentCachePolicy.ensureSparseMediaFile(
+            streamDir = saveDir,
+            relativePath = selected.second,
+            expectedSizeBytes = selected.third
+        )
+
         torrentHandle.prioritizeFiles(
-            TorrentDownloadPriorityPolicy.filePriorities(storage.numFiles())
+            TorrentDownloadPriorityPolicy.filePriorities(
+                fileCount = storage.numFiles(),
+                selectedFileIndex = selected.first,
+                backgroundDownloadEnabled = backgroundDownloadEnabled
+            )
         )
 
         val selectedFileOffset = storage.fileOffset(selected.first)
         val firstPiece = (selectedFileOffset / torrentInfo.pieceLength()).toInt()
         val lastPiece = ((selectedFileOffset + selected.third - 1L) / torrentInfo.pieceLength()).toInt()
-        val canonicalRoot = saveDir.canonicalFile
-        val mediaFile = File(saveDir, selected.second).canonicalFile
-        if (!mediaFile.path.startsWith(canonicalRoot.path + File.separator)) {
-            throw SecurityException("Torrent metadata contains an unsafe file path.")
-        }
         return StreamTarget(
             handle = torrentHandle,
             file = mediaFile,
@@ -735,7 +918,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             firstPiece = firstPiece,
             lastPiece = lastPiece,
             token = token,
-            fileIndex = selected.first
+            fileIndex = selected.first,
+            backgroundDownloadEnabled = backgroundDownloadEnabled,
+            backgroundDownloadBudgetBytes = backgroundBudgetBytes
         )
     }
 
@@ -756,9 +941,40 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 slot.target.handle.status(TorrentHandle.QUERY_ACCURATE_DOWNLOAD_COUNTERS)
             }.getOrNull()
         }
+        val diagnosticSignature = listOf(
+            pending.target != null,
+            pending.target?.file?.exists() ?: false,
+            pending.target?.backgroundDownloadEnabled ?: false,
+            primaryStatus?.numPeers() ?: 0,
+            primaryStatus?.numSeeds() ?: 0,
+            statuses.sumOf { it.downloadRate().toLong().coerceAtLeast(0L) },
+            statuses.sumOf { it.numPeers().coerceAtLeast(0) },
+            statuses.sumOf { it.totalDone().coerceAtLeast(0L) },
+            pending.lastHttpStatus,
+            pending.httpBytesSent.get()
+        ).joinToString("|")
+        if (diagnosticSignature != lastDiagnosticStatusSignature) {
+            lastDiagnosticStatusSignature = diagnosticSignature
+            recordDiagnosticEvent("status_changed", mapOf(
+                "metadataReady" to (pending.target != null),
+                "connectedPeers" to (primaryStatus?.numPeers() ?: 0),
+                "connectedSeeds" to (primaryStatus?.numSeeds() ?: 0),
+                "aggregatePeers" to statuses.sumOf { it.numPeers().coerceAtLeast(0) },
+                "aggregateDownloadRateBytesPerSecond" to statuses.sumOf { it.downloadRate().toLong().coerceAtLeast(0L) },
+                "downloadedBytes" to statuses.sumOf { it.totalDone().coerceAtLeast(0L) },
+                "httpStatus" to pending.lastHttpStatus,
+                "httpBytesSent" to pending.httpBytesSent.get()
+            ))
+        }
         return mapOf(
             "active" to true,
             "metadataReady" to (pending.target != null),
+            "mediaFileReady" to (pending.target?.let {
+                it.file.isFile && it.file.canRead() && it.file.length() == it.fileSize
+            } ?: false),
+            "backgroundDownloadEnabled" to (pending.target?.backgroundDownloadEnabled ?: false),
+            "backgroundDownloadBudgetBytes" to (pending.target?.backgroundDownloadBudgetBytes ?: 0L),
+            "selectedMediaFileSizeBytes" to (pending.target?.fileSize ?: 0L),
             // The existing fields stay primary-swarm scoped for compatibility.
             "connectedPeers" to (primaryStatus?.numPeers() ?: 0),
             "connectedSeeds" to (primaryStatus?.numSeeds() ?: 0),
@@ -786,8 +1002,20 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         "firstByteAtMs" to pending.firstByteAtMs,
         "lastPieceIndex" to pending.lastPieceIndex,
         "lastPieceWaitMs" to pending.lastPieceWaitMs,
+        "diskReadRequests" to pending.diskReadRequests.get(),
+        "diskReadCompletedPieces" to pending.diskReadCompletedPieces.get(),
+        "diskReadFailures" to pending.diskReadFailures.get(),
+        "diskReadsPending" to pending.pendingDiskReadKeys.size,
+        "lastDiskReadWaitMs" to pending.lastDiskReadWaitMs,
+        "lastDiskReadError" to pending.lastDiskReadError,
         "lastHttpError" to pending.lastHttpError,
         "selectedPieceLengthBytes" to (pending.target?.pieceLength ?: 0),
+        "mediaFileReady" to (pending.target?.let {
+            it.file.isFile && it.file.canRead() && it.file.length() == it.fileSize
+        } ?: false),
+        "mediaFileLengthBytes" to (pending.target?.file?.length() ?: 0L),
+        "backgroundDownloadEnabled" to (pending.target?.backgroundDownloadEnabled ?: false),
+        "backgroundDownloadBudgetBytes" to (pending.target?.backgroundDownloadBudgetBytes ?: 0L),
         "prefetchLookAheadPieces" to pending.prefetchLookAheadPieces,
         "prefetchWindowBytes" to pending.prefetchWindowBytes,
         "prefetchConnectedSources" to pending.prefetchConnectedSources,
@@ -855,6 +1083,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         startupExecutor.shutdownNow()
         aggregationExecutor.shutdownNow()
         if (old != null) {
+            runCatching { old.removeListener(diskReadAlertListener) }
             val stopSession = {
                 runCatching { old.stop() }
                     .onFailure { error -> Log.w(TAG, "Torrent session shutdown failed: ${error.message}") }
@@ -929,7 +1158,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
 
     private fun waitForHttpReadersToClose(pending: PendingStream?, timeoutMs: Long = 2_000L): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        while ((pending?.activeReaders?.get() ?: 0L) > 0L && System.currentTimeMillis() < deadline) {
+        while (
+            ((pending?.activeReaders?.get() ?: 0L) > 0L ||
+                (pending?.pendingDiskReadKeys?.isNotEmpty() == true)) &&
+            System.currentTimeMillis() < deadline
+        ) {
             try {
                 Thread.sleep(20L)
             } catch (_: InterruptedException) {
@@ -937,7 +1170,8 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 return false
             }
         }
-        return (pending?.activeReaders?.get() ?: 0L) == 0L
+        return (pending?.activeReaders?.get() ?: 0L) == 0L &&
+            pending?.pendingDiskReadKeys?.isEmpty() != false
     }
 
     private fun removeTorrentAndCache(
@@ -1035,7 +1269,10 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     awaitAggregation = { pending?.aggregationFinished?.await() },
                     awaitReaders = {
                         if (pending != null) {
-                            while (pending.activeReaders.get() > 0L) Thread.sleep(50L)
+                            while (
+                                pending.activeReaders.get() > 0L ||
+                                pending.pendingDiskReadKeys.isNotEmpty()
+                            ) Thread.sleep(50L)
                         } else {
                             while (activeHttpSockets.isNotEmpty()) Thread.sleep(50L)
                         }
@@ -1114,7 +1351,9 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 requestedRange = headers["range"] ?: "none"
                 pending.httpRequestCount.incrementAndGet()
                 pending.lastRequestBytesSent = 0L
+                pending.lastHttpStatus = 0
                 pending.lastHttpError = ""
+                recordDiagnosticEvent("http_request", mapOf("method" to method, "range" to requestedRange))
                 Log.i(TAG, "HTTP request method=$method range=$requestedRange")
 
                 if (path != "/stream/${pending.token}" || (method != "GET" && method != "HEAD")) {
@@ -1148,6 +1387,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 if (!metadataReady) {
                     pending.lastHttpStatus = 504
                     pending.lastHttpError = "Timed out waiting for torrent metadata."
+                    recordDiagnosticEvent("http_metadata_timeout", mapOf("httpStatus" to 504))
                     writeSimpleResponse(client, 504, "Gateway Timeout", "Retry-After: 3\r\n")
                     return
                 }
@@ -1156,6 +1396,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     val startupError = pending.error ?: "Metadata discovery or video selection produced no stream target."
                     pending.lastHttpStatus = 502
                     pending.lastHttpError = startupError
+                    recordDiagnosticEvent("http_startup_failed", mapOf("httpStatus" to 502, "error" to startupError))
                     Log.e(TAG, "Returning HTTP 502 for ${pending.infoHash}: $startupError")
                     writeSimpleResponse(
                         client,
@@ -1212,6 +1453,14 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         HttpRangePolicy.statusCode(HttpPieceDecision.RETRY) ?: return
                     pending.lastHttpError =
                         "First requested torrent piece was unavailable before HTTP headers."
+                    recordDiagnosticEvent(
+                        "http_first_piece_unavailable",
+                        mapOf(
+                            "httpStatus" to 503,
+                            "firstPieceIndex" to firstPieceIndex,
+                            "waitMs" to pending.lastPieceWaitMs
+                        )
+                    )
                     Log.w(
                         TAG,
                         "Returning HTTP 503 before committing stream headers; " +
@@ -1235,8 +1484,100 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 val contentType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
                     ?: "application/octet-stream"
                 val contentLength = end - start + 1
+                val sourceReaders = HashMap<String, RandomAccessFile>()
+                var firstResponseBuffer: ByteArray? = null
+                var firstResponseSourceId = firstPieceSourceId ?: pending.infoHash
+
+                // A verified piece and HTTP 206 headers are not enough. Open the
+                // actual nested media file and read the first body bytes from disk.
+                if (method == "GET") {
+                    val firstAmount = HttpRangePolicy.bytesToPieceEnd(
+                        globalOffset = target.fileOffset + start,
+                        pieceLength = target.pieceLength,
+                        remainingBytes = contentLength,
+                        maxBufferBytes = 128 * 1024
+                    )
+                    val firstSlot = sourceForId(pending, firstResponseSourceId)
+                        ?: pending.primarySlot
+                    if (firstSlot == null) {
+                        pending.lastHttpStatus = 503
+                        pending.lastHttpError = "No verified source can open the selected media file."
+                        recordDiagnosticEvent("http_media_preflight_failed", mapOf("reason" to "source_missing"))
+                        writeSimpleResponse(
+                            client, 503, "Service Unavailable",
+                            HttpRangePolicy.retryAfterHeader(),
+                            "Selected media file is not ready. Retry shortly."
+                        )
+                        return
+                    }
+                    firstResponseSourceId = firstSlot.id
+                    try {
+                        val mediaFile = firstSlot.target.file
+                        if (!mediaFile.isFile || !mediaFile.canRead() ||
+                            mediaFile.length() < start + firstAmount
+                        ) {
+                            throw IOException("Selected media file is missing or shorter than requested bytes.")
+                        }
+                        val reader = RandomAccessFile(mediaFile, "r")
+                        sourceReaders[firstSlot.id] = reader
+                        reader.seek(start)
+                        firstResponseBuffer = ByteArray(firstAmount).also { bytes ->
+                            reader.readFully(bytes)
+                        }
+                    } catch (error: Exception) {
+                        sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
+                        pending.lastHttpStatus = 503
+                        pending.lastHttpError =
+                            "Selected media file preflight failed: ${error.javaClass.simpleName}: " +
+                                (error.message ?: "local read unavailable")
+                        recordDiagnosticEvent(
+                            "http_media_preflight_failed",
+                            mapOf(
+                                "reason" to error.javaClass.simpleName,
+                                "rangeStart" to start,
+                                "preflightBytes" to firstAmount
+                            )
+                        )
+                        writeSimpleResponse(
+                            client, 503, "Service Unavailable",
+                            HttpRangePolicy.retryAfterHeader(),
+                            "Selected media bytes are not readable yet. Retry shortly."
+                        )
+                        return
+                    }
+                }
+
+                val preHeaderDecision = HttpRangePolicy.beforeHeaders(
+                    pieceReady = method != "GET" || firstPieceSourceId != null,
+                    cancelled = isRequestCancelled(),
+                    localMediaReadable = method != "GET" || firstResponseBuffer != null
+                )
+                when (preHeaderDecision) {
+                    HttpPieceDecision.READY -> Unit
+                    HttpPieceDecision.CANCELLED -> {
+                        sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
+                        return
+                    }
+                    HttpPieceDecision.RETRY -> {
+                        sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
+                        pending.lastHttpStatus = 503
+                        pending.lastHttpError = "First piece or local media bytes were not readable before headers."
+                        recordDiagnosticEvent("http_media_preflight_failed", mapOf("reason" to "pre_header_gate"))
+                        writeSimpleResponse(
+                            client, 503, "Service Unavailable",
+                            HttpRangePolicy.retryAfterHeader(),
+                            "Video bytes are not readable yet. Retry shortly."
+                        )
+                        return
+                    }
+                    HttpPieceDecision.ABORT -> {
+                        sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
+                        return
+                    }
+                }
+
+                val responseStatusCode = if (partial) 206 else 200
                 val status = if (partial) "206 Partial Content" else "200 OK"
-                pending.lastHttpStatus = if (partial) 206 else 200
                 Log.i(
                     TAG,
                     "HTTP response status=$status contentType=$contentType length=$contentLength " +
@@ -1255,15 +1596,25 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                     append("Access-Control-Allow-Origin: *\r\n\r\n")
                 }
                 val output = client.getOutputStream()
-                output.write(responseHeaders.toByteArray(Charsets.US_ASCII))
-                output.flush()
-                if (method == "HEAD") return
-
-                val sourceReaders = HashMap<String, RandomAccessFile>()
                 try {
+                    output.write(responseHeaders.toByteArray(Charsets.US_ASCII))
+                    output.flush()
+                    // Record 206 only after the response headers were actually sent.
+                    pending.lastHttpStatus = responseStatusCode
+                    recordDiagnosticEvent(
+                        "http_headers_committed",
+                        mapOf(
+                            "httpStatus" to pending.lastHttpStatus,
+                            "rangeStart" to start,
+                            "rangeEnd" to end,
+                            "contentLength" to contentLength
+                        )
+                    )
+                    if (method == "HEAD") return
+
                     var position = start
                     var bytesSent = 0L
-                    var selectedSourceId = firstPieceSourceId ?: pending.infoHash
+                    var selectedSourceId = firstResponseSourceId
                     // Each source has isolated storage and has passed the identity gate.
                     val buffer = ByteArray(128 * 1024)
                     while (position <= end && !client.isClosed) {
@@ -1298,15 +1649,24 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                             remainingBytes = end - position + 1,
                             maxBufferBytes = buffer.size
                         )
-                        val sourceSlot = sourceForId(pending, selectedSourceId)
-                            ?: pending.primarySlot
-                            ?: throw IllegalStateException("No verified primary torrent source is available.")
-                        val media = sourceReaders.getOrPut(sourceSlot.id) {
-                            RandomAccessFile(sourceSlot.target.file, "r")
+                        val preflight = firstResponseBuffer
+                        if (preflight != null && position == start) {
+                            check(amount == preflight.size) {
+                                "First preflight buffer does not match the first torrent read window."
+                            }
+                            output.write(preflight, 0, amount)
+                            firstResponseBuffer = null
+                        } else {
+                            val sourceSlot = sourceForId(pending, selectedSourceId)
+                                ?: pending.primarySlot
+                                ?: throw IllegalStateException("No verified primary torrent source is available.")
+                            val media = sourceReaders.getOrPut(sourceSlot.id) {
+                                RandomAccessFile(sourceSlot.target.file, "r")
+                            }
+                            media.seek(position)
+                            media.readFully(buffer, 0, amount)
+                            output.write(buffer, 0, amount)
                         }
-                        media.seek(position)
-                        media.readFully(buffer, 0, amount)
-                        output.write(buffer, 0, amount)
                         output.flush()
                         position += amount
                         bytesSent += amount
@@ -1317,6 +1677,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                         }
                         pending.lastHttpError = ""
                     }
+                    recordDiagnosticEvent("http_body_complete", mapOf("bytesSent" to bytesSent, "expectedBytes" to contentLength))
                     Log.i(TAG, "HTTP response complete bytes=$bytesSent expected=$contentLength")
                 } finally {
                     sourceReaders.values.forEach { reader -> runCatching { reader.close() } }
@@ -1326,6 +1687,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 // HTTP status. Abort the body and retain byte-count evidence.
                 pending.lastHttpError =
                     "${error.javaClass.simpleName}: ${error.message ?: "No error message."}".take(512)
+                recordDiagnosticEvent("http_body_or_request_error", mapOf(
+                    "httpStatus" to pending.lastHttpStatus,
+                    "bytesSent" to pending.lastRequestBytesSent,
+                    "error" to pending.lastHttpError
+                ))
                 if (error is java.net.SocketException) {
                     Log.w(TAG, "HTTP client disconnected/cancelled: ${error.message}")
                 } else if (error is java.net.SocketTimeoutException && pending.lastHttpStatus in 200..206) {
@@ -1519,9 +1885,11 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
                 val wanted = nextPriorities[slot.id] ?: emptySet()
                 slot.prioritizedPieces.filterNot { it in wanted }.forEach { stalePiece ->
                     runCatching { slot.target.handle.resetPieceDeadline(stalePiece) }
-                    runCatching {
-                        slot.target.handle.piecePriority(stalePiece, TorrentDownloadPriorityPolicy.inactivePiece)
-                    }
+                    val idlePriority = TorrentDownloadPriorityPolicy.idlePiecePriority(
+                        isPrimarySource = slot.isPrimary,
+                        backgroundDownloadEnabled = pending.target?.backgroundDownloadEnabled == true
+                    )
+                    runCatching { slot.target.handle.piecePriority(stalePiece, idlePriority) }
                 }
                 slot.prioritizedPieces.clear()
                 slot.prioritizedPieces.addAll(wanted)
@@ -1532,6 +1900,75 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             }
             return !isRequestCancelled()
         }
+    }
+
+    private fun awaitPieceDiskReadable(
+        pending: PendingStream,
+        slot: VerifiedSwarmSlot,
+        nativePiece: Int,
+        isRequestCancelled: () -> Boolean
+    ): Boolean {
+        val sourceHash = slot.id.lowercase(Locale.US)
+        val key = pending.token + ":" + sourceHash + ":" + nativePiece
+        if (pending.diskReadReadyKeys.contains(key) || diskReadBarrier.isReady(key)) {
+            pending.diskReadReadyKeys.add(key)
+            return true
+        }
+
+        val waitStartedAt = System.nanoTime()
+        val sourceKey = sourceHash + ":" + nativePiece
+        val result = diskReadBarrier.await(
+            key = key,
+            timeoutMs = DISK_READ_TIMEOUT_MS,
+            isCancelled = isRequestCancelled,
+            startRead = {
+                pending.diskReadRequests.incrementAndGet()
+                pending.pendingDiskReadKeys.add(key)
+                pendingDiskReadKeys[key] = sourceKey
+                pendingDiskReadOwners[key] = pending
+                // havePiece() is already true. readPiece() waits for libtorrent's
+                // asynchronous storage read to finish before the local file is opened.
+                slot.target.handle.readPiece(nativePiece)
+            }
+        )
+        pending.lastDiskReadWaitMs =
+            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitStartedAt)
+
+        if (result == null) {
+            if (!isRequestCancelled()) {
+                pending.lastDiskReadError =
+                    "Timed out waiting for libtorrent disk-read completion."
+            }
+            return false
+        }
+        if (!result.success) {
+            pending.pendingDiskReadKeys.remove(key)
+            pendingDiskReadOwners.remove(key)
+            pendingDiskReadKeys.remove(key)
+            if (pending.diskReadFailureKeys.add(key)) {
+                pending.diskReadFailures.incrementAndGet()
+            }
+            pending.lastDiskReadError = result.error.ifBlank {
+                "Libtorrent disk read returned no bytes."
+            }.take(240)
+            return false
+        }
+        pending.pendingDiskReadKeys.remove(key)
+        pendingDiskReadOwners.remove(key)
+        pendingDiskReadKeys.remove(key)
+        if (pending.diskReadReadyKeys.add(key)) {
+            pending.diskReadCompletedPieces.incrementAndGet()
+            recordDiagnosticEvent(
+                "torrent_piece_disk_read_ready",
+                mapOf(
+                    "pieceIndex" to nativePiece,
+                    "bytesRead" to result.bytesRead,
+                    "waitMs" to pending.lastDiskReadWaitMs
+                )
+            )
+        }
+        pending.lastDiskReadError = ""
+        return true
     }
 
     private fun waitForPiece(
@@ -1550,6 +1987,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         )
         val waitStartedAt = System.currentTimeMillis()
         pending.lastPieceIndex = pieceIndex
+        recordDiagnosticEvent("piece_wait_started", mapOf("pieceIndex" to pieceIndex, "filePosition" to filePosition, "timeoutMs" to timeoutMs))
         if (!prioritizePlaybackWindow(pending, target, pieceIndex, requestGeneration, isRequestCancelled)) {
             return null
         }
@@ -1572,9 +2010,26 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
             for (sourceId in assigned) {
                 val slot = sourceForId(pending, sourceId) ?: continue
                 if (sourceHasRange(slot, filePosition, pieceEndExclusive)) {
+                    val diskReadable = nativePiecesForRange(
+                        slot.target,
+                        filePosition,
+                        pieceEndExclusive
+                    ).all { nativePiece ->
+                        awaitPieceDiskReadable(pending, slot, nativePiece, isRequestCancelled)
+                    }
+                    if (!diskReadable) continue
                     pending.pieceScheduler?.recordProgress(pieceIndex.toLong(), sourceId, now)
                     pending.lastPieceWaitMs = now - waitStartedAt
                     pending.lastHttpError = ""
+                    pending.lastDiskReadError = ""
+                    recordDiagnosticEvent(
+                        "piece_verified_and_disk_read",
+                        mapOf(
+                            "pieceIndex" to pieceIndex,
+                            "waitMs" to pending.lastPieceWaitMs,
+                            "diskReadWaitMs" to pending.lastDiskReadWaitMs
+                        )
+                    )
                     return sourceId
                 }
             }
@@ -1592,6 +2047,12 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         } else {
             pending.lastHttpError = "Piece wait cancelled for piece=$pieceIndex."
         }
+        recordDiagnosticEvent("piece_wait_ended", mapOf(
+            "pieceIndex" to pieceIndex,
+            "waitMs" to pending.lastPieceWaitMs,
+            "available" to false,
+            "cancelled" to isRequestCancelled()
+        ))
         return null
     }
 
@@ -1656,6 +2117,7 @@ internal class EmbeddedTorrentEngine(private val context: Context) {
         private const val METADATA_TIMEOUT_MS = 60_000L
         private const val HTTP_METADATA_GRACE_MS = 5_000L
         private const val STREAM_PIECE_TIMEOUT_MS = HttpRangePolicy.STREAM_PIECE_WAIT_MS
+        private const val DISK_READ_TIMEOUT_MS = 12_000L
         private const val MIN_VIDEO_BYTES = 8L * 1024L * 1024L
 
     }
